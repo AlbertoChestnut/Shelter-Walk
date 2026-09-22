@@ -1,0 +1,4 @@
+Django>=6.1,<6.2
+django-allauth[socialaccount,mfa]>=65.18,<66
+qrcode>=8
+gunicorn>=23

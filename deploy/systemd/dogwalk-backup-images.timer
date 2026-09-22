@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly backup of the dog-walk tracker's cached dog photos
+
+[Timer]
+OnCalendar=Sun *-*-* 03:45:00
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

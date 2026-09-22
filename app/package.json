@@ -1,0 +1,20 @@
+{
+  "name": "dogwalk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Personal tracker for walking shelter dogs at Wake County Animal Center",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "node-cron": "^4.6.0",
+    "web-push": "^3.6.7"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
+  }
+}

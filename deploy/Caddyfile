@@ -1,0 +1,62 @@
+(security_headers) {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# camera=(self) since the dog-walk app's QR scanner needs it on its
+		# own origin; geolocation/microphone aren't used by either app.
+		Permissions-Policy "geolocation=(), microphone=(), camera=(self)"
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+}
+
+shelterwalk.com {
+	encode gzip
+	import security_headers
+
+	# The PWA manifest and its icons have to be reachable without a session
+	# cookie -- Chrome's "Install app" criteria fetches them itself and
+	# doesn't reliably do so as an authenticated request, so gating them
+	# (like the rest of the app) silently broke the install prompt. Neither
+	# contains anything sensitive.
+	handle /manifest.json {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle /icons/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		forward_auth 127.0.0.1:8001 {
+			uri /internal/authcheck/
+			copy_headers X-Auth-Email X-Auth-Staff
+		}
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+login.shelterwalk.com {
+	encode gzip
+	import security_headers
+
+	# Sign-in pages use a few inline scripts/styles (allauth + our templates),
+	# so script-src keeps 'unsafe-inline' here; the policy still forbids any
+	# third-party script, embedding this site in a frame, and posting forms
+	# anywhere except this site and the app it signs you into.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self' https://shelterwalk.com; frame-ancestors 'none'"
+
+	# Only Caddy's own forward_auth subrequest (from the shelterwalk.com
+	# site block above) should ever hit this -- never expose it to the
+	# public internet.
+	handle /internal/* {
+		respond 404
+	}
+
+	handle /static/* {
+		root * /opt/shelterapp/app/staticfiles
+		uri strip_prefix /static
+		file_server
+	}
+
+	reverse_proxy 127.0.0.1:8001
+}

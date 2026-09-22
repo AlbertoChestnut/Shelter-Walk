@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Shelter Walk</title>
+<meta name="theme-color" content="#2f6f4f" />
+<meta name="color-scheme" content="light dark" />
+<meta name="build" content="__BUILD__" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Shelter Walk" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<link rel="stylesheet" href="/css/style.css" />
+<script src="/js/theme-init.js"></script>
+</head>
+<body>
+
+<div id="offlineBanner" class="hidden" style="background:var(--amber,#b3781c); color:#fff; text-align:center; font-size:0.85rem; padding:4px 8px;">Offline. Showing cached data</div>
+<header class="topbar">
+  <h1 id="topbarTitle">Dogs to Walk</h1>
+  <div style="display:flex; align-items:center; gap:4px;">
+    <button id="userBtn" class="icon-btn" style="font-size:0.85rem;" aria-label="My account" title="My account">👤 <span id="userBtnName"></span></button>
+    <button id="auditModeBtn" class="icon-btn hidden" aria-label="Audit Mode" title="Audit Mode">🔍</button>
+    <button id="guideBtn" class="icon-btn" aria-label="Guide" title="Guide: sticker meanings, tips, and how-tos">
+      <svg viewBox="0 0 24 24" width="1.15em" height="1.15em" fill="currentColor" aria-hidden="true">
+        <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
+      </svg>
+    </button>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="currentColor" aria-hidden="true">
+        <path d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.03 7.03 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.14 7.14 0 0 0-.06.94 7.14 7.14 0 0 0 .06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-tab="available">🐾<span class="tab-label">Available</span></button>
+  <button class="tab-btn" data-tab="walk">📷<span class="tab-label">Scan</span></button>
+  <button class="tab-btn" data-tab="stats">📊<span class="tab-label">Stats</span></button>
+  <button class="tab-btn" data-tab="updates"><span class="tab-icon-wrap">📣<span id="updatesBadge" class="tab-badge hidden">0</span></span><span class="tab-label">Updates</span></button>
+</nav>
+
+<div id="settingsSheet" class="sheet hidden">
+  <div class="sheet-inner">
+    <h2>Settings</h2>
+    <label class="small muted" style="display:block;">Your experience level</label>
+    <div id="experienceLevelPicker" class="stack tight"></div>
+    <hr />
+    <label class="small muted" style="display:block;">Appearance</label>
+    <div id="themePicker" class="stack tight"></div>
+    <hr />
+    <label class="small muted" style="display:block;">Notifications</label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsPrefAdopted" />
+      Notify me when a dog I've walked is adopted
+    </label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsPrefWalkStarted" />
+      Notify me when I start a walk (dog + return location)
+    </label>
+    <p class="muted small" style="margin-top:6px;">On iPhone, this only works if you've added this app to your Home Screen first.</p>
+    <hr />
+    <label class="small muted" style="display:block;">Updates feed</label>
+    <p class="muted small" style="margin-top:4px;">Choose what shows up in the Updates tab.</p>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsShowNewDog" />
+      New dogs added to the shelter
+    </label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsShowAdopted" />
+      Dogs adopted
+    </label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsShowReturned" />
+      Dogs returned to the shelter
+    </label>
+    <div class="sheet-actions">
+      <button id="saveSettingsBtn" class="btn primary">Save</button>
+      <button id="closeSettingsBtn" class="btn">Cancel</button>
+    </div>
+    <div id="refreshDataSection" class="hidden">
+      <hr />
+      <button id="refreshDataBtn" class="btn">Refresh shelter data now</button>
+      <p id="refreshStatus" class="muted small"></p>
+    </div>
+    <p id="buildInfo" class="muted small center" style="margin:14px 0 0;"></p>
+  </div>
+</div>
+
+<div id="onboardingPicker" class="user-picker hidden">
+  <div class="user-picker-inner" id="onboardingInner"></div>
+</div>
+
+<div id="profileSheet" class="sheet hidden">
+  <div class="sheet-inner" id="profileSheetInner"></div>
+</div>
+
+<div id="markerInfoPopup" class="popup-overlay hidden">
+  <div class="popup-card">
+    <div id="markerInfoPopupContent"></div>
+    <div class="row" style="margin-top:14px;">
+      <button type="button" id="closeMarkerInfoPopupBtn" class="btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="imageLightbox" class="image-lightbox hidden">
+  <button type="button" id="closeImageLightboxBtn" class="sheet-close-btn" aria-label="Close">✕</button>
+  <img id="imageLightboxImg" src="" alt="" />
+</div>
+
+<div id="accountPopup" class="popup-overlay hidden">
+  <div class="popup-card">
+    <h3>My account</h3>
+    <label for="accountNameInput" class="small muted">Name</label>
+    <input type="text" id="accountNameInput" maxlength="60" />
+    <p id="accountNameStatus" class="small muted"></p>
+    <button type="button" id="saveAccountNameBtn" class="btn">Save name</button>
+    <hr style="margin:14px 0;" />
+    <a id="manageAccountLink" class="btn" href="https://login.shelterwalk.com/accounts/email/" style="display:block; text-align:center; text-decoration:none;">Manage email &amp; sign-in</a>
+    <a id="managePasskeysLink" class="btn" href="https://login.shelterwalk.com/accounts/2fa/webauthn/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Manage passkeys</a>
+    <a id="adminPanelLink" class="btn hidden" href="https://login.shelterwalk.com/staff/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Admin panel</a>
+    <a id="signOutLink" class="btn" href="https://login.shelterwalk.com/accounts/logout/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Sign out</a>
+    <button type="button" id="deleteAccountBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my account…</button>
+    <div class="row" style="margin-top:14px;">
+      <button type="button" id="closeAccountPopupBtn" class="btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/html5-qrcode.min.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

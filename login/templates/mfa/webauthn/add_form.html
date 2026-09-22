@@ -1,0 +1,77 @@
+{% extends "mfa/webauthn/base.html" %}
+{% load i18n static %}
+{% block content %}
+    <h1>{% trans "Add a Passkey" %}</h1>
+    {% url 'mfa_add_webauthn' as action_url %}
+    <form method="post" action="{{ action_url }}" id="passkeyForm">
+        {% csrf_token %}
+        {{ redirect_field }}
+        {{ form.credential }}
+        <div id="passkeyStep1">
+            <p>{% trans "Your device will ask you to confirm with your fingerprint, face, PIN, or a security key." %}</p>
+            <button type="button" id="passkeyStartBtn" class="btn primary">{% trans "Continue" %}</button>
+        </div>
+        <div id="passkeyStep2" style="display:none;">
+            <p>{% trans "Passkey created. Give it a name so you can recognize it later:" %}</p>
+            <label for="{{ form.name.auto_id }}">{% trans "Name" %}</label>
+            {{ form.name }}
+            <button type="submit" class="btn primary">{% trans "Save passkey" %}</button>
+        </div>
+        <p id="passkeyError" class="error" style="display:none;"></p>
+    </form>
+    {{ js_data|json_script:"js_data" }}
+    <script src="{% static 'mfa/js/webauthn-json.js' %}"></script>
+    <script>
+    (function () {
+        var data = JSON.parse(document.getElementById('js_data').textContent)
+        var startBtn = document.getElementById('passkeyStartBtn')
+        var step1 = document.getElementById('passkeyStep1')
+        var step2 = document.getElementById('passkeyStep2')
+        var errorEl = document.getElementById('passkeyError')
+        var credentialInput = document.getElementById('{{ form.credential.auto_id }}')
+        var nameInput = document.getElementById('{{ form.name.auto_id }}')
+
+        function guessName () {
+            var ua = navigator.userAgent
+            var platform = /iPhone/.test(ua) ? 'iPhone'
+                : /iPad/.test(ua) ? 'iPad'
+                : /Android/.test(ua) ? 'Android'
+                : /Macintosh/.test(ua) ? 'Mac'
+                : /Windows/.test(ua) ? 'Windows'
+                : /Linux/.test(ua) ? 'Linux'
+                : 'device'
+            var browser = /Edg\//.test(ua) ? 'Edge'
+                : /Chrome\//.test(ua) ? 'Chrome'
+                : /Firefox\//.test(ua) ? 'Firefox'
+                : /Safari\//.test(ua) ? 'Safari'
+                : ''
+            return browser ? browser + ' on ' + platform : platform
+        }
+
+        startBtn.addEventListener('click', async function () {
+            errorEl.style.display = 'none'
+            startBtn.disabled = true
+            try {
+                var options = JSON.parse(JSON.stringify(data.creation_options))
+                var sel = options.publicKey.authenticatorSelection
+                // Always a full, passwordless sign-in method here -- no
+                // "Passwordless" checkbox to ask the user about.
+                sel.residentKey = 'required'
+                sel.requireResidentKey = true
+                sel.userVerification = 'required'
+                var credential = await window.webauthnJSON.create(options)
+                credentialInput.value = JSON.stringify(credential)
+                nameInput.value = guessName()
+                step1.style.display = 'none'
+                step2.style.display = ''
+                nameInput.focus()
+                nameInput.select()
+            } catch (e) {
+                errorEl.textContent = 'Could not set up a passkey: ' + e.message
+                errorEl.style.display = ''
+                startBtn.disabled = false
+            }
+        })
+    })()
+    </script>
+{% endblock %}

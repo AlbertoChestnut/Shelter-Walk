@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block head_title %}Accounts{% endblock %}
+{% block wrap_class %}wide{% endblock %}
+{% block content %}
+  <h1>Accounts</h1>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Joined</th>
+          <th>Last sign-in</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in users %}
+        <tr>
+          <td>{{ account.email }}{% if account.is_staff %} <span class="pill on">Staff</span>{% endif %}</td>
+          <td>{{ account.date_joined|date:"M j, Y" }}</td>
+          <td>{{ account.last_login|date:"M j, Y g:ia"|default:"Never" }}</td>
+          <td>
+            {% if account.is_active %}<span class="pill on">Active</span>{% else %}<span class="pill off">Deactivated</span>{% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              <form method="post" action="{% url 'staff_user_force_signout' account.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn">Sign out everywhere</button>
+              </form>
+              {% if account.is_active %}
+                <form method="post" action="{% url 'staff_user_deactivate' account.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn danger" {% if account.pk == request.user.pk %}disabled title="You can't deactivate your own account"{% endif %}>Deactivate</button>
+                </form>
+              {% else %}
+                <form method="post" action="{% url 'staff_user_reactivate' account.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn primary">Reactivate</button>
+                </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="muted">No accounts yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

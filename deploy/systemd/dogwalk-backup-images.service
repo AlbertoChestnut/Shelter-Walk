@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup the dog-walk tracker's cached dog photos
+
+[Service]
+Type=oneshot
+User=dogwalk
+Group=dogwalk
+ExecStart=/opt/dogwalk/backup-images.sh

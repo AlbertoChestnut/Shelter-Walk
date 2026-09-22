@@ -1,0 +1,41 @@
+{
+  "name": "Shelter Walk",
+  "short_name": "ShelterWalk",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f5",
+  "theme_color": "#2f6f4f",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "id": "/",
+  "scope": "/",
+  "description": "Track dog walks at the shelter: who's available, who's been walked, and what's new.",
+  "categories": [
+    "productivity",
+    "lifestyle"
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan a dog",
+      "short_name": "Scan",
+      "url": "/scan",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}

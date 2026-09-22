@@ -1,0 +1,6 @@
+[Unit]
+Description=Shelter Walk health check
+[Service]
+Type=oneshot
+Environment=ALERT_TO=you@example.org
+ExecStart=/usr/local/bin/shelterwalk-healthcheck

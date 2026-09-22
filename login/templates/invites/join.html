@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block head_title %}Join Shelter Walk{% endblock %}
+{% block content %}
+  {% if rate_limited %}
+    <h1>Too many tries</h1>
+    <p>There have been too many incorrect codes from this network. Wait an hour and try again,
+       or ask the volunteer coordinator for a new link.</p>
+  {% else %}
+    {% if invalid %}
+      <h1>That invite isn't working</h1>
+      <p class="error">The code is wrong, has expired, or has already been used the maximum number of times.
+         Check the code, or ask the volunteer coordinator for a new one.</p>
+    {% else %}
+      <h1>Join as a volunteer</h1>
+      <p>Enter the invite code from the volunteer room sign or the message a coordinator sent you.</p>
+    {% endif %}
+    <form method="post" action="{% url 'invite_enter_code' %}">
+      {% csrf_token %}
+      <label for="code">Invite code</label>
+      <input id="code" name="code" class="code-input" autocomplete="one-time-code" autocapitalize="characters"
+             spellcheck="false" placeholder="ABCD-EFGH-JKMN" value="{{ entered|default:'' }}" required>
+      <button type="submit" class="btn primary">Continue</button>
+    </form>
+    <script>
+    (function () {
+        var input = document.getElementById('code')
+        input.addEventListener('input', function () {
+            var raw = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
+            var groups = []
+            for (var i = 0; i < raw.length; i += 4) groups.push(raw.slice(i, i + 4))
+            input.value = groups.join('-')
+        })
+    })()
+    </script>
+    <hr>
+    <p class="muted">Already have an account? <a href="{% url 'account_login' %}">Sign in</a>.</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,1105 @@
+:root {
+  --green: #2f6f4f;
+  --green-dark: #1f4d36;
+  --amber: #b3781c;
+  --red: #b3392c;
+  /* Filled backgrounds that carry white text need a different (darker, in
+     dark mode) shade than red used AS text on a dark card -- one value can't
+     pass contrast in both roles. Same idea for green. */
+  --red-fill: #b3392c;
+  --green-btn: #2f6f4f;
+  --green-text: #2f6f4f;
+  --green-num: #1f4d36;
+  --bg: #f6f7f5;
+  --card-bg: #ffffff;
+  --text: #1c211f;
+  --muted: #5d6862;
+  --border: #e1e5e0;
+  --radius: 14px;
+  color-scheme: light dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Theme is resolved by app.js (system preference, or the user's manual
+   choice from Settings) into a `data-theme="light"|"dark"` attribute on
+   <html> -- these rules key off that attribute instead of the media query
+   directly, so a manual override in Settings can win over the OS setting. */
+html[data-theme="dark"] {
+  --green: #3f8a63;
+  --green-dark: #2f6f4f;
+  --amber: #d9a441;
+  --red: #e6857a;
+  --red-fill: #b8483a;
+  --green-btn: #2c7350;
+  --green-text: #6fc194;
+  --green-num: #7cc79b;
+  --bg: #16181a;
+  --card-bg: #24272a;
+  --text: #eef0ee;
+  --muted: #9aa39c;
+  --border: #383c3f;
+  color-scheme: dark;
+}
+
+/* Pastel state tints below were only ever tuned for a light page — pale
+   green/pink/gray reads as a washed-out mistake against a dark one, so
+   each gets a dark-appropriate tinted equivalent here instead of just
+   swapping in the shared surface color. */
+html[data-theme="dark"] .badge.eligible { background: rgba(63, 138, 99, 0.25); color: #8fd6ac; }
+html[data-theme="dark"] .badge.not-eligible { background: rgba(217, 105, 90, 0.22); color: #f0a89e; }
+html[data-theme="dark"] .badge.neutral { background: rgba(255, 255, 255, 0.08); }
+html[data-theme="dark"] .avail-card.evo-caution { background: rgba(217, 105, 90, 0.12); }
+html[data-theme="dark"] .tag-chip { background: rgba(63, 138, 99, 0.18); color: #8fd6ac; }
+
+/* Same translucent-card effect as the light theme, just tinted from the
+   dark surface color instead of white -- otherwise this one card would
+   stay a jarring bright patch on an otherwise dark page. Noticeably more
+   translucent than the light theme's version (0.4 vs 0.88) -- the PB
+   "POTTY BREAK OKAY" background text is dark yellow on a dark card here,
+   not dark yellow on white, so it needs a lot more of the background
+   showing through to stay legible. */
+html[data-theme="dark"] .walk-confirm .card {
+  background: rgba(36, 39, 42, 0.55);
+}
+
+* { box-sizing: border-box; }
+
+.hidden { display: none !important; }
+
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  /* iOS Safari ignores overflow:hidden for scroll/bounce prevention on body;
+     pinning it with position:fixed is the only reliable way to lock the page. */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+}
+
+.topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--green-btn);
+  color: white;
+  z-index: 10;
+}
+
+.topbar h1 {
+  font-size: 1.1rem;
+  margin: 0;
+  font-weight: 700;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.3rem;
+  padding: 4px 8px;
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* .icon-btn defaults to white, meant for the dark topbar -- but the Alumni
+   gear sits on a light card instead, where white-on-white made it
+   invisible. */
+#advancedSettingsBtn {
+  color: var(--text);
+}
+
+.notif-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  background: var(--red, #b3392c);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+
+.notif-celebrate {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  font-size: 1rem;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  pointer-events: none;
+}
+.notif-celebrate.show { opacity: 1; transform: scale(1); }
+
+main#app {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding: 12px 12px 24px;
+}
+
+/* While a sheet overlay is open, freeze the page behind it so touch-scrolling
+   the overlay can never scroll the content underneath. */
+body.sheet-open main#app {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.tabbar {
+  flex-shrink: 0;
+  display: flex;
+  background: var(--card-bg);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 20;
+}
+
+.tab-btn {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 10px 4px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 1.2rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Scoped to the label specifically (not a bare "span" selector) -- the
+   Updates icon is also wrapped in a span (.tab-icon-wrap, for the unread
+   badge), and a generic .tab-btn span rule was catching that too, shrinking
+   its emoji down to label-text size instead of matching the other tabs. */
+.tab-btn .tab-label { font-size: 0.7rem; font-weight: 600; }
+.tab-btn.active { color: var(--green-text); }
+
+.tab-icon-wrap { position: relative; display: inline-block; }
+.tab-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  background: var(--red-fill);
+  color: white;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.card.compact { padding: 10px 12px; margin-bottom: 0; }
+
+/* Updates tab: an event that happened since this user last opened the tab.
+   Cleared (updates-seen) once the tab is actually viewed, so it only ever
+   marks genuinely new items, never ones already seen. This is the ONLY
+   thing that gets a green border -- "you walked this dog" (personalHighlight)
+   is called out with its own text badge instead, so an old, already-seen
+   adoption never looks indistinguishable from something actually new. */
+.update-unread { border-color: var(--green); border-width: 2px; }
+
+/* Scan-a-dog page only: a little translucent (not fully opaque like normal
+   cards) so the caution/EVO/PB backgrounds behind them stay noticeable
+   instead of being fully hidden under solid white boxes. */
+.walk-confirm .card {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(2px);
+}
+
+.stack.tight { gap: 8px; }
+
+.section-heading {
+  font-size: 0.95rem;
+  margin: 18px 0 8px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Applied to the page (#app), not individual cards, so the white card
+   "bubbles" stay fully readable — the stripes only show through the gaps
+   around them as a caution backdrop. */
+main#app.caution-stripes {
+  background-image: repeating-linear-gradient(45deg, #ffd400, #ffd400 16px, #1c1c1c 16px, #1c1c1c 32px);
+}
+
+/* Hard block (e.g. puppies too young to walk, no exceptions) — solid red,
+   distinct from the yellow/black caution stripes used for soft warnings. */
+main#app.age-block {
+  background: var(--red-fill);
+}
+
+/* EVO (experienced volunteers only) — red/black diagonal stripes, distinct
+   from both the solid-red hard block and the yellow/black soft caution.
+   Overrides every other background (see the toggle order in JS). */
+main#app.evo-caution-bg {
+  background-image: repeating-linear-gradient(45deg, var(--red), var(--red) 16px, #1c1c1c 16px, #1c1c1c 32px);
+}
+
+.hard-block-banner {
+  background: var(--red-fill);
+  color: white;
+  text-align: center;
+}
+
+/* Sits on top of the active-walk timer screen as a standing reminder for
+   the whole walk, not just at start -- easy to forget once you're a few
+   minutes in and the dog wants to keep going. */
+.pb-warning-banner {
+  background: #ffd400;
+  color: #1c1c1c;
+  font-weight: 700;
+  text-align: center;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 2px solid #c9a600;
+}
+
+/* PB (Potty Break OK) — a short bathroom-only walk, no play. Diagonal
+   repeating text makes this unmistakable at a glance, distinct from the
+   yellow/black caution stripes (soft eligibility warning) and solid red
+   age-block (hard puppy block) above. */
+main#app.pb-only-bg {
+  background-color: #fffbe0;
+  /* Tile has to be tall/wide enough to contain the whole rotated text run --
+     too tight a canvas (the old 220x60) let the tiled edge slice straight
+     through the text on every repeat. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='260' height='110'><text x='20' y='60' font-size='16' font-family='Arial, sans-serif' font-weight='700' fill='%23e6c200' transform='rotate(-25 130 55)'>POTTY BREAK OKAY</text></svg>");
+  background-repeat: repeat;
+  background-size: 260px 110px;
+}
+
+.dog-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.dog-photo {
+  width: 76px;
+  height: 76px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: #ddd;
+  flex-shrink: 0;
+}
+
+.dog-photo.small { width: 52px; height: 52px; border-radius: 9px; }
+
+.dog-info { flex: 1; min-width: 0; }
+.dog-name { font-weight: 700; font-size: 1.05rem; margin: 0 0 2px; }
+.dog-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
+
+/* Compact Available-tab cards: tighter text, smaller photo/buttons. */
+.avail-card .dog-name { font-size: 0.95rem; }
+.avail-card .dog-meta { font-size: 0.78rem; line-height: 1.3; }
+.dog-meta.attention-low { color: var(--red); font-weight: 700; }
+.avail-card .badge { margin-top: 4px; padding: 2px 8px; font-size: 0.7rem; }
+.avail-card .checkoff-label { gap: 1px; }
+.avail-card.evo-caution { background: #fbeaea; border: 2px solid var(--red); }
+
+.small-btn { padding: 9px 12px; font-size: 0.88rem; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.badge.eligible { background: #e3f3e9; color: var(--green-dark); }
+.badge.not-eligible { background: #fbeaea; color: var(--red); }
+.badge.neutral { background: #eee; color: var(--muted); }
+.badge.caution { background: #1c1c1c; color: #ffd400; }
+.badge.blocked { background: var(--red-fill); color: white; }
+.badge.out-now { background: #2f6fdb; color: white; }
+
+/* Small inline badges shown next to a dog's name (read-only display). */
+.marker-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  vertical-align: middle;
+  font-size: 0.65rem;
+  font-weight: 900;
+  margin-right: 2px;
+}
+
+svg.asterisk-icon { display: block; }
+.marker-dot.blue { background: #2f6fdb; border: 1px solid #1f52ad; color: white; }
+.marker-dot.poo { background: #ffd400; border: 1px solid #c9a600; }
+.marker-dot.poo-priority {
+  background: #ffd400;
+  border: 1px solid #c9a600;
+  color: #1c1c1c;
+}
+/* Drawn as an SVG (see ASTERISK_SVG in app.js) instead of a "*" glyph --
+   font asterisks sit high with inconsistent metrics across platforms, which
+   no amount of manual translateY nudging centered reliably. An SVG is
+   pixel-centered by construction. Same 16x16 circle as every other
+   marker-dot (blue included) -- it used to be sized up to 18px on its own,
+   which just made it look inconsistent next to the rest. */
+.marker-dot.poo-priority svg.asterisk-icon { width: 8px; height: 8px; }
+.marker-dot.blue.rect { border-radius: 5px; width: auto; padding: 0 4px; font-size: 0.55rem; background: var(--red-fill); border-color: #8a2a20; }
+.marker-dot.pb { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+/* Pending adoption ("I'm getting adopted!" on the shelter's own site) —
+   purple so it reads as its own distinct category, not confusable with the
+   yellow POO/PB markers, the blue behavior markers, or red EVO/hard-block. */
+.marker-dot.pending { background: #8a5fc9; border: 1px solid #6d449e; color: white; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+
+.save-checkmark {
+  /* Overrides ".row > * { flex: 1; }" — without this it stretches to fill
+     the row's remaining width instead of staying a circle. */
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+  font-weight: 900;
+  font-size: 1rem;
+  animation: save-checkmark-pop 0.25s ease;
+}
+@keyframes save-checkmark-pop {
+  from { transform: scale(0.3); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.marker-badges-toggle { cursor: pointer; }
+.marker-breakdown {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin: 6px 0 10px;
+}
+.marker-breakdown-list { list-style: none; margin: 0; padding: 0; }
+.marker-breakdown-list li { padding: 2px 0; font-size: 0.85rem; }
+.marker-breakdown-list li strong { display: inline-block; min-width: 34px; }
+
+.marker-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  /* Same 16x16 footprint as .marker-dot (blue/poo) -- it has no
+     background/border of its own (see below), but without a matching box
+     size it just floated at its raw glyph size, looking bigger or smaller
+     than the boxed dots depending on the platform's star glyph metrics. */
+  width: 16px;
+  height: 16px;
+  color: #d4af17;
+  font-size: 1rem;
+}
+
+/* Greyed instead of gold while this dog is pending adoption -- they can't
+   actually be walked by a beginner right now, so an unqualified gold star
+   would contradict the "Adopted" restriction badge next to it. Live
+   contexts only; history views keep the normal gold star (see the
+   isHistorical param on markerBadgesRaw). */
+.marker-star.pending { color: var(--muted); }
+
+/* Tappable marker picker shapes on the confirm/start-walk screen. */
+.marker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.marker-shape {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--card-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  transition: transform 0.1s ease;
+}
+
+.marker-shape.rect { border-radius: 8px; width: auto; min-width: 48px; padding: 0 8px; font-size: 0.62rem; }
+
+/* Inactive = outline only (colored border + text, white fill) so "off" is
+   unambiguous even for a light color like yellow. */
+.marker-shape.blue { background: var(--card-bg); border-color: #2f6fdb; color: #2f6fdb; }
+.marker-shape.blue.rect { border-color: var(--red); color: var(--red); }
+.marker-shape.poo, .marker-shape.poo-priority { background: var(--card-bg); border-color: #c9a600; color: #c9a600; }
+.marker-shape.pb { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.7rem; }
+.marker-shape.pending { background: var(--card-bg); border-color: #8a5fc9; color: #8a5fc9; font-size: 0.62rem; }
+
+/* Drawn as an SVG (see ASTERISK_SVG in app.js), not a "*" glyph -- font
+   asterisks sit high with inconsistent metrics across platforms, which no
+   amount of manual translateY nudging centered reliably. An SVG is
+   pixel-centered by construction. */
+.marker-shape.poo-priority svg.asterisk-icon { width: 20px; height: 20px; }
+
+/* The gold star is its own icon, never a filled circle — no background or
+   border in either state, just the glyph changing from gray to gold. */
+.marker-shape.star {
+  background: transparent;
+  border: none;
+  color: #bbb;
+  font-size: 1.7rem;
+}
+
+/* Active = solid fill, slightly scaled up, plus a corner checkmark badge —
+   a color-independent "selected" signal so it reads clearly even in yellow. */
+.marker-shape.active {
+  transform: scale(1.08);
+}
+.marker-shape.active::after {
+  content: '✓';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  background: var(--green);
+  color: white;
+  border-radius: 50%;
+  font-size: 0.6rem;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid white;
+}
+
+/* Text-style filter chips (e.g. "Walked by me") that aren't a .marker-shape
+   circle — same only/hide language via plain background instead of a
+   corner badge. */
+.btn.small-btn.filter-chip.active { background: var(--green-btn); border-color: var(--green-dark); color: white; }
+.btn.small-btn.filter-chip.excluding { background: var(--red-fill); border-color: #8a2a20; color: white; }
+
+/* Available-tab filter chips: "only" reuses the green ✓ .active look above;
+   "hide" gets a deliberately different red/✕ look so it never reads as
+   "this dog has that marker". */
+.marker-shape.filter-chip.excluding {
+  background: var(--red-fill) !important;
+  border-color: #8a2a20 !important;
+  color: white !important;
+}
+.marker-shape.filter-chip.excluding::after {
+  content: '✕';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
+  background: #1c1c1c;
+  color: white;
+  border-radius: 50%;
+  font-size: 0.55rem;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid white;
+}
+.marker-shape.active.blue { background: #2f6fdb; border-color: #1f52ad; color: white; }
+.marker-shape.active.blue.rect { background: var(--red-fill); border-color: #8a2a20; color: white; }
+.marker-shape.active.poo, .marker-shape.active.poo-priority { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
+.marker-shape.active.pb { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
+.marker-shape.active.pending { background: #8a5fc9; border-color: #6d449e; color: white; }
+/* Star stays background/border-free even when active — just the glyph
+   turning gold, never a filled circle. */
+.marker-shape.active.star { background: transparent; border: none; color: #d4af17; }
+
+.checkoff-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+.dog-card.checked-off { opacity: 0.5; }
+.dog-card.checked-off .dog-name { text-decoration: line-through; }
+
+.checkoff-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+.dog-card.checked-off { opacity: 0.5; }
+.dog-card.checked-off .dog-name { text-decoration: line-through; }
+
+#manualSearchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 45vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+}
+
+.btn.primary { background: var(--green-btn); border-color: var(--green-btn); color: white; }
+.btn.danger { background: var(--red-fill); border-color: var(--red-fill); color: white; }
+.btn.big { padding: 20px; font-size: 1.2rem; }
+.btn:disabled { opacity: 0.5; }
+
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; }
+
+input[type="text"], input[type="number"], input[type="search"], input[type="time"], input[type="email"], input[type="tel"], input[type="url"], input[type="date"], textarea, select {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+  font-family: inherit;
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+select.small { padding: 8px 10px; font-size: 0.82rem; }
+
+textarea { min-height: 90px; resize: vertical; }
+
+label { font-weight: 600; font-size: 0.9rem; display: block; margin-bottom: 6px; }
+
+.muted { color: var(--muted); }
+.small { font-size: 0.82rem; }
+.center { text-align: center; }
+
+h2 { margin-top: 0; }
+
+#qr-reader { width: 100%; border-radius: var(--radius); overflow: hidden; }
+
+.timer-display {
+  font-size: 3.2rem;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--green-num);
+  margin: 6px 0 2px;
+}
+
+.walk-dog-name {
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.walk-location {
+  text-align: center;
+  color: var(--muted);
+  margin: 2px 0 14px;
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+}
+
+.sheet.hidden { display: none; }
+
+.sheet-inner {
+  position: relative;
+  background: var(--card-bg);
+  width: 100%;
+  max-height: 88dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  border-radius: 18px 18px 0 0;
+  padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+}
+
+.sheet-close-btn {
+  position: sticky;
+  top: 0;
+  float: right;
+  margin: 0 0 8px 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.55);
+  color: white;
+  font-size: 1.15rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 5;
+}
+
+.sheet-actions { display: flex; gap: 10px; margin-top: 14px; }
+
+/* A small popup on top of a sheet (e.g. Advanced settings from a profile's
+   ⚙) — distinct from the full-screen bottom sheets, centered and dismissed
+   by tapping the backdrop or Cancel. */
+.popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.popup-overlay.hidden { display: none !important; }
+.popup-card {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 18px;
+  max-width: 360px;
+  width: 100%;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+}
+
+/* Full-screen, uncropped photo viewer -- tapping a dog's photo on the Scan
+   confirm screen, Bio sheet, or an Updates card opens this. Always a dark
+   backdrop regardless of theme, same as any photo viewer, and the image is
+   object-fit:contain (never :cover) so nothing about it gets cropped. */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.92);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.image-lightbox.hidden { display: none !important; }
+.image-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.image-lightbox .sheet-close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  float: none;
+}
+
+.tag-chip {
+  display: inline-block;
+  background: #eef2ef;
+  color: var(--green-dark);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.78rem;
+  margin: 2px 4px 2px 0;
+}
+
+.profile-photo {
+  width: 100%;
+  max-height: 260px;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #ddd;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 20px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.stat-tile {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  text-align: center;
+}
+
+.stat-tile .value { font-size: 1.6rem; font-weight: 800; color: var(--green-num); }
+.stat-tile .label { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+.stat-tile.shift-drilldown-tile.active { background: var(--green-dark); border-color: var(--green-dark); }
+.stat-tile.shift-drilldown-tile.active .value,
+.stat-tile.shift-drilldown-tile.active .label { color: white; }
+
+.notes-list {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.notes-list.compact {
+  max-height: 90px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+.note-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.note-item:last-child { border-bottom: none; }
+.note-date { font-size: 0.78rem; color: var(--muted); }
+
+.user-picker {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 60;
+  display: flex;
+  padding: 20px;
+  /* Scrolls on short phones (three level cards + copy don't fit), while
+     margin:auto on the inner column still centers it when there's room. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.user-picker.hidden { display: none; }
+
+.user-picker-inner {
+  width: 100%;
+  max-width: 360px;
+  margin: auto;
+}
+
+.user-pick-btn {
+  width: 100%;
+  padding: 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.celebrate-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 200;
+  overflow: hidden;
+}
+
+.celebrate-piece {
+  position: absolute;
+  bottom: -40px;
+  animation: celebrate-rise 1.8s ease-in forwards;
+}
+
+@keyframes celebrate-rise {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(-110vh) rotate(360deg); opacity: 0; }
+}
+
+/* Today's 4 walk-window slots (7-10a / 10-1p / 1-4p / 4-7p) per dog. */
+.slot-grid {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.slot-box {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  margin-right: 3px;
+  flex-shrink: 0;
+}
+
+.slot-box.filled { background: var(--green); border-color: var(--green-dark); }
+
+
+/* ---------- Shared UI added in the overnight polish pass ---------- */
+
+/* Keyboard/switch-control users need to see where focus is. */
+:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
+.topbar :focus-visible { outline-color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .celebrate-overlay { display: none; }
+  * { scroll-behavior: auto !important; transition: none !important; }
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 12px);
+  max-width: min(92vw, 420px);
+  background: #24272a;
+  color: #fff;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 120;
+  text-align: center;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.error { background: var(--red-fill); }
+html[data-theme="dark"] .toast { background: #eef0ee; color: #16181a; }
+html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff; }
+
+/* App dialog (replaces native alert/confirm/prompt). Sits above sheets,
+   popups and the lightbox. */
+.dialog-overlay { z-index: 130; }
+.dialog-message { white-space: pre-line; margin: 0 0 14px; line-height: 1.4; }
+.dialog-actions { margin-top: 14px; }
+#appDialogInput { margin-top: 4px; }
+
+/* Buttons that are really navigation */
+.back-btn { justify-content: flex-start; font-weight: 600; }
+
+/* Checkbox + label rows (onboarding, settings) */
+.checkbox-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; line-height: 1.35; }
+.checkbox-row input { margin-top: 2px; width: 20px; height: 20px; flex: 0 0 20px; }
+
+/* Onboarding */
+.onboarding-progress { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+.onboarding-progress .dot { width: 22px; height: 5px; border-radius: 3px; background: var(--border); }
+.onboarding-progress .dot.on { background: var(--green); }
+.onboarding-tips { padding-left: 20px; line-height: 1.45; }
+.onboarding-tips li { margin-bottom: 10px; }
+
+/* Shelter-provided dog summary (sanitized HTML) */
+.dog-summary { line-height: 1.45; }
+.dog-summary p { margin: 0 0 8px; }
+
+/* Guide (wiki) */
+.guide-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.guide-card-icon { font-size: 1.6rem; width: 36px; text-align: center; flex: 0 0 36px; }
+.guide-card-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.guide-card-text .small { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.guide-article h2 { margin: 0 0 10px; font-size: 1.25rem; }
+.guide-body { line-height: 1.5; }
+.guide-body h2 { font-size: 1.1rem; margin: 18px 0 6px; }
+.guide-body h3 { font-size: 1rem; margin: 14px 0 6px; }
+.guide-body h4 { font-size: 0.95rem; margin: 12px 0 4px; }
+.guide-body p { margin: 0 0 10px; }
+.guide-body ul, .guide-body ol { padding-left: 22px; margin: 0 0 12px; }
+.guide-body li { margin-bottom: 6px; }
+.guide-body li.with-image { list-style: none; display: flex; gap: 12px; align-items: center; margin-left: -22px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.guide-body li.with-image:last-child { border-bottom: none; }
+.guide-body li.with-image > div { flex: 1; }
+.guide-thumb { width: 52px; height: 52px; object-fit: contain; flex: 0 0 52px; cursor: pointer; }
+.guide-img { max-width: 100%; border-radius: 10px; cursor: pointer; display: block; margin: 8px 0; }
+.guide-body blockquote {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--green);
+  background: rgba(63, 138, 99, 0.10);
+  border-radius: 0 10px 10px 0;
+}
+.guide-body hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.guide-body a { color: var(--green-text); }
+.guide-body code, .md-help code { background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 5px; font-size: 0.85em; }
+.md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+.md-toolbar .btn { width: auto; padding: 8px 12px; }
+#guideBody { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92rem; line-height: 1.45; min-height: 240px; }
+
+/* Tap targets: small controls sit next to each other on phones (edit next to
+   delete, the "Out" checkbox at the card's edge), so keep them big enough to
+   hit reliably with a thumb. */
+.small-btn { min-height: 40px; }
+.checkoff-label { padding: 6px 4px 6px 12px; cursor: pointer; }
+.checkoff-check { width: 22px; height: 22px; }
+.walk-action-btn { width: auto !important; flex: 0 0 auto !important; min-width: 44px; min-height: 44px; padding: 6px 12px !important; }
+
+.notice-card { border-left: 4px solid var(--green); margin-bottom: 8px; }
+.notice-card .row { gap: 8px; }
+
+/* Stats: My stats | Together switch */
+.seg { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card-bg); }
+.seg-btn { flex: 1; padding: 11px 8px; border: none; background: transparent; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; min-height: 44px; }
+.seg-btn.on { background: var(--green-btn); color: #fff; }
+.together-day { margin-bottom: 0; }
+.together-day-head { display: flex; flex-direction: column; gap: 2px; }
+.together-sessions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Walk time limit */
+.autostop-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.autostop-card .btn { width: auto; flex: 0 0 auto; }
+.autostop-card.warn { border-color: var(--amber); background: rgba(217, 164, 65, 0.15); }
+.autostop-card.warn #autoStopText { font-weight: 700; }
+.badge.auto-stopped { background: rgba(217, 164, 65, 0.22); color: var(--text); }
+.autostop-note { background: rgba(217, 164, 65, 0.15); border-radius: 10px; padding: 8px 10px; text-align: left; }
+
+/* Dog notes */
+.note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-actions { display: flex; gap: 14px; margin-top: 2px; }
+.link-btn { background: none; border: none; padding: 6px 0; color: var(--green-text); font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; min-height: 32px; }
+.tip-add { margin-top: 8px; gap: 8px; align-items: center; }
+.tip-add .tip-input { flex: 1; }
+.private-note-input { resize: vertical; }
+
+.together-day { cursor: pointer; }
+.together-day:focus-visible { outline-offset: 0; }
+.together-walk { cursor: pointer; align-items: center; }
+.together-order { flex: 0 0 26px; text-align: center; font-weight: 800; color: var(--green-num); }
+
+/* Tips whiteboard */
+.whiteboard {
+  background: #fbfbf8;
+  border: 3px solid #c9cfcb;
+  border-radius: 12px;
+  padding: 12px;
+  margin-top: 4px;
+  box-shadow: inset 0 0 0 1px #fff, 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+html[data-theme="dark"] .whiteboard { background: #2c3033; border-color: #4b5256; box-shadow: inset 0 0 0 1px #363b3e, 0 2px 6px rgba(0, 0, 0, 0.4); }
+.board-notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; align-items: start; }
+.sticky {
+  position: relative;
+  padding: 10px 10px 8px;
+  min-height: 88px;
+  border-radius: 3px;
+  color: #1c1c1c;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+  transform: rotate(var(--tilt, 0deg));
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.sticky:hover, .sticky:focus-visible { transform: rotate(0deg) scale(1.02); }
+.sticky.c0 { background: #fff3a3; }
+.sticky.c1 { background: #ffd1dc; }
+.sticky.c2 { background: #c9f0ff; }
+.sticky.c3 { background: #d4f5c4; }
+.sticky.c4 { background: #ffe0b8; }
+.sticky.walk { background: #ffffff; border: 1px solid #d5d9d6; cursor: default; }
+.sticky.walk:hover { transform: rotate(var(--tilt, 0deg)); }
+.sticky-date { opacity: 0.62; margin-top: 6px; font-size: 0.72rem; }
+.sticky.editing { grid-column: 1 / -1; transform: none; cursor: default; }
+.sticky.editing:hover { transform: none; }
+.sticky textarea { background: rgba(255, 255, 255, 0.85); color: #1c1c1c; border-color: rgba(0, 0, 0, 0.25); }
+.sticky-actions { display: flex; gap: 8px; margin-top: 8px; }
+.sticky-actions .btn { flex: 1; width: auto; }
+.add-sticky { background: transparent; border: 2px dashed #9aa39c; box-shadow: none; transform: none; cursor: default; color: var(--text); display: flex; flex-direction: column; gap: 8px; }
+.add-sticky:hover { transform: none; }
+.add-sticky textarea { background: var(--card-bg); color: var(--text); border-color: var(--border); }
+
+.stat-tile .label.sub { margin-top: 0; font-size: 0.72rem; opacity: 0.85; }
+
+.stat-grid.three { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat-grid.three .stat-tile { padding-left: 6px; padding-right: 6px; }
+.stat-grid.three .stat-tile .value { font-size: 1.35rem; }
+
+/* Top bar has more icons now: let a long name shrink instead of crowding them. */
+#userBtnName { display: inline-block; max-width: 24vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+.danger-link { color: var(--red); }

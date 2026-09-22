@@ -1,0 +1,25 @@
+[Unit]
+Description=Dog Walk Tracker (Node/Express)
+After=network.target
+
+[Service]
+Type=simple
+User=dogwalk
+Group=dogwalk
+WorkingDirectory=/opt/dogwalk/app
+Environment=PORT=3000
+Environment=NODE_ENV=production
+# INTERNAL_API_TOKEN, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT live here,
+# never in this file (see deploy/env/dogwalk.env.example).
+EnvironmentFile=/etc/dogwalk/env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/dogwalk/app/data
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Shelter Walk health monitor (runs every 5 minutes from a systemd timer).
+
+Emails when something breaks (after 2 consecutive failing runs, so a blip
+doesn't page anyone), reminds every 6 hours while it stays broken, and sends
+an all-clear when it recovers. Reuses the same SMTP account the login system
+sends its codes with (/etc/shelterapp/env).
+"""
+import json, os, shutil, smtplib, ssl, subprocess, sys, time, urllib.request, urllib.error
+from datetime import datetime, timezone
+from email.message import EmailMessage
+
+ALERT_TO = os.environ.get("ALERT_TO", "")
+STATE_FILE = "/var/lib/shelterwalk-health/state.json"
+BACKUP_DIR = "/opt/dogwalk/backups"
+CONFIRM_RUNS = 2
+REMIND_SECONDS = 6 * 3600
+MAX_SCRAPE_AGE_HOURS = 14  # normal overnight gap (7pm -> 6am ET) is ~11h
+
+
+def load_env(path):
+    env = {}
+    try:
+        for line in open(path):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return env
+
+
+def http(url, headers=None, timeout=10):
+    req = urllib.request.Request(url, headers=headers or {})
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+
+
+def check_services():
+    problems = []
+    for unit in ("dogwalk", "shelterapp", "caddy"):
+        r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)
+        if r.stdout.strip() != "active":
+            problems.append(f"service {unit} is {r.stdout.strip() or 'unknown'}")
+    return problems
+
+
+def check_dogwalk():
+    problems = []
+    try:
+        status, body = http("http://127.0.0.1:3000/healthz")
+        if status != 200:
+            return [f"dogwalk /healthz returned HTTP {status}"]
+        h = json.loads(body)
+    except Exception as e:  # noqa: BLE001
+        return [f"dogwalk /healthz unreachable: {e}"]
+    last_ok = h.get("lastSuccessfulScrapeAt")
+    if last_ok:
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(last_ok.replace("Z", "+00:00"))).total_seconds() / 3600
+        if age_h > MAX_SCRAPE_AGE_HOURS:
+            problems.append(f"no successful shelter scrape for {age_h:.0f} hours (dog list is going stale)")
+    elif h.get("uptimeSeconds", 0) > 900:
+        problems.append("dogwalk has never completed a successful scrape since it started")
+    return problems
+
+
+def check_login_app():
+    try:
+        status, _ = http("http://127.0.0.1:8001/accounts/login/", headers={"Host": "login.shelterwalk.com", "X-Forwarded-Proto": "https"})
+        if status >= 500:
+            return [f"login app returned HTTP {status}"]
+    except Exception as e:  # noqa: BLE001
+        return [f"login app unreachable: {e}"]
+    return []
+
+
+def check_public():
+    try:
+        status, _ = http("https://shelterwalk.com/", timeout=15)
+        if status >= 500 or status == 0:
+            return [f"public site https://shelterwalk.com/ returned HTTP {status}"]
+    except Exception as e:  # noqa: BLE001
+        return [f"public site https://shelterwalk.com/ unreachable: {e}"]
+    return []
+
+
+def check_disk_and_backups():
+    problems = []
+    u = shutil.disk_usage("/")
+    pct = u.used / u.total * 100
+    if pct > 85:
+        problems.append(f"disk is {pct:.0f}% full")
+    try:
+        files = [f for f in os.listdir(BACKUP_DIR) if f.startswith("db-") and f.endswith(".sqlite3.gz")]
+        if files:
+            newest = max(os.path.getmtime(os.path.join(BACKUP_DIR, f)) for f in files)
+            age_h = (time.time() - newest) / 3600
+            if age_h > 36:
+                problems.append(f"newest database backup is {age_h:.0f} hours old")
+        else:
+            problems.append("no database backups found")
+    except OSError as e:
+        problems.append(f"cannot read backup directory: {e}")
+    return problems
+
+
+def send_mail(env, subject, body):
+    host = env.get("EMAIL_HOST")
+    if not host:
+        print("no EMAIL_HOST configured; would have sent:", subject, body, file=sys.stderr)
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = env.get("DJANGO_FROM_EMAIL", "Shelter Walk Monitor <no-reply@shelterwalk.com>")
+    msg["To"] = ALERT_TO
+    msg.set_content(body)
+    port = int(env.get("EMAIL_PORT", "587"))
+    with smtplib.SMTP(host, port, timeout=20) as s:
+        s.ehlo()
+        if env.get("EMAIL_USE_TLS", "True").lower() in ("1", "true", "yes"):
+            s.starttls(context=ssl.create_default_context())
+            s.ehlo()
+        if env.get("EMAIL_HOST_USER"):
+            s.login(env["EMAIL_HOST_USER"], env.get("EMAIL_HOST_PASSWORD", ""))
+        s.send_message(msg)
+    return True
+
+
+def main():
+    env = load_env("/etc/shelterapp/env")
+    if not ALERT_TO:
+        sys.exit("Set ALERT_TO (Environment=ALERT_TO=you@example.org in the service) so alerts have somewhere to go.")
+    if "--test" in sys.argv:
+        send_mail(env, "[Shelter Walk] Monitoring is on", "This is a test message from the Shelter Walk health monitor. You will only hear from it when something breaks (and again when it recovers).")
+        print("test mail sent")
+        return
+    problems = []
+    for fn in (check_services, check_dogwalk, check_login_app, check_public, check_disk_and_backups):
+        try:
+            problems += fn()
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"{fn.__name__} crashed: {e}")
+
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    try:
+        state = json.load(open(STATE_FILE))
+    except Exception:  # noqa: BLE001
+        state = {}
+    now = time.time()
+    if problems:
+        state["fail_runs"] = state.get("fail_runs", 0) + 1
+        state["last_problems"] = problems
+        should = (state["fail_runs"] >= CONFIRM_RUNS and not state.get("alerted_at")) or (
+            state.get("alerted_at") and now - state["alerted_at"] > REMIND_SECONDS)
+        if should:
+            first = not state.get("alerted_at")
+            body = ("Shelter Walk needs attention:\n\n- " + "\n- ".join(problems)
+                    + "\n\nServer: " + os.uname().nodename + "\nLogs: sudo journalctl -u dogwalk -n 100\n")
+            try:
+                send_mail(env, f"[Shelter Walk] {'PROBLEM' if first else 'STILL BROKEN'}: {problems[0][:70]}", body)
+                state["alerted_at"] = now
+            except Exception as e:  # noqa: BLE001
+                print("failed to send alert mail:", e, file=sys.stderr)
+    else:
+        if state.get("alerted_at"):
+            try:
+                send_mail(env, "[Shelter Walk] Recovered", "All checks are passing again.\n\nEarlier problems:\n- " + "\n- ".join(state.get("last_problems", [])))
+            except Exception as e:  # noqa: BLE001
+                print("failed to send recovery mail:", e, file=sys.stderr)
+        state = {}
+    json.dump(state, open(STATE_FILE, "w"))
+    print("problems:" if problems else "all ok", problems if problems else "")
+
+
+if __name__ == "__main__":
+    main()

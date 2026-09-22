@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block head_title %}Invite codes{% endblock %}
+{% block wrap_class %}wide{% endblock %}
+{% block content %}
+  <h1>Invite codes</h1>
+  <p><a class="btn primary" href="{% url 'staff_invite_new' %}">+ New invite</a></p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Code</th>
+          <th>Uses</th>
+          <th>Expires</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for invite in invites %}
+        <tr>
+          <td>{{ invite.label }}</td>
+          <td><code>{{ invite.formatted_code }}</code></td>
+          <td>{{ invite.use_count }}{% if invite.max_uses %} / {{ invite.max_uses }}{% else %} / ∞{% endif %}</td>
+          <td>{{ invite.expires_at|default:"—" }}</td>
+          <td>
+            {% if invite.is_active %}<span class="pill on">Active</span>{% else %}<span class="pill off">Inactive</span>{% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              <a class="btn" href="{% url 'invite_print' invite.pk %}" target="_blank" rel="noopener">QR / print</a>
+              <form method="post" action="{% url 'staff_invite_toggle' invite.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn {% if invite.is_active %}danger{% endif %}">
+                  {% if invite.is_active %}Deactivate{% else %}Activate{% endif %}
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="muted">No invites yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

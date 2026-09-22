@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup the shelter app SQLite database
+
+[Service]
+Type=oneshot
+User=shelterapp
+Group=shelterapp
+ExecStart=/opt/shelterapp/backup-db.sh

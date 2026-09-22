@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#2f6f4f">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block head_title %}Shelter Walk{% endblock %}</title>
+  <style>
+    :root {
+      --green: #2f6f4f;
+      --green-dark: #1f4d36;
+      --amber: #b3781c;
+      --red: #b3392c;
+      --bg: #f6f7f5;
+      --card-bg: #ffffff;
+      --text: #1c211f;
+      --muted: #6b756f;
+      --border: #e1e5e0;
+      --radius: 14px;
+      color-scheme: light dark;
+    }
+    /* Follows the device's dark-mode setting, using the same dark palette as
+       the Shelter Walk app itself so sign-in doesn't flash bright white at
+       someone whose phone is in dark mode. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --green: #3f8a63;
+        --green-dark: #2f6f4f;
+        --amber: #d9a441;
+        --red: #d9695a;
+        --bg: #16181a;
+        --card-bg: #24272a;
+        --text: #eef0ee;
+        --muted: #9aa39c;
+        --border: #383c3f;
+      }
+      .pill.on { background: rgba(63,138,99,0.25); color: #8fd6ac; }
+      .pill.off { background: rgba(217,105,90,0.22); color: #f0a89e; }
+      .btn.danger:hover { background: rgba(217,105,90,0.15); }
+      /* White text on the lighter dark-mode green only reaches ~4.2:1; the
+         filled surfaces use a deeper green, links a lighter one. */
+      header { background: #2c7350; }
+      .btn.primary { background: #2c7350; border-color: #2c7350; }
+      .btn.primary:hover { background: #2a6f4d; border-color: #2a6f4d; }
+      a, .text-link { color: #6fc194; }
+      .btn.danger { color: #ee9486; border-color: #ee9486; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 1rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      background: var(--green);
+      color: #fff;
+    }
+    header a { color: #fff; text-decoration: none; }
+    header .brand { font-weight: 700; font-size: 1.1rem; }
+    header nav a { margin-left: 1rem; font-size: 0.95rem; opacity: 0.9; }
+    header nav a:hover { opacity: 1; text-decoration: underline; }
+    .wrap { max-width: 30rem; margin: 0 auto; padding: 0 1.25rem; }
+    .wrap.wide { max-width: 56rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.02em; }
+    .table-wrap { overflow-x: auto; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    .pill.on { background: rgba(47,111,79,0.12); color: var(--green-dark); }
+    .pill.off { background: rgba(179,57,44,0.1); color: var(--red); }
+    .row-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .row-actions form { margin: 0; }
+    .row-actions .btn { margin-top: 0; padding: 6px 12px; font-size: 0.85rem; }
+    .btn.danger { border-color: var(--red); color: var(--red); }
+    .btn.danger:hover { background: rgba(179,57,44,0.08); }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+    .card h2 { margin: 0 0 0.4rem; font-size: 1.1rem; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; }
+    main { padding: 1.75rem 0 3rem; }
+    h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 0.9rem; }
+    p { margin: 0 0 1rem; max-width: 65ch; }
+    a { color: var(--green); }
+    form { margin: 1rem 0; }
+    p:has(> label) { margin: 0 0 0.9rem; }
+    label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+    input[type=text], input[type=email], input:not([type]), textarea {
+      width: 100%;
+      font: inherit;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--card-bg);
+      color: var(--text);
+    }
+    input:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 3px solid var(--amber);
+      outline-offset: 2px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font: inherit;
+      font-weight: 600;
+      font-size: 1rem;
+      padding: 13px 18px;
+      margin-top: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card-bg);
+      color: var(--text);
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    .btn.primary:hover { background: var(--green-dark); border-color: var(--green-dark); }
+    .btn:not(.primary):hover { background: var(--bg); }
+    .text-link {
+      display: inline-block;
+      margin-top: 0.75rem;
+      color: var(--green);
+      font-weight: 600;
+      text-decoration: underline;
+    }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+    ul.errorlist, .error { color: var(--red); padding-left: 0; list-style: none; font-size: 0.9rem; margin-top: 0.3rem; }
+    .messages { list-style: none; padding: 0; margin: 0 0 1.25rem; }
+    .messages li {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--amber);
+      border-radius: var(--radius);
+      padding: 0.7rem 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .code-input { font-size: 1.3rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    .muted { color: var(--muted); font-size: 0.95rem; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div class="wrap" style="display:flex; align-items:center; justify-content:space-between;">
+      <a class="brand" href="/">🐾 Shelter Walk</a>
+      <nav>
+        {% if user.is_authenticated %}
+          {% if user.is_staff %}<a href="{% url 'staff_dashboard' %}">Staff</a>{% endif %}
+          <a href="{% url 'account_email' %}">Account</a>
+          <a href="{% url 'account_logout' %}">Sign out</a>
+        {% elif request.resolver_match.url_name != 'account_login' %}
+          <a href="{% url 'account_login' %}">Sign in</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap {% block wrap_class %}{% endblock %}">
+      {% if messages %}
+        <ul class="messages">
+          {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  {% block extra_body %}{% endblock %}
+</body>
+</html>

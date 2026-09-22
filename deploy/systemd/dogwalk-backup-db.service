@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup the dog-walk tracker SQLite database
+
+[Service]
+Type=oneshot
+User=dogwalk
+Group=dogwalk
+ExecStart=/opt/dogwalk/backup-db.sh

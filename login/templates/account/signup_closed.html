@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block head_title %}Invite needed{% endblock %}
+{% block content %}
+  <h1>You need an invite to join</h1>
+  <p>Accounts are for shelter volunteers. Scan the QR code in the volunteer room,
+     use the link a coordinator sent you, or enter your invite code.</p>
+  <a class="btn primary" href="{% url 'invite_enter_code' %}">Enter an invite code</a>
+  <hr>
+  <p class="muted">Already have an account? <a href="{% url 'account_login' %}">Sign in</a>.</p>
+{% endblock %}

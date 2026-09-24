@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cron = require('node-cron');
+const QRCode = require('qrcode');
 const db = require('./db');
 const { runScrape, IMAGES_DIR } = require('./scraper');
 const push = require('./push');
@@ -9,6 +10,7 @@ const wiki = require('./wiki');
 const impact = require('./impact');
 const notes = require('./notes');
 const account = require('./account');
+const { hashEmail } = require('./emailHash');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -88,6 +90,12 @@ function daysInShelter(dateInShelter, asOf) {
 }
 
 const MAX_PUPPY_AGE_MONTHS = 6;
+// How many days into the shelter's standard hold a PB-E ("Potty Break
+// Early") exception is worth anything for. Matches the established/expert
+// levels' own minDays (see EXPERIENCE_LEVELS below), so the flag's early
+// window and normal eligibility meet up exactly at day 7 -- there's no gap
+// where a dog is briefly ineligible for both reasons at once.
+const PB_EARLY_HOLD_DAYS = 7;
 
 // Shelter age strings look like "3 Years and 8 Months", "9 Months", or "8 Weeks".
 function parseAgeMonths(ageStr) {
@@ -184,8 +192,15 @@ function resolvePhotoUrl(row) {
   return cachedPhotoUrl(row.shelter_buddy_id, row.photo_url);
 }
 
+// userName is deliberately computed here, not left to the client, so a
+// volunteer who's turned on "hide my name while walking" (Privacy & Data)
+// never has their real name leave the server for this dog at all. This is
+// the ONLY thing that setting affects -- see the near-identical
+// substitution in the walk-start "already out" check below, the other
+// place a name could otherwise leak while a walk is in progress.
 const getActiveWalk = db.prepare(`
-  SELECT w.user_id AS userId, w.started_at AS startedAt, u.name AS userName
+  SELECT w.user_id AS userId, w.started_at AS startedAt,
+         CASE WHEN u.hide_name_while_walking = 1 THEN 'a Volunteer' ELSE u.name END AS userName
   FROM walks w JOIN users u ON u.id = w.user_id
   WHERE w.dog_id = ? AND w.ended_at IS NULL
   LIMIT 1
@@ -224,6 +239,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const hasEvo = blueMarkers.includes('blue_evo');
   const hasAnyBlue = blueMarkers.length > 0;
   const pbFlag = !!row.pb_flag;
+  const pbEarlyFlag = !!row.pb_early_flag;
   const tags = row.tags ? JSON.parse(row.tags) : [];
   const isPendingAdoption = tags.includes(PENDING_ADOPTION_TAG);
   // Alumni (manual, capped 1-15) and previous_days_in_shelter (automatic,
@@ -236,8 +252,22 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 
   // Precedence: too young (hard, no override) > EVO not allowed (hard,
   // not even PB) > any blue marker not allowed (hard) > pending adoption
-  // not allowed (hard, beginners only) > PB (overrides the day threshold
-  // when this level permits PB dogs at all) > day threshold.
+  // not allowed (hard, beginners only) > PB / PB-E > day threshold.
+  //
+  // PB ("Potty Break Only") is for an injured or otherwise fragile dog who
+  // needs a short, bathroom-only walk -- it says nothing about whether
+  // they've been here long enough, so it does NOT override the day
+  // threshold; it only adds the level check (still gated to levels the
+  // shelter trusts with a PB walk at all) on top of the normal days rule.
+  //
+  // PB-E ("Potty Break Early") is the opposite kind of exception: a dog who
+  // CAN'T meet the day threshold yet because they're still within the
+  // shelter's hold, but can have a short early walk anyway. It only grants
+  // anything while still inside that hold window (< PB_EARLY_HOLD_DAYS);
+  // past that, it's redundant -- the dog is (or isn't) eligible the normal
+  // way regardless, same as if PB-E were never set. That's also why the
+  // badge greys out client-side at the same cutoff (see markerBadgesRaw).
+  const pbEarlyInHoldWindow = pbEarlyFlag && (effectiveDays == null || effectiveDays < PB_EARLY_HOLD_DAYS);
   let eligible;
   let notEligibleReason = null;
   if (ageMonthsHard) {
@@ -253,6 +283,9 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     eligible = false;
     notEligibleReason = 'pending_restricted';
   } else if (pbFlag) {
+    eligible = level.allowPb && (effectiveDays != null ? effectiveDays >= level.minDays : null);
+    notEligibleReason = eligible ? null : (level.allowPb ? 'days' : 'pb_restricted');
+  } else if (pbEarlyInHoldWindow) {
     eligible = level.allowPb;
     notEligibleReason = eligible ? null : 'pb_restricted';
   } else {
@@ -298,6 +331,11 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     pooStatus: row.poo_status || 'none',
     starFlag: !!row.star_flag,
     pbFlag,
+    pbEarlyFlag,
+    // Whether the early-walk window has passed -- the UI greys the PB-E
+    // badge out at this point instead of hiding it, since it's still true
+    // information (this dog once needed it), just no longer actionable.
+    pbEarlyExpired: pbEarlyFlag && !pbEarlyInHoldWindow,
     isPendingAdoption,
     kennelLocation: row.kennel_location || null,
     checkedOffToday: todayKey ? !!getCheckoff.get(row.shelter_buddy_id, todayKey) : false,
@@ -315,7 +353,22 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 // forward_auth relays the signed-in account's email here as X-Auth-Email
 // (see Caddyfile `copy_headers` and Django's forward_auth_check view). A
 // walker is matched to that email, or created on their first visit.
-const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted';
+//
+// X-Auth-Email is a placeholder tied to the Django account
+// (`user-{pk}@login.internal`, see account_placeholder_email() in the
+// Django app's invites/email_hash.py), not a real address -- this app
+// never has a real one to work with (see EMAIL_HASH_PEPPER below), it
+// just needs something stable to hash consistently.
+//
+// Rolled back to this 2026-09-23, after trying (and reverting) a fully
+// unlinkable, client-computed alternative the same day -- see git history
+// around then for what that looked like and why it didn't hold up in
+// practice for a two-person staging site (WebAuthn/PRF timing turned out
+// to be too unreliable to depend on). This version is simpler and
+// deterministic: anyone with both this app's pepper and Django's database
+// COULD reconstruct which walker profile belongs to which login account
+// -- that's a real, accepted tradeoff now, not an oversight.
+const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking';
 
 // Resolves (and if needed, creates or links) the walker profile for the
 // trusted X-Auth-Email header. Returns null if the header is missing, e.g.
@@ -324,18 +377,17 @@ const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged
 function resolveAuthedUser(req) {
   const email = (req.headers['x-auth-email'] || '').trim().toLowerCase();
   if (!email) return null;
-  let row = db.prepare(`SELECT ${ME_COLUMNS} FROM users WHERE auth_email = ?`).get(email);
+  const emailHash = hashEmail(email);
+  let row = db.prepare(`SELECT ${ME_COLUMNS} FROM users WHERE auth_email_hash = ?`).get(emailHash);
   if (!row) {
     // Someone who already had a walker profile from before logins existed
     // (matched by name, case-insensitively) gets THAT profile linked to
-    // their account, rather than a duplicate — this is expected to be the
-    // common case right after this feature ships (e.g. an existing
-    // "Alberto" row linking up to alberto@example.org's first login).
+    // their account, rather than a duplicate.
     const localPart = email.split('@')[0].replace(/[._-]+/g, ' ').trim();
     const derivedName = localPart.replace(/\b\w/g, (c) => c.toUpperCase()) || email;
-    const unlinked = db.prepare('SELECT id FROM users WHERE auth_email IS NULL AND name = ? COLLATE NOCASE').get(derivedName);
+    const unlinked = db.prepare('SELECT id FROM users WHERE auth_email_hash IS NULL AND name = ? COLLATE NOCASE').get(derivedName);
     if (unlinked) {
-      db.prepare('UPDATE users SET auth_email = ? WHERE id = ?').run(email, unlinked.id);
+      db.prepare('UPDATE users SET auth_email_hash = ? WHERE id = ?').run(emailHash, unlinked.id);
       row = db.prepare(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`).get(unlinked.id);
     } else {
       let name = derivedName;
@@ -345,14 +397,27 @@ function resolveAuthedUser(req) {
       // updates_last_seen_at starts at "now": a brand-new volunteer shouldn't
       // open the app to a "99+" badge and a wall of green "new" borders for
       // events that happened long before they joined.
+      //
+      // hide_name_while_walking starts ON for a genuinely brand-new account
+      // (unlike the column's own DEFAULT 0, which only matters for accounts
+      // that predate this setting and must stay exactly as they were) --
+      // new volunteers make this choice explicitly on the onboarding privacy
+      // step, but starting private-by-default means skipping that step, or
+      // any other path that creates a user, still errs toward privacy.
       const nowIso = new Date().toISOString();
       const info = db.prepare(
-        'INSERT INTO users (name, created_at, auth_email, updates_last_seen_at) VALUES (?, ?, ?, ?)'
-      ).run(name, nowIso, email, nowIso);
-      row = { id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false, onboardingCompleted: false };
+        'INSERT INTO users (name, created_at, auth_email_hash, updates_last_seen_at, hide_name_while_walking) VALUES (?, ?, ?, ?, 1)'
+      ).run(name, nowIso, emailHash, nowIso);
+      row = {
+        id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false,
+        onboardingCompleted: false, hideNameWhileWalking: true
+      };
     }
   }
-  return { ...row, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit, onboardingCompleted: !!row.onboardingCompleted };
+  return {
+    ...row, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit,
+    onboardingCompleted: !!row.onboardingCompleted
+  };
 }
 
 // ---- Who is asking: always the signed-in account, never a request field ----
@@ -411,17 +476,84 @@ app.get('/api/me', (req, res) => {
   res.json({ ...user, isStaff });
 });
 
+// The Profile section's two fields save together as one first/last pair.
 app.put('/api/me', (req, res) => {
   const user = resolveAuthedUser(req);
   if (!user) {
     return res.status(401).json({ error: 'Not signed in.' });
   }
-  const name = String(req.body.name || '').trim();
+  const name = String(req.body.name || '').trim().slice(0, 120);
   if (!name) return res.status(400).json({ error: 'name is required' });
   const clash = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE AND id != ?').get(name, user.id);
   if (clash) return res.status(409).json({ error: 'A user with that name already exists' });
   db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, user.id);
   res.json({ ...user, name });
+});
+
+// The Privacy & Data section's toggles. hideNameWhileWalking: whether this
+// volunteer's name shows on the live "currently being walked by" badge --
+// see getActiveWalk() and the walk-start "already out" check, both of
+// which substitute a generic label instead of the real name.
+app.put('/api/me/privacy', (req, res) => {
+  const user = resolveAuthedUser(req);
+  if (!user) return res.status(401).json({ error: 'Not signed in.' });
+  const updates = {};
+  if ('hideNameWhileWalking' in req.body) updates.hide_name_while_walking = req.body.hideNameWhileWalking ? 1 : 0;
+  const columns = Object.keys(updates);
+  if (columns.length === 0) return res.status(400).json({ error: 'Nothing to update.' });
+  db.prepare(`UPDATE users SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`)
+    .run(...columns.map((c) => updates[c]), user.id);
+  res.json({
+    hideNameWhileWalking: 'hide_name_while_walking' in updates ? !!updates.hide_name_while_walking : undefined
+  });
+});
+
+// Privacy & Data's "Download my data": everything this account has ever put
+// into the app, in one file, for transparency's sake -- not something
+// anyone else, including staff, can pull for someone else (it's the signed-
+// in user's own data, read straight from their own req.me, same as every
+// other /api/me route). Includes tips they wrote publicly (their own copy
+// of something already shared, not a leak) but never another volunteer's
+// data.
+app.get('/api/me/export', (req, res) => {
+  const me = req.me;
+  if (!me) return res.status(401).json({ error: 'Not signed in.' });
+  const profile = db.prepare(
+    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking FROM users WHERE id = ?'
+  ).get(me.id);
+  profile.hideNameWhileWalking = !!profile.hideNameWhileWalking;
+  // The database itself never holds a reversible copy of your email (see
+  // emailHash.js) -- this is the live, trusted value from the request that
+  // got you here, the same source account deletion already uses.
+  profile.email = String(req.headers['x-auth-email'] || '').trim().toLowerCase();
+  const walks = db.prepare(`
+    SELECT d.name AS dog, w.started_at AS startedAt, w.ended_at AS endedAt, w.duration_seconds AS durationSeconds,
+           w.location, w.notes, w.manual_entry AS manualEntry, w.auto_stopped AS autoStopped
+    FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+    WHERE w.user_id = ? ORDER BY w.started_at ASC
+  `).all(me.id);
+  const privateNotes = db.prepare(`
+    SELECT d.name AS dog, n.body, n.created_at AS createdAt, n.updated_at AS updatedAt
+    FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
+    WHERE n.user_id = ? AND n.visibility = 'private' ORDER BY n.updated_at ASC
+  `).all(me.id);
+  const publicTipsWritten = db.prepare(`
+    SELECT d.name AS dog, n.body, n.created_at AS createdAt
+    FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
+    WHERE n.user_id = ? AND n.visibility = 'public' ORDER BY n.created_at ASC
+  `).all(me.id);
+  const savedFilters = db.prepare('SELECT name, filter_json AS filterJson, created_at AS createdAt FROM saved_filters WHERE user_id = ?').all(me.id);
+  const notificationPrefs = db.prepare('SELECT pref_key AS pref, enabled FROM notification_prefs WHERE user_id = ?').all(me.id).map((r) => ({ ...r, enabled: !!r.enabled }));
+  res.json({
+    exportedAt: new Date().toISOString(),
+    note: "This is everything Shelter Walk has stored about your account. It does not include your email sign-in history or passkeys, which belong to the separate login system.",
+    profile,
+    walks,
+    privateNotes,
+    publicTipsWritten,
+    savedFilters,
+    notificationPrefs
+  });
 });
 
 // Marks the first-run onboarding sequence (name -> experience level ->
@@ -503,12 +635,34 @@ app.post('/api/push/unsubscribe', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/users', (req, res) => {
-  if (!isInternalRequest(req) && !isStaffOrPrivileged(req, req.me)) return res.status(403).json({ error: 'Not available.' });
-  const users = db.prepare(
-    'SELECT id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit FROM users ORDER BY name'
-  ).all().map((u) => ({ ...u, isPrivileged: !!u.isPrivileged, canAudit: !!u.canAudit }));
-  res.json({ users });
+// Trusted server-to-server only (the Django accounts page). Callers name an
+// account by the same placeholder they send in X-Auth-Email on every request
+// -- this app fingerprints it with its own secret, exactly like sign-in
+// does, so Django never needs to know how that fingerprint works. Nothing
+// here creates a profile: an account that has never opened the app simply
+// has no entry.
+app.post('/api/internal/accounts/lookup', (req, res) => {
+  if (!isInternalRequest(req)) return res.status(403).json({ error: 'Not available.' });
+  const emails = Array.isArray(req.body.emails) ? req.body.emails.slice(0, 1000) : [];
+  const stmt = db.prepare(
+    'SELECT id, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit FROM users WHERE auth_email_hash = ?'
+  );
+  const accounts = {};
+  for (const email of emails) {
+    const row = stmt.get(hashEmail(String(email)));
+    if (row) accounts[email] = { experienceLevel: row.experienceLevel, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit };
+  }
+  res.json({ accounts });
+});
+
+app.put('/api/internal/accounts/permissions', (req, res) => {
+  if (!isInternalRequest(req)) return res.status(403).json({ error: 'Not available.' });
+  const { email, isPrivileged, canAudit } = req.body;
+  if (!email) return res.status(400).json({ error: 'email is required' });
+  const info = db.prepare('UPDATE users SET is_privileged = ?, can_audit = ? WHERE auth_email_hash = ?')
+    .run(isPrivileged ? 1 : 0, canAudit ? 1 : 0, hashEmail(String(email)));
+  if (info.changes === 0) return res.status(404).json({ error: 'That account has not opened the app yet.' });
+  res.json({ isPrivileged: !!isPrivileged, canAudit: !!canAudit });
 });
 
 app.get('/api/users/:id', (req, res) => {
@@ -622,6 +776,66 @@ app.get('/api/dogs/:id', (req, res) => {
   res.json({ dog, walks, notes: notesApi.notesFor(id, req.me.id) });
 });
 
+// A scannable QR code linking to this dog's public adoption page, so a
+// walker can show it on their phone to a member of the public who wants more
+// info -- generated on the fly (nothing to cache on disk, nothing to keep in
+// sync with the shelter's own site) and served as inline SVG so it stays
+// crisp at any size and needs no extra network request from the browser.
+app.get('/api/dogs/:id/qr.svg', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const dog = db.prepare('SELECT shelter_buddy_id FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  if (!dog) return res.status(404).json({ error: 'Dog not found' });
+  try {
+    const svg = await QRCode.toString(`https://pets.wake.gov/adopt/${id}`, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.send(svg);
+  } catch (err) {
+    res.status(500).json({ error: 'Could not generate a QR code right now.' });
+  }
+});
+
+// The "returned" icon's breakdown popup: this dog's earlier stay(s), for
+// dogs the scraper has seen leave and come back. Built from the shared
+// shelter_events log (the same rows the Updates feed reads), not a separate
+// table -- there's no per-stay ledger, so a prior stay is reconstructed as
+// the span between a 'new_dog'/'returned' event and the 'adopted'/'removed'
+// event that follows it. Capped to the last 6 months so this stays a short,
+// readable list even for a dog with a long history, rather than growing
+// forever as the shelter's event log does.
+const STAY_HISTORY_MONTHS = 6;
+app.get('/api/dogs/:id/stay-history', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const row = db.prepare('SELECT date_in_shelter, still_listed, removed_at, previous_days_in_shelter FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Dog not found' });
+  const since = new Date();
+  since.setMonth(since.getMonth() - STAY_HISTORY_MONTHS);
+  const events = db.prepare(`
+    SELECT kind, occurred_at AS occurredAt FROM shelter_events
+    WHERE dog_id = ? AND kind IN ('new_dog', 'returned', 'adopted', 'removed') AND occurred_at >= ?
+    ORDER BY occurred_at ASC, id ASC
+  `).all(id, since.toISOString());
+  // Only stays that ended before this current one started -- the current
+  // stay itself is described by the dog's own date_in_shelter/still_listed
+  // fields already shown alongside this popup, so it isn't repeated here.
+  const priorEvents = events.filter((e) => e.occurredAt < row.date_in_shelter);
+  const priorStays = [];
+  let openedAt = null;
+  for (const e of priorEvents) {
+    if (e.kind === 'new_dog' || e.kind === 'returned') {
+      openedAt = e.occurredAt;
+    } else if (openedAt) {
+      priorStays.push({ arrivedAt: openedAt, leftAt: e.occurredAt });
+      openedAt = null;
+    }
+  }
+  res.json({
+    months: STAY_HISTORY_MONTHS,
+    priorStays,
+    previousDaysInShelter: row.previous_days_in_shelter || 0
+  });
+});
+
 // "Our walks together" stats for the profile sheet's graph link -- personal
 // (this user + this dog) plus a shelter-wide total for context.
 app.get('/api/dogs/:id/walk-stats', (req, res) => {
@@ -651,7 +865,7 @@ const VALID_BLUE_MARKERS = [
 const VALID_POO_STATUSES = ['none', 'poo', 'priority'];
 app.put('/api/dogs/:id/markers', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { blueMarkers, pooStatus, starFlag, pbFlag } = req.body;
+  const { blueMarkers, pooStatus, starFlag, pbFlag, pbEarlyFlag } = req.body;
   if (!Array.isArray(blueMarkers) || blueMarkers.some((m) => !VALID_BLUE_MARKERS.includes(m))) {
     return res.status(400).json({ error: `blueMarkers must be an array of: ${VALID_BLUE_MARKERS.join(', ')}` });
   }
@@ -660,10 +874,10 @@ app.put('/api/dogs/:id/markers', (req, res) => {
   }
   const uniqueBlue = [...new Set(blueMarkers)];
   const info = db.prepare(`
-    UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ? WHERE shelter_buddy_id = ?
-  `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, id);
+    UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ?, pb_early_flag = ? WHERE shelter_buddy_id = ?
+  `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, pbEarlyFlag ? 1 : 0, id);
   if (info.changes === 0) return res.status(404).json({ error: 'Dog not found' });
-  res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
+  res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag, pbEarlyFlag: !!pbEarlyFlag });
 });
 
 // Alumni (returned dog): privileged users only, enforced here server-side
@@ -813,7 +1027,7 @@ app.get('/api/updates', (req, res) => {
   // already sitting in the table from before that change.
   let rows = db.prepare(`
     SELECT e.id, e.kind, e.dog_id, d.name AS dog_name, d.photo_url,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag,
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
@@ -910,7 +1124,8 @@ app.post('/api/walks/start', (req, res) => {
     return res.status(409).json({ error: 'You already have a walk in progress', walkId: existingActive.id });
   }
   const dogAlreadyOut = db.prepare(`
-    SELECT w.id, u.name AS user_name FROM walks w JOIN users u ON u.id = w.user_id
+    SELECT w.id, CASE WHEN u.hide_name_while_walking = 1 THEN 'a Volunteer' ELSE u.name END AS user_name
+    FROM walks w JOIN users u ON u.id = w.user_id
     WHERE w.ended_at IS NULL AND w.dog_id = ?
   `).get(dogId);
   if (dogAlreadyOut) {
@@ -1079,7 +1294,7 @@ app.get('/api/walks', (req, res) => {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
     SELECT w.*, d.name AS dog_name, d.photo_url, d.breed,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     ${where} ORDER BY w.started_at DESC LIMIT ?
   `).all(...params, limit);
@@ -1137,7 +1352,7 @@ app.get('/api/stats', (req, res) => {
   const perDog = db.prepare(`
     SELECT d.shelter_buddy_id AS id, d.name, d.photo_url, d.still_listed AS stillListed,
            d.removed_at AS removedAt,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag,
            COUNT(w.id) AS walkCount, MAX(w.started_at) AS lastWalkedAt,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id

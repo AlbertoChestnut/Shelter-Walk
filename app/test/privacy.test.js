@@ -97,12 +97,14 @@ test('you cannot read anyone else\'s walks or stats, whatever id you send', asyn
 });
 
 test('people cannot be looked up, and other accounts\' settings are off limits', async () => {
-  assert.equal((await call('GET', '/api/users', { user: CAROL })).status, 403);
+  assert.equal((await call('GET', '/api/users', { user: CAROL })).status, 404, 'there is no user listing at all');
   assert.equal((await call('GET', `/api/users/${ids.alice}`, { user: CAROL })).status, 403);
   assert.equal((await call('GET', `/api/users/${ids.alice}/notification-prefs`, { user: CAROL })).status, 403);
   assert.equal((await call('PUT', `/api/users/${ids.alice}/settings`, { user: CAROL, body: { experienceLevel: 'expert' } })).status, 403);
   assert.equal((await call('GET', `/api/users/${ids.carol}/notification-prefs`, { user: CAROL })).status, 200, 'your own is fine');
-  assert.equal((await call('GET', '/api/users', { user: STAFF, staff: true })).status, 200, 'staff can list');
+  assert.equal((await call('GET', '/api/users', { user: STAFF, staff: true })).status, 404, 'not even staff can list');
+  assert.equal((await call('POST', '/api/internal/accounts/lookup', { user: STAFF, staff: true, body: { emails: ['x'] } })).status, 403, 'internal lookup needs the shared secret');
+  assert.equal((await call('PUT', '/api/internal/accounts/permissions', { user: STAFF, staff: true, body: { email: 'x', isPrivileged: true } })).status, 403, 'internal permissions need the shared secret');
 });
 
 test('only the walker (or staff) can change or delete a walk', async () => {
@@ -204,4 +206,47 @@ test('quiet or invalid days are not opened up', async () => {
   assert.equal((await call('GET', '/api/impact/day?date=2020-01-01', { user: CAROL })).status, 404);
   assert.equal((await call('GET', '/api/impact/day?date=nope', { user: CAROL })).status, 400);
   assert.equal((await call('GET', '/api/impact/day', { user: CAROL })).status, 400);
+});
+
+test('hide-my-name-while-walking: the live "currently out" name only shows when turned off', async () => {
+  const bobName = (await call('GET', '/api/me', { user: BOB })).json.name;
+  const started = await call('POST', '/api/walks/start', { user: BOB, body: { dogId: 6, userId: ids.bob } });
+  assert.equal(started.status, 200);
+  // Brand-new accounts default to hidden (privacy-by-default) -- Bob's test
+  // account was created fresh in this file's setup, so this is that default.
+  const hidden = await call('GET', '/api/dogs/6', { user: CAROL });
+  assert.equal(hidden.json.dog.currentWalk.userName, 'a Volunteer', 'hidden by default for a new account');
+  assert.ok(!hidden.text.includes(bobName));
+  const clashHidden = await call('POST', '/api/walks/start', { user: ALICE, body: { dogId: 6, userId: ids.alice } });
+  assert.ok(clashHidden.json.error.includes('already out with a Volunteer'));
+  assert.ok(!clashHidden.text.includes(bobName), 'the "already out" error must not leak the real name either');
+
+  // Turn privacy off, then re-check both of those same places.
+  await call('PUT', '/api/me/privacy', { user: BOB, body: { hideNameWhileWalking: false } });
+  const seenByCarol = await call('GET', '/api/dogs/6', { user: CAROL });
+  assert.equal(seenByCarol.json.dog.currentWalk.userName, bobName, 'shown once turned off');
+  const clashOther = await call('POST', '/api/walks/start', { user: ALICE, body: { dogId: 6, userId: ids.alice } });
+  assert.ok(clashOther.json.error.includes(`already out with ${bobName}`));
+
+  // Cleanup: end the walk so it doesn't interfere with any other test, and
+  // put privacy back the way this test found it.
+  await call('DELETE', `/api/walks/${started.json.walkId}`, { user: BOB });
+  await call('PUT', '/api/me/privacy', { user: BOB, body: { hideNameWhileWalking: true } });
+});
+
+test('the database itself never holds a plaintext email address', async () => {
+  // Its derived display name legitimately resembles the local part of the
+  // email ("Dave Zebrafish" for dave.zebrafish@...) until someone sets a
+  // real name -- that's expected and checked elsewhere, not what this test
+  // is about. This checks the actual invariant: no @ sign, and not the
+  // exact address, anywhere in the table.
+  const dave = 'dave.zebrafish@example.com';
+  await call('GET', '/api/me', { user: dave }); // creates the account
+  const db = new Database(dbFile, { readonly: true });
+  const rows = db.prepare('SELECT * FROM users').all();
+  db.close();
+  const dump = JSON.stringify(rows);
+  assert.ok(!dump.includes('@'), 'no @ sign anywhere in the users table -- not even a fragment of an address');
+  assert.ok(!dump.includes(dave), 'the exact email address is not stored anywhere');
+  assert.ok(!Object.keys(rows[0]).includes('auth_email'), 'the old plaintext column is gone, not just empty');
 });

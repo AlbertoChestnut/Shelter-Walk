@@ -56,13 +56,14 @@ html[data-theme="dark"] .tag-chip { background: rgba(63, 138, 99, 0.18); color: 
 
 /* Same translucent-card effect as the light theme, just tinted from the
    dark surface color instead of white -- otherwise this one card would
-   stay a jarring bright patch on an otherwise dark page. Noticeably more
-   translucent than the light theme's version (0.4 vs 0.88) -- the PB
-   "POTTY BREAK OKAY" background text is dark yellow on a dark card here,
-   not dark yellow on white, so it needs a lot more of the background
-   showing through to stay legible. */
+   stay a jarring bright patch on an otherwise dark page. A bit darker
+   (more opaque) than it used to be: now that the PB/caution backgrounds
+   behind it are properly dark themselves (see pb-only-bg and
+   caution-stripes above), the card doesn't need to stay so see-through
+   just to keep that background's own text legible, and a darker card
+   makes the app's own text easier to read on top of it. */
 html[data-theme="dark"] .walk-confirm .card {
-  background: rgba(36, 39, 42, 0.55);
+  background: rgba(30, 33, 35, 0.72);
 }
 
 * { box-sizing: border-box; }
@@ -254,6 +255,7 @@ body.sheet-open main#app {
 .stack.tight { gap: 8px; }
 
 .section-heading {
+  display: block;
   font-size: 0.95rem;
   margin: 18px 0 8px;
   color: var(--muted);
@@ -263,9 +265,14 @@ body.sheet-open main#app {
 
 /* Applied to the page (#app), not individual cards, so the white card
    "bubbles" stay fully readable — the stripes only show through the gaps
-   around them as a caution backdrop. */
+   around them as a caution backdrop. The dark stripe is pure black, not the
+   app's usual off-black text/ui color -- against the dark theme's own
+   near-black chrome (--bg #16181a is barely different from #1c1c1c) that
+   softer black used to all but vanish, leaving just yellow patches with no
+   visible "tape" contrast, which read as an odd, washed-out yellow instead
+   of proper warning tape. */
 main#app.caution-stripes {
-  background-image: repeating-linear-gradient(45deg, #ffd400, #ffd400 16px, #1c1c1c 16px, #1c1c1c 32px);
+  background-image: repeating-linear-gradient(45deg, #ffd400, #ffd400 16px, #000 16px, #000 32px);
 }
 
 /* Hard block (e.g. puppies too young to walk, no exceptions) — solid red,
@@ -276,9 +283,12 @@ main#app.age-block {
 
 /* EVO (experienced volunteers only) — red/black diagonal stripes, distinct
    from both the solid-red hard block and the yellow/black soft caution.
-   Overrides every other background (see the toggle order in JS). */
+   Overrides every other background (see the toggle order in JS). Always the
+   light theme's --red (not the dark theme's much lighter, text-tuned red) --
+   this is a stripe of solid color, not text, so it needs the deep hazard red
+   regardless of theme, same reasoning as the pure-black stripe above. */
 main#app.evo-caution-bg {
-  background-image: repeating-linear-gradient(45deg, var(--red), var(--red) 16px, #1c1c1c 16px, #1c1c1c 32px);
+  background-image: repeating-linear-gradient(45deg, #b3392c, #b3392c 16px, #000 16px, #000 32px);
 }
 
 .hard-block-banner {
@@ -299,6 +309,9 @@ main#app.evo-caution-bg {
   border-radius: var(--radius);
   border: 2px solid #c9a600;
 }
+/* PB-E's version of the same banner -- blue instead of yellow, matching its
+   marker-dot, so it reads as a different reason at a glance. */
+.pb-early-banner { background: #ffd400; color: #1c1c1c; border-color: #c9a600; }
 
 /* PB (Potty Break OK) — a short bathroom-only walk, no play. Diagonal
    repeating text makes this unmistakable at a glance, distinct from the
@@ -312,6 +325,14 @@ main#app.pb-only-bg {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='260' height='110'><text x='20' y='60' font-size='16' font-family='Arial, sans-serif' font-weight='700' fill='%23e6c200' transform='rotate(-25 130 55)'>POTTY BREAK OKAY</text></svg>");
   background-repeat: repeat;
   background-size: 260px 110px;
+}
+/* The light theme's pale cream page color has no dark equivalent above --
+   left as-is, that pale color would sit under the dark theme's translucent
+   cards and lighten them, muddying the contrast for the text inside. A
+   proper dark, muted amber keeps those cards genuinely dark instead. */
+html[data-theme="dark"] main#app.pb-only-bg {
+  background-color: #2a2308;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='260' height='110'><text x='20' y='60' font-size='16' font-family='Arial, sans-serif' font-weight='700' fill='%23e6a800' transform='rotate(-25 130 55)'>POTTY BREAK OKAY</text></svg>");
 }
 
 .dog-card {
@@ -393,6 +414,12 @@ svg.asterisk-icon { display: block; }
 .marker-dot.poo-priority svg.asterisk-icon { width: 8px; height: 8px; }
 .marker-dot.blue.rect { border-radius: 5px; width: auto; padding: 0 4px; font-size: 0.55rem; background: var(--red-fill); border-color: #8a2a20; }
 .marker-dot.pb { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+/* PB-E ("Potty Break Early") — same yellow as PB, told apart by its "PB-E"
+   text rather than a different color. Greys out once the hold has passed
+   (see pbEarlyExpired in server.js) instead of disappearing -- it's still
+   true information, just no longer actionable. */
+.marker-dot.pb-early { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+.marker-dot.pb-early.expired { background: var(--muted); border-color: var(--muted); opacity: 0.7; }
 /* Pending adoption ("I'm getting adopted!" on the shelter's own site) —
    purple so it reads as its own distinct category, not confusable with the
    yellow POO/PB markers, the blue behavior markers, or red EVO/hard-block. */
@@ -427,9 +454,15 @@ svg.asterisk-icon { display: block; }
   padding: 8px 12px;
   margin: 6px 0 10px;
 }
+/* The popup that explains a dog's markers: each row shows the actual badge
+   (not just its letter) beside its meaning, so it's obvious at a glance
+   which icon on the dog is being explained. */
 .marker-breakdown-list { list-style: none; margin: 0; padding: 0; }
-.marker-breakdown-list li { padding: 2px 0; font-size: 0.85rem; }
-.marker-breakdown-list li strong { display: inline-block; min-width: 34px; }
+.marker-breakdown-list li { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 0.85rem; }
+.marker-breakdown-list li:not(:last-child) { border-bottom: 1px solid var(--border); }
+.marker-breakdown-list .marker-dot,
+.marker-breakdown-list .marker-star { flex: 0 0 auto; cursor: default; }
+.marker-breakdown-text { flex: 1; }
 
 .marker-star {
   display: inline-flex;
@@ -486,6 +519,7 @@ svg.asterisk-icon { display: block; }
 .marker-shape.blue.rect { border-color: var(--red); color: var(--red); }
 .marker-shape.poo, .marker-shape.poo-priority { background: var(--card-bg); border-color: #c9a600; color: #c9a600; }
 .marker-shape.pb { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.7rem; }
+.marker-shape.pb-early { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.62rem; }
 .marker-shape.pending { background: var(--card-bg); border-color: #8a5fc9; color: #8a5fc9; font-size: 0.62rem; }
 
 /* Drawn as an SVG (see ASTERISK_SVG in app.js), not a "*" glyph -- font
@@ -561,6 +595,7 @@ svg.asterisk-icon { display: block; }
 .marker-shape.active.blue.rect { background: var(--red-fill); border-color: #8a2a20; color: white; }
 .marker-shape.active.poo, .marker-shape.active.poo-priority { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
 .marker-shape.active.pb { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
+.marker-shape.active.pb-early { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
 .marker-shape.active.pending { background: #8a5fc9; border-color: #6d449e; color: white; }
 /* Star stays background/border-free even when active — just the glyph
    turning gold, never a filled circle. */
@@ -644,6 +679,11 @@ label { font-weight: 600; font-size: 0.9rem; display: block; margin-bottom: 6px;
 
 .muted { color: var(--muted); }
 .small { font-size: 0.82rem; }
+/* A short label glued to its value (like "ID 4213" or "🏠 A12") should
+   always wrap onto the next line as a whole, never split between the label
+   and the value it belongs to -- that split reads as confusing, orphaned
+   text ("...ID" / "4213" on the line under it). */
+.nowrap { white-space: nowrap; }
 .center { text-align: center; }
 
 h2 { margin-top: 0; }
@@ -717,6 +757,41 @@ h2 { margin-top: 0; }
 
 .sheet-actions { display: flex; gap: 10px; margin-top: 14px; }
 
+/* My Account sheet's little pages (Profile, Privacy & Data) -- a menu of
+   rows on the way in, a back link on the way into each page, instead of
+   one long scrolling popup with everything on it at once. */
+.account-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 4px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.account-menu-row:last-child { border-bottom: none; }
+.account-menu-chevron { color: var(--muted); font-size: 1.2rem; }
+.account-back-btn {
+  display: block;
+  background: none;
+  border: none;
+  padding: 0 0 12px;
+  margin: 0 0 4px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--green-text);
+  cursor: pointer;
+}
+
 /* A small popup on top of a sheet (e.g. Advanced settings from a profile's
    ⚙) — distinct from the full-screen bottom sheets, centered and dismissed
    by tapping the backdrop or Cancel. */
@@ -737,8 +812,21 @@ h2 { margin-top: 0; }
   padding: 18px;
   max-width: 360px;
   width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   box-shadow: 0 10px 30px rgba(0,0,0,0.3);
 }
+
+/* The Privacy Policy popup's long-form content -- wider than a normal
+   popup-card (set on the parent overlay, not .popup-card, so only this one
+   popup grows) and readable typography instead of the compact "small"
+   sizing the rest of the app's popups use for short confirmations. */
+#privacyPolicyPopup .popup-card { max-width: 480px; }
+.policy-doc h4 { margin: 16px 0 4px; font-size: 0.95rem; }
+.policy-doc h4:first-of-type { margin-top: 4px; }
+.policy-doc p { font-size: 0.88rem; line-height: 1.45; margin: 6px 0; }
+.policy-doc ul { margin: 6px 0; padding-left: 1.2em; }
+.policy-doc li { font-size: 0.88rem; line-height: 1.45; margin: 4px 0; }
 
 /* Full-screen, uncropped photo viewer -- tapping a dog's photo on the Scan
    confirm screen, Bio sheet, or an Updates card opens this. Always a dark
@@ -766,6 +854,21 @@ h2 { margin-top: 0; }
   right: 16px;
   float: none;
 }
+
+/* The QR code needs a solid white card regardless of theme/backdrop so it
+   always scans, and stays a fixed comfortable size instead of stretching to
+   fill the screen like a photo would. */
+.qr-lightbox-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  max-width: min(90vw, 360px);
+  width: 100%;
+  text-align: center;
+}
+.qr-lightbox-card img { width: 100%; height: auto; display: block; }
+.qr-lightbox-name { color: #1c1c1c; font-weight: 700; margin: 14px 0 2px; }
+.qr-lightbox-card .small.muted { color: #55605a; }
 
 .tag-chip {
   display: inline-block;
@@ -1051,47 +1154,63 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .together-walk { cursor: pointer; align-items: center; }
 .together-order { flex: 0 0 26px; text-align: center; font-weight: 800; color: var(--green-num); }
 
-/* Tips whiteboard */
-.whiteboard {
-  background: #fbfbf8;
-  border: 3px solid #c9cfcb;
-  border-radius: 12px;
-  padding: 12px;
-  margin-top: 4px;
-  box-shadow: inset 0 0 0 1px #fff, 0 2px 6px rgba(0, 0, 0, 0.12);
-}
-html[data-theme="dark"] .whiteboard { background: #2c3033; border-color: #4b5256; box-shadow: inset 0 0 0 1px #363b3e, 0 2px 6px rgba(0, 0, 0, 0.4); }
-.board-notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; align-items: start; }
-.sticky {
-  position: relative;
-  padding: 10px 10px 8px;
-  min-height: 88px;
-  border-radius: 3px;
-  color: #1c1c1c;
-  font-size: 0.9rem;
+/* Tips list */
+.tip-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.tip-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
   line-height: 1.35;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
-  transform: rotate(var(--tilt, 0deg));
-  cursor: pointer;
-  transition: transform 0.12s ease;
 }
-.sticky:hover, .sticky:focus-visible { transform: rotate(0deg) scale(1.02); }
-.sticky.c0 { background: #fff3a3; }
-.sticky.c1 { background: #ffd1dc; }
-.sticky.c2 { background: #c9f0ff; }
-.sticky.c3 { background: #d4f5c4; }
-.sticky.c4 { background: #ffe0b8; }
-.sticky.walk { background: #ffffff; border: 1px solid #d5d9d6; cursor: default; }
-.sticky.walk:hover { transform: rotate(var(--tilt, 0deg)); }
-.sticky-date { opacity: 0.62; margin-top: 6px; font-size: 0.72rem; }
-.sticky.editing { grid-column: 1 / -1; transform: none; cursor: default; }
-.sticky.editing:hover { transform: none; }
-.sticky textarea { background: rgba(255, 255, 255, 0.85); color: #1c1c1c; border-color: rgba(0, 0, 0, 0.25); }
-.sticky-actions { display: flex; gap: 8px; margin-top: 8px; }
-.sticky-actions .btn { flex: 1; width: auto; }
-.add-sticky { background: transparent; border: 2px dashed #9aa39c; box-shadow: none; transform: none; cursor: default; color: var(--text); display: flex; flex-direction: column; gap: 8px; }
-.add-sticky:hover { transform: none; }
-.add-sticky textarea { background: var(--card-bg); color: var(--text); border-color: var(--border); }
+.tip-item:last-child { border-bottom: none; }
+.tip-bullet { color: var(--green-num); flex: 0 0 auto; line-height: 1.35; }
+.tip-text { flex: 1; overflow-wrap: anywhere; }
+.tip-item-walk .tip-text { opacity: 0.85; }
+.tip-item-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+/* Deliberately its own class, not .icon-btn -- that one is the 40x40px
+   white-on-dark topbar button style, wrong shape and color for a small
+   inline edit/delete glyph next to a line of text. */
+.mini-icon-btn {
+  background: none;
+  border: none;
+  color: var(--muted-text, var(--text));
+  opacity: 0.7;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 4px 6px;
+  min-height: 28px;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.mini-icon-btn:hover, .mini-icon-btn:focus-visible { opacity: 1; background: rgba(127, 127, 127, 0.15); }
+.tip-item.editing { align-items: center; }
+.tip-edit-input { flex: 1; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 0.88rem; }
+.tip-add-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.tip-add-row .tip-input { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 0.9rem; }
+.tip-add-row .btn { flex: 0 0 auto; width: auto; }
+
+/* The active-walk screen's collapsed-by-default tips/notes disclosure --
+   closed on open so the screen stays calm while you're actually with the
+   dog, rather than opening every time on top of the timer and buttons. */
+.notes-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 4px 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.notes-toggle-chevron { transition: transform 0.15s ease; color: var(--muted); }
+.notes-toggle.open .notes-toggle-chevron { transform: rotate(180deg); }
 
 .stat-tile .label.sub { margin-top: 0; font-size: 0.72rem; opacity: 0.85; }
 

@@ -116,21 +116,84 @@
   <img id="imageLightboxImg" src="" alt="" />
 </div>
 
-<div id="accountPopup" class="popup-overlay hidden">
+<div id="dogQrLightbox" class="image-lightbox qr-lightbox hidden">
+  <button type="button" id="closeDogQrLightboxBtn" class="sheet-close-btn" aria-label="Close">✕</button>
+  <div class="qr-lightbox-card">
+    <img id="dogQrLightboxImg" src="" alt="" />
+    <p id="dogQrLightboxName" class="qr-lightbox-name"></p>
+    <p class="small muted">Scan for more information and photos</p>
+  </div>
+</div>
+
+<div id="accountSheet" class="sheet hidden">
+  <div class="sheet-inner">
+    <button type="button" class="sheet-close-btn" id="closeAccountSheetBtn" aria-label="Close">✕</button>
+
+    <div id="accountPageMenu">
+      <h2 style="margin-top:0;">My Account</h2>
+      <div class="stack tight">
+        <button type="button" class="account-menu-row" data-page="profile">
+          <span>Profile</span><span class="account-menu-chevron">›</span>
+        </button>
+        <button type="button" class="account-menu-row" data-page="privacy">
+          <span>Privacy &amp; Data</span><span class="account-menu-chevron">›</span>
+        </button>
+        <a id="manageAccountLink" class="account-menu-row" href="https://login.shelterwalk.com/accounts/email/">
+          <span>Manage email &amp; sign-in</span><span class="account-menu-chevron">↗</span>
+        </a>
+      </div>
+      <hr style="margin:18px 0;" />
+      <a id="adminPanelLink" class="btn hidden" href="https://login.shelterwalk.com/staff/" style="display:block; text-align:center; text-decoration:none;">Admin panel</a>
+      <a id="signOutLink" class="btn" href="https://login.shelterwalk.com/accounts/logout/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Sign out</a>
+    </div>
+
+    <div id="accountPageProfile" class="hidden">
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <h2>Profile</h2>
+      <label for="accountNameInput" class="small muted">Name</label>
+      <input type="text" id="accountNameInput" maxlength="60" />
+      <p id="accountNameStatus" class="small muted"></p>
+      <button type="button" id="saveAccountNameBtn" class="btn">Save name</button>
+    </div>
+
+    <div id="accountPagePrivacy" class="hidden">
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <h2>Privacy &amp; Data</h2>
+      <p class="small muted" style="margin-top:0;">Shelter Walk has no report, export, or admin view anywhere that lists who walked which dog, or that compares volunteers to each other. Combined stats are always anonymous, and shared tips are never signed. Once a walk is over, who did it is never shown to anyone - including staff - no matter what you choose below.</p>
+      <button type="button" id="openPrivacyPolicyBtn" class="link-btn" style="display:block;margin:4px 0 0;padding:0;">Read our Privacy Policy</button>
+      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:14px;">
+        <input type="checkbox" id="accountHideNameCheck" />
+        Hide my name from other volunteers while I'm actively walking a dog
+      </label>
+      <p class="small muted" style="margin:4px 0 0;">Available shows "Being walked by a Volunteer" instead of your name. This is the only place your name ever appears while walking; it only matters while the walk is still in progress.</p>
+      <button type="button" id="downloadMyDataBtn" class="btn" style="margin-top:14px;">Download my data</button>
+      <p id="downloadMyDataStatus" class="small muted" style="margin:4px 0 0;min-height:1.2em;"></p>
+      <button type="button" id="deleteMyDataBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my walk data…</button>
+      <button type="button" id="deleteAccountBtn" class="link-btn danger-link" style="display:block; margin:10px auto 0;">Delete my account…</button>
+    </div>
+  </div>
+</div>
+
+<div id="privacyPolicyPopup" class="popup-overlay hidden">
   <div class="popup-card">
-    <h3>My account</h3>
-    <label for="accountNameInput" class="small muted">Name</label>
-    <input type="text" id="accountNameInput" maxlength="60" />
-    <p id="accountNameStatus" class="small muted"></p>
-    <button type="button" id="saveAccountNameBtn" class="btn">Save name</button>
-    <hr style="margin:14px 0;" />
-    <a id="manageAccountLink" class="btn" href="https://login.shelterwalk.com/accounts/email/" style="display:block; text-align:center; text-decoration:none;">Manage email &amp; sign-in</a>
-    <a id="managePasskeysLink" class="btn" href="https://login.shelterwalk.com/accounts/2fa/webauthn/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Manage passkeys</a>
-    <a id="adminPanelLink" class="btn hidden" href="https://login.shelterwalk.com/staff/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Admin panel</a>
-    <a id="signOutLink" class="btn" href="https://login.shelterwalk.com/accounts/logout/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Sign out</a>
-    <button type="button" id="deleteAccountBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my account…</button>
+    <div id="privacyPolicyContent"></div>
     <div class="row" style="margin-top:14px;">
-      <button type="button" id="closeAccountPopupBtn" class="btn">Close</button>
+      <button type="button" id="closePrivacyPolicyBtn" class="btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="dangerConfirmPopup" class="popup-overlay hidden">
+  <div class="popup-card">
+    <h3 id="dangerConfirmTitle" style="margin-top:0;"></h3>
+    <div id="dangerConfirmIntro"></div>
+    <div id="dangerConfirmChecks" class="stack tight"></div>
+    <label for="dangerConfirmInput" class="small muted" style="display:block;margin-top:12px;">Type DELETE to confirm</label>
+    <input type="text" id="dangerConfirmInput" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+    <p id="dangerConfirmStatus" class="small" style="color:var(--red);min-height:1em;margin:6px 0 0;"></p>
+    <div class="row" style="margin-top:8px;">
+      <button type="button" id="dangerConfirmBtn" class="btn danger" disabled>Confirm</button>
+      <button type="button" id="dangerConfirmCancelBtn" class="btn">Cancel</button>
     </div>
   </div>
 </div>

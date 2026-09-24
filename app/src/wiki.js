@@ -60,12 +60,16 @@ function demoSections() {
         '## Yellow stickers',
         sticker('poo', 'POO', 'Potty Outside Only. This dog should go outside to eliminate rather than in the play yards.'),
         sticker('poo_priority', 'POO priority (asterisk)', 'high priority potty dog. First one out in the morning and last one out in the evening.'),
-        sticker('pb', 'PB: Potty break OK', 'a short, potty-focused walk only. Get them out, let them go, bring them back.'),
+        sticker('pb', 'PB: Potty break OK', 'a short, potty-focused walk only, for an injured or otherwise fragile dog. This does NOT clear them for walking before their days-in-shelter wait is up - only PB-E below does that.'),
         '',
         '## Other indicators',
         sticker('star', 'Gold star', 'good for beginners. A great first choice if you are new.'),
         sticker('star_pending', 'Grey star', 'normally a beginner-friendly dog, but greyed out because someone has started adopting them, so beginners cannot walk them right now.'),
-        sticker('adopted', 'Adopted (purple)', 'someone has started the adoption process ("I\'m getting adopted!" on the shelter website). Beginners cannot walk these dogs; Established and Experienced volunteers can.')
+        sticker('adopted', 'Adopted (purple)', 'someone has started the adoption process ("I\'m getting adopted!" on the shelter website). Beginners cannot walk these dogs; Established and Experienced volunteers can.'),
+        '- **PB-E (blue): Potty Break Early**: this dog can have a short walk before the shelter\'s 7-day hold is finished, for Established/Experienced volunteers. Once the dog reaches 7 days it greys out automatically, since by then they are (or are not) eligible the normal way regardless and the flag has nothing left to grant.',
+        '- 🔄 **Returned icon**: shows up next to a dog\'s days-in-shelter count when they have been returned to the shelter before. Tap it to see a breakdown of their stay(s), going back up to 6 months.',
+        '',
+        '**App-only, not on the kennel card:** the grey star, the blue **PB-E** marker, and the 🔄 returned icon are things the app itself works out and shows you - they are never printed on the dog\'s physical kennel card. Every other sticker above (the blue letters, POO, PB, gold star, purple adopted) matches a real sticker staff put on the card.'
       ].join('\n')
     },
     {

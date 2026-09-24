@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Shelter Walk health monitor (runs every 5 minutes from a systemd timer).
+"""Shelter Walk health monitor (run every 5 minutes from a systemd timer).
 
 Emails when something breaks (after 2 consecutive failing runs, so a blip
 doesn't page anyone), reminds every 6 hours while it stays broken, and sends
-an all-clear when it recovers. Reuses the same SMTP account the login system
-sends its codes with (/etc/shelterapp/env).
+an all-clear when it recovers. Reads its own settings from an env file (see
+deploy/env/dogwalk.env.example) -- add ALERT_TO and, if you want it to send
+mail itself, EMAIL_HOST/EMAIL_PORT/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD there.
+Checks are specific to this app; add your own auth service's checks beside
+check_dogwalk() if you want it watched too.
 """
 import json, os, shutil, smtplib, ssl, subprocess, sys, time, urllib.request, urllib.error
 from datetime import datetime, timezone
 from email.message import EmailMessage
 
-ALERT_TO = os.environ.get("ALERT_TO", "")
+ENV_FILE = os.environ.get("DOGWALK_ENV_FILE", "/etc/dogwalk/env")
 STATE_FILE = "/var/lib/shelterwalk-health/state.json"
 BACKUP_DIR = "/opt/dogwalk/backups"
 CONFIRM_RUNS = 2
 REMIND_SECONDS = 6 * 3600
-MAX_SCRAPE_AGE_HOURS = 14  # normal overnight gap (7pm -> 6am ET) is ~11h
+MAX_SCRAPE_AGE_HOURS = 14  # normal overnight gap (7pm -> 6am local) is ~11h
 
 
 def load_env(path):
@@ -47,7 +50,7 @@ def http(url, headers=None, timeout=10):
 
 def check_services():
     problems = []
-    for unit in ("dogwalk", "shelterapp", "caddy"):
+    for unit in ("dogwalk", "caddy"):
         r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)
         if r.stdout.strip() != "active":
             problems.append(f"service {unit} is {r.stdout.strip() or 'unknown'}")
@@ -55,7 +58,6 @@ def check_services():
 
 
 def check_dogwalk():
-    problems = []
     try:
         status, body = http("http://127.0.0.1:3000/healthz")
         if status != 200:
@@ -63,6 +65,7 @@ def check_dogwalk():
         h = json.loads(body)
     except Exception as e:  # noqa: BLE001
         return [f"dogwalk /healthz unreachable: {e}"]
+    problems = []
     last_ok = h.get("lastSuccessfulScrapeAt")
     if last_ok:
         age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(last_ok.replace("Z", "+00:00"))).total_seconds() / 3600
@@ -73,23 +76,16 @@ def check_dogwalk():
     return problems
 
 
-def check_login_app():
+def check_public(env):
+    url = env.get("PUBLIC_URL", "")
+    if not url:
+        return []
     try:
-        status, _ = http("http://127.0.0.1:8001/accounts/login/", headers={"Host": "login.shelterwalk.com", "X-Forwarded-Proto": "https"})
-        if status >= 500:
-            return [f"login app returned HTTP {status}"]
-    except Exception as e:  # noqa: BLE001
-        return [f"login app unreachable: {e}"]
-    return []
-
-
-def check_public():
-    try:
-        status, _ = http("https://shelterwalk.com/", timeout=15)
+        status, _ = http(url, timeout=15)
         if status >= 500 or status == 0:
-            return [f"public site https://shelterwalk.com/ returned HTTP {status}"]
+            return [f"public site {url} returned HTTP {status}"]
     except Exception as e:  # noqa: BLE001
-        return [f"public site https://shelterwalk.com/ unreachable: {e}"]
+        return [f"public site {url} unreachable: {e}"]
     return []
 
 
@@ -113,15 +109,15 @@ def check_disk_and_backups():
     return problems
 
 
-def send_mail(env, subject, body):
+def send_mail(env, alert_to, subject, body):
     host = env.get("EMAIL_HOST")
     if not host:
         print("no EMAIL_HOST configured; would have sent:", subject, body, file=sys.stderr)
         return False
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = env.get("DJANGO_FROM_EMAIL", "Shelter Walk Monitor <no-reply@shelterwalk.com>")
-    msg["To"] = ALERT_TO
+    msg["From"] = env.get("FROM_EMAIL", "Shelter Walk Monitor <no-reply@example.org>")
+    msg["To"] = alert_to
     msg.set_content(body)
     port = int(env.get("EMAIL_PORT", "587"))
     with smtplib.SMTP(host, port, timeout=20) as s:
@@ -136,19 +132,20 @@ def send_mail(env, subject, body):
 
 
 def main():
-    env = load_env("/etc/shelterapp/env")
-    if not ALERT_TO:
-        sys.exit("Set ALERT_TO (Environment=ALERT_TO=you@example.org in the service) so alerts have somewhere to go.")
+    env = load_env(ENV_FILE)
+    alert_to = env.get("ALERT_TO", "")
+    if not alert_to:
+        sys.exit(f"Set ALERT_TO in {ENV_FILE} so alerts have somewhere to go.")
     if "--test" in sys.argv:
-        send_mail(env, "[Shelter Walk] Monitoring is on", "This is a test message from the Shelter Walk health monitor. You will only hear from it when something breaks (and again when it recovers).")
+        send_mail(env, alert_to, "[Shelter Walk] Monitoring is on", "This is a test message from the Shelter Walk health monitor. You will only hear from it when something breaks (and again when it recovers).")
         print("test mail sent")
         return
     problems = []
-    for fn in (check_services, check_dogwalk, check_login_app, check_public, check_disk_and_backups):
+    for fn in (check_services, check_dogwalk, lambda: check_public(env), check_disk_and_backups):
         try:
             problems += fn()
         except Exception as e:  # noqa: BLE001
-            problems.append(f"{fn.__name__} crashed: {e}")
+            problems.append(f"{getattr(fn, '__name__', 'check')} crashed: {e}")
 
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     try:
@@ -166,14 +163,14 @@ def main():
             body = ("Shelter Walk needs attention:\n\n- " + "\n- ".join(problems)
                     + "\n\nServer: " + os.uname().nodename + "\nLogs: sudo journalctl -u dogwalk -n 100\n")
             try:
-                send_mail(env, f"[Shelter Walk] {'PROBLEM' if first else 'STILL BROKEN'}: {problems[0][:70]}", body)
+                send_mail(env, alert_to, f"[Shelter Walk] {'PROBLEM' if first else 'STILL BROKEN'}: {problems[0][:70]}", body)
                 state["alerted_at"] = now
             except Exception as e:  # noqa: BLE001
                 print("failed to send alert mail:", e, file=sys.stderr)
     else:
         if state.get("alerted_at"):
             try:
-                send_mail(env, "[Shelter Walk] Recovered", "All checks are passing again.\n\nEarlier problems:\n- " + "\n- ".join(state.get("last_problems", [])))
+                send_mail(env, alert_to, "[Shelter Walk] Recovered", "All checks are passing again.\n\nEarlier problems:\n- " + "\n- ".join(state.get("last_problems", [])))
             except Exception as e:  # noqa: BLE001
                 print("failed to send recovery mail:", e, file=sys.stderr)
         state = {}

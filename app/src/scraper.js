@@ -163,6 +163,33 @@ const finishRun = db.prepare('UPDATE scrape_runs SET finished_at = ?, ok = ?, do
 const getDogRow = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?');
 const getStillListed = db.prepare('SELECT shelter_buddy_id AS id, name, missed_scrapes AS missed FROM dogs WHERE still_listed = 1');
 const addPreviousDays = db.prepare('UPDATE dogs SET previous_days_in_shelter = previous_days_in_shelter + ? WHERE shelter_buddy_id = ?');
+// Was the stay that just ended actually an adoption, or a plain delisting
+// (the scraper never logs an event for that case -- see the comment where
+// a dog is delisted below)? Tells "returned after being adopted" (someone
+// adopted them and it didn't work out) apart from "back on the adoption
+// floor" (never left shelter care -- pulled for vet work, a hold, a data
+// hiccup) when they reappear. Same 'returned' event kind either way, so
+// every existing filter/preference/icon still applies to both; only the
+// wording (and detail column) differs.
+const wasAdoptedDuringStay = db.prepare(
+  "SELECT 1 FROM shelter_events WHERE dog_id = ? AND kind = 'adopted' AND occurred_at >= ? AND occurred_at <= ? LIMIT 1"
+);
+// A dog coming back after a long gap is treated as a fresh start, not a
+// continuation -- their behavior markers were set by whoever last walked
+// them, months ago, and are stale rather than helpful by now; their old
+// stay shouldn't shorten how long a new volunteer has to wait to walk them,
+// either. RETURN_STALE_MONTHS matches the stay-history popup's own window
+// (see server.js), so "more than 6 months ago" means the same thing in both
+// places.
+const RETURN_STALE_MONTHS = 6;
+const resetStaleBehaviorMarkers = db.prepare(
+  "UPDATE dogs SET blue_markers = '[]', poo_status = 'none', star_flag = 0, pb_flag = 0 WHERE shelter_buddy_id = ?"
+);
+function monthsAgo(months, from) {
+  const d = new Date(from);
+  d.setMonth(d.getMonth() - months);
+  return d;
+}
 const insertEvent = db.prepare(
   'INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES (?, ?, ?, ?, ?)'
 );
@@ -173,8 +200,8 @@ const getWalkersForDog = db.prepare(
   'SELECT DISTINCT user_id FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL AND user_id IS NOT NULL'
 );
 
-function logEvent(kind, dogId, title, occurredAt) {
-  insertEvent.run(kind, dogId || null, title || null, null, occurredAt || new Date().toISOString());
+function logEvent(kind, dogId, title, occurredAt, detail) {
+  insertEvent.run(kind, dogId || null, title || null, detail || null, occurredAt || new Date().toISOString());
 }
 
 // How many days a just-ended stay lasted, for banking into
@@ -282,10 +309,23 @@ async function doScrape(runId, finish) {
       logEvent('new_dog', id, `${item.name} was added to the shelter's listing`, now);
     } else if (!existing.still_listed) {
       // Returning dog: bank their just-ended stay's length before
-      // date_in_shelter above gets overwritten with their new stay's start.
-      const priorStayDays = daysBetween(existing.date_in_shelter, existing.removed_at || existing.last_seen_at);
-      if (priorStayDays > 0) addPreviousDays.run(priorStayDays, id);
-      logEvent('returned', id, `${item.name} is back at the shelter`, now);
+      // date_in_shelter above gets overwritten with their new stay's start
+      // -- but only if they haven't been gone so long that stay no longer
+      // says anything useful about them today (see RETURN_STALE_MONTHS).
+      const leftAt = existing.removed_at || existing.last_seen_at;
+      if (leftAt && new Date(leftAt) >= monthsAgo(RETURN_STALE_MONTHS, now)) {
+        const priorStayDays = daysBetween(existing.date_in_shelter, leftAt);
+        if (priorStayDays > 0) addPreviousDays.run(priorStayDays, id);
+      } else {
+        resetStaleBehaviorMarkers.run(id);
+      }
+      const adopted = leftAt && wasAdoptedDuringStay.get(id, existing.date_in_shelter, leftAt);
+      logEvent(
+        'returned', id,
+        adopted ? `${item.name} was returned to the shelter after being adopted` : `${item.name} is back on the adoption floor`,
+        now,
+        adopted ? 'adopted_return' : 'floor_return'
+      );
     }
 
     await sleep(250);
@@ -307,10 +347,22 @@ async function doScrape(runId, finish) {
           if (hasPref(userId, 'adopted_walked_dog')) pushes.push({ userId, dog });
         }
       } else if (dog.missed + 1 >= MISSES_BEFORE_DELIST) {
-        // A plain removal (transferred, returned to owner, record correction,
-        // etc.) isn't happy news and isn't actionable for a walker the way a
-        // new/returned/adopted dog is -- deliberately not logged as an event,
-        // so it never shows in the Updates feed or triggers a notification.
+        // A plain removal (transferred, returned to owner, record
+        // correction, etc.) isn't happy news and isn't actionable for a
+        // walker the way a new/returned/adopted dog is, so the server's
+        // /api/updates deliberately filters 'removed' events back out
+        // (`WHERE kind != 'removed'`) -- it never shows in the Updates
+        // feed or triggers a notification. But it still has to be LOGGED,
+        // not skipped outright: the stay-history popup (GET
+        // /api/dogs/:id/stay-history) reconstructs a dog's past stays by
+        // pairing each new_dog/returned "opened" event with the next
+        // adopted/removed "closed" one that follows it, and with no closing
+        // event at all here, a stay that ended in a plain removal could
+        // never be paired up -- its days silently fell into "unaccounted
+        // for" (see app.js's showStayHistoryPopup) even for a dog that had
+        // been tracked the whole time. Skipping the write here was that
+        // bug's actual cause, diagnosed 2026-09-23.
+        logEvent('removed', dog.id, null, now);
         delistDog.run(now, dog.id);
       } else {
         bumpMissed.run(dog.id);

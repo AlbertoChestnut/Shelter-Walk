@@ -118,11 +118,30 @@ if (userColumns.includes('min_days_threshold')) {
 }
 // Links a walker to the shelterwalk.com account that identifies them, so
 // the app can tell who's using it from the trusted X-Auth-Email header
-// (set by Django, relayed by Caddy) instead of a manual name picker.
-// NULL for any walker created before this existed.
-if (!userColumns.includes('auth_email')) {
-  db.exec('ALTER TABLE users ADD COLUMN auth_email TEXT');
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_email ON users(auth_email) WHERE auth_email IS NOT NULL');
+// (set by Django, relayed by Caddy) instead of a manual name picker --
+// stored only as a keyed one-way hash (see emailHash.js), never the email
+// itself. NULL for any walker created before this existed.
+if (!userColumns.includes('auth_email_hash')) {
+  db.exec('ALTER TABLE users ADD COLUMN auth_email_hash TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_email_hash ON users(auth_email_hash) WHERE auth_email_hash IS NOT NULL');
+}
+// One-time migration off an earlier plaintext auth_email column: hash
+// whatever's there into auth_email_hash above, then drop it outright --
+// nothing in this app reads the plaintext column any more.
+if (userColumns.includes('auth_email')) {
+  const { hashEmail } = require('./emailHash');
+  const legacyRows = db.prepare('SELECT id, auth_email FROM users WHERE auth_email IS NOT NULL').all();
+  for (const r of legacyRows) {
+    db.prepare('UPDATE users SET auth_email_hash = ? WHERE id = ?').run(hashEmail(r.auth_email), r.id);
+  }
+  try {
+    db.exec('DROP INDEX IF EXISTS idx_users_auth_email');
+    db.exec('ALTER TABLE users DROP COLUMN auth_email');
+  } catch (err) {
+    // Older SQLite builds (pre-3.35) can't drop columns -- the values are
+    // already migrated and unread either way, so this is cosmetic only.
+    console.warn('[db] could not drop the old plaintext auth_email column (values are already migrated to auth_email_hash and no longer read from it):', err.message);
+  }
 }
 // Whether this account has been walked through the first-run onboarding
 // sequence (name -> experience level -> passkey offer -> notification
@@ -141,7 +160,15 @@ if (!userColumns.includes('updates_last_seen_at')) {
   db.exec('ALTER TABLE users ADD COLUMN updates_last_seen_at TEXT');
   db.prepare('UPDATE users SET updates_last_seen_at = ?').run(new Date().toISOString());
 }
-
+// Privacy: whether this volunteer's name shows on the LIVE "currently being
+// walked by" badge while they have a dog out. Defaults to on (the app's
+// existing, unchanged behavior) so no one's visibility silently changes;
+// it's an opt-in to more privacy, not the other way around. Never affects
+// anything once a walk ends -- that's a separate, absolute rule enforced
+// everywhere walk history is shown, not a setting.
+if (!userColumns.includes('hide_name_while_walking')) {
+  db.exec('ALTER TABLE users ADD COLUMN hide_name_while_walking INTEGER NOT NULL DEFAULT 0');
+}
 // Migrations: add columns to dogs table if they don't exist yet (older DBs
 // created before these columns existed).
 // - poo_status: tri-state (none/poo/priority) — priority is the yellow
@@ -161,11 +188,21 @@ if (!dogColumns.includes('poo_flag')) {
 if (!dogColumns.includes('star_flag')) {
   db.exec('ALTER TABLE dogs ADD COLUMN star_flag INTEGER NOT NULL DEFAULT 0');
 }
-// pb_flag: "Potty Break OK" — yellow circle, independent of POO/star. A dog
-// marked PB is cleared for a short bathroom-only walk even before meeting
-// the normal days-in-shelter threshold.
+// pb_flag: "Potty Break OK" — yellow circle, independent of POO/star. Marks
+// a dog as needing a short, bathroom-only walk (an injury or similar), not
+// a shortcut around the days-in-shelter threshold -- an otherwise-too-new
+// PB dog still isn't eligible until it meets it.
 if (!dogColumns.includes('pb_flag')) {
   db.exec('ALTER TABLE dogs ADD COLUMN pb_flag INTEGER NOT NULL DEFAULT 0');
+}
+// pb_early_flag: "PB-E", Potty Break Early — the opposite kind of exception:
+// clears a dog for a short walk *before* the shelter's 7-day hold is up,
+// for volunteer levels trusted with PB walks. Unlike pb_flag it deliberately
+// does grant early eligibility, but only up to PB_EARLY_HOLD_DAYS (see
+// server.js) -- once the dog reaches that many days it's eligible the
+// normal way regardless, so the flag has nothing left to grant.
+if (!dogColumns.includes('pb_early_flag')) {
+  db.exec('ALTER TABLE dogs ADD COLUMN pb_early_flag INTEGER NOT NULL DEFAULT 0');
 }
 // Alumni (returned dog): adds bonus days on top of actual days-in-shelter
 // for eligibility purposes only — gated to privileged users, see users

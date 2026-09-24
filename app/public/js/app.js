@@ -234,6 +234,16 @@
       html += `<span class="marker-star${starPending ? ' pending' : ''}" title="${starTitle}">★</span>`;
     }
     if (dog.pbFlag) html += `<span class="marker-dot pb" title="Potty Break OK - short walk only">PB</span>`;
+    if (dog.pbEarlyFlag) {
+      // Once the hold window has passed the flag has nothing left to grant
+      // (see server.js) -- greyed out rather than hidden, since it's still
+      // true that this dog once needed it, just not actionable any more.
+      const expired = !isHistorical && dog.pbEarlyExpired;
+      const title = expired
+        ? "Potty Break Early - the shelter's hold period is over now, so this no longer applies"
+        : "Potty Break Early - cleared for a short walk before the shelter's hold is up";
+      html += `<span class="marker-dot pb-early${expired ? ' expired' : ''}" title="${title}">PB-E</span>`;
+    }
     if (dog.isPendingAdoption) html += `<span class="marker-dot pending" title="Someone has started adopting this dog - Beginners can't walk them">Adopted</span>`;
     return html;
   }
@@ -251,28 +261,42 @@
       pooStatus: dog.pooStatus || 'none',
       starFlag: !!dog.starFlag,
       pbFlag: !!dog.pbFlag,
+      pbEarlyFlag: !!dog.pbEarlyFlag,
+      pbEarlyExpired: !!dog.pbEarlyExpired,
       isPendingAdoption: !!dog.isPendingAdoption,
       isHistorical: !!isHistorical
     }));
     return `<span class="marker-badges-toggle" data-dog-info="${payload}">${html}</span>`;
   }
 
-  // Full letter → meaning breakdown for a dog's active markers, shown on
-  // tap since tooltips (title=) don't work on mobile.
+  // Full icon → meaning breakdown for a dog's active markers, shown on tap
+  // since tooltips (title=) don't work on mobile. Each row shows the actual
+  // badge (same markup as markerBadgesRaw) next to its meaning, not just its
+  // letter, so it's obvious which icon on the dog is being explained.
   function markerBreakdownRows(dog, isHistorical) {
     const rows = [];
     withImpliedBlank(dog.blueMarkers || []).forEach((m) => {
       if (m === 'blue') return; // the blank general marker has nothing to spell out
-      rows.push({ letter: BLUE_MARKER_LETTERS[m] || '•', name: BLUE_MARKER_NAMES[m] || 'Behavior marker' });
+      const cls = m === 'blue_evo' ? 'marker-dot blue rect' : 'marker-dot blue';
+      rows.push({ icon: `<span class="${cls}">${BLUE_MARKER_LETTERS[m] || ''}</span>`, name: BLUE_MARKER_NAMES[m] || 'Behavior marker' });
     });
-    if (dog.pooStatus === 'priority') rows.push({ letter: '*', name: 'High priority POO dog - first out in the morning, last out in the evening' });
-    else if (dog.pooStatus === 'poo') rows.push({ letter: 'POO', name: 'POO dog - Potty Outside Only' });
+    if (dog.pooStatus === 'priority') rows.push({ icon: `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`, name: 'High priority POO dog - first out in the morning, last out in the evening' });
+    else if (dog.pooStatus === 'poo') rows.push({ icon: '<span class="marker-dot poo"></span>', name: 'POO dog - Potty Outside Only' });
     if (dog.starFlag) {
       const starPending = !isHistorical && dog.isPendingAdoption;
-      rows.push({ letter: '★', name: starPending ? 'Good for beginners - but not right now, pending adoption' : 'Good for beginners' });
+      rows.push({ icon: `<span class="marker-star${starPending ? ' pending' : ''}">★</span>`, name: starPending ? 'Good for beginners - but not right now, pending adoption' : 'Good for beginners' });
     }
-    if (dog.pbFlag) rows.push({ letter: 'PB', name: 'Potty Break OK - short walk only, no play' });
-    if (dog.isPendingAdoption) rows.push({ letter: 'Adopted', name: "Someone has started adopting this dog - Beginners can't walk them" });
+    if (dog.pbFlag) rows.push({ icon: '<span class="marker-dot pb">PB</span>', name: 'Potty Break OK - short walk only, no play' });
+    if (dog.pbEarlyFlag) {
+      const expired = !isHistorical && dog.pbEarlyExpired;
+      rows.push({
+        icon: `<span class="marker-dot pb-early${expired ? ' expired' : ''}">PB-E</span>`,
+        name: expired
+          ? "Potty Break Early - the shelter's hold period is over now, so this no longer applies"
+          : "Potty Break Early - cleared for a short walk before the shelter's hold is up"
+      });
+    }
+    if (dog.isPendingAdoption) rows.push({ icon: '<span class="marker-dot pending">Adopted</span>', name: "Someone has started adopting this dog - Beginners can't walk them" });
     return rows;
   }
 
@@ -280,7 +304,7 @@
     const rows = markerBreakdownRows(dog, dog.isHistorical);
     if (!rows.length) return '<p class="small muted">No behavior markers set.</p>';
     return `<ul class="marker-breakdown-list">${rows.map((r) =>
-      `<li><strong>${esc(r.letter)}</strong> - ${esc(r.name)}</li>`
+      `<li>${r.icon}<span class="marker-breakdown-text">${esc(r.name)}</span></li>`
     ).join('')}</ul>`;
   }
 
@@ -333,6 +357,28 @@
   });
   document.getElementById('imageLightbox').addEventListener('click', (e) => {
     if (e.target.id === 'imageLightbox') closeOverlay(e.target);
+  });
+
+  // Full-screen QR code linking to a dog's public adoption page, so a walker
+  // can show it to a member of the public who wants more information.
+  function showDogQrLightbox(dogId, dogName) {
+    const lightbox = document.getElementById('dogQrLightbox');
+    document.getElementById('dogQrLightboxImg').src = `/api/dogs/${dogId}/qr.svg`;
+    document.getElementById('dogQrLightboxImg').alt = `QR code linking to ${dogName}'s adoption page`;
+    document.getElementById('dogQrLightboxName').textContent = dogName;
+    openOverlay(lightbox);
+  }
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.dog-qr-btn');
+    if (!trigger) return;
+    e.stopPropagation();
+    showDogQrLightbox(trigger.dataset.dogId, trigger.dataset.dogName);
+  });
+  document.getElementById('closeDogQrLightboxBtn').addEventListener('click', () => {
+    closeOverlay(document.getElementById('dogQrLightbox'));
+  });
+  document.getElementById('dogQrLightbox').addEventListener('click', (e) => {
+    if (e.target.id === 'dogQrLightbox') closeOverlay(e.target);
   });
 
   // Universal marker-meaning popup — one delegated listener covers every
@@ -426,9 +472,26 @@
 
   // Alumni dogs get bonus days toward eligibility on top of their actual
   // time in shelter — show both so it's clear why an "old" dog is eligible.
+  // A dog with any return history (automatically tracked, or a staff-set
+  // alumni flag) also gets a tappable "returned" icon that opens the full
+  // breakdown of their stay(s) -- this app-only icon has no printed
+  // equivalent on the dog's physical kennel card.
   function shelterDaysHtml(dog) {
-    if (!dog.isAlumni) return `${dog.daysInShelter}d`;
-    return `<span title="Alumni (returned dog) - ${dog.daysInShelter} actual days, ${dog.effectiveDaysInShelter} days for walking privileges (+${dog.alumniBonusDays} bonus)">${dog.daysInShelter}d*</span>`;
+    const hasReturnHistory = dog.previousDaysInShelter > 0;
+    // A dog on their second (or later) stay can show 0-ish days for the
+    // current one right after coming back -- shown alone that reads as "just
+    // arrived", which is wrong and confusing for a dog who's actually been
+    // around, on and off, for a while. Showing both numbers makes clear the
+    // first is just this stay.
+    const days = dog.isAlumni
+      ? `<span title="Alumni (returned dog) - ${dog.daysInShelter} actual days, ${dog.effectiveDaysInShelter} days for walking privileges (+${dog.alumniBonusDays} bonus)">${dog.daysInShelter}d*</span>`
+      : hasReturnHistory
+        ? `<span title="${dog.daysInShelter} day${dog.daysInShelter === 1 ? '' : 's'} this stay, ${dog.daysInShelter + dog.previousDaysInShelter} total across all stays -- tap 🔄 for the full breakdown">${dog.daysInShelter}d/${dog.daysInShelter + dog.previousDaysInShelter}d</span>`
+        : `${dog.daysInShelter}d`;
+    const returned = (hasReturnHistory || dog.isAlumni)
+      ? ` <button type="button" class="mini-icon-btn returned-icon-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}" title="Returned dog - tap to see their stay history" aria-label="${esc(dog.name)}'s stay history">🔄</button>`
+      : '';
+    return days + returned;
   }
 
   // Human-readable version of the server's notEligibleReason code, shown on
@@ -484,13 +547,18 @@
     return openPhases && state.walk.dog && state.walk.walkId ? String(state.walk.dog.id) : null;
   }
 
-  function dogActionButtons(dogId) {
+  // cannotWalk: this dog isn't cleared for the signed-in volunteer's current
+  // level (or is a hard block like being too young), so the combined "Walk /
+  // Edit" label would be misleading -- only the edit part actually applies
+  // here. Only known for dogs whose full eligibility was already computed
+  // (the Available list); other callers omit it and keep the combined label.
+  function dogActionButtons(dogId, cannotWalk) {
     const activeId = activeWalkDogId();
     const blocked = activeId && activeId !== String(dogId);
     return `
       <div class="row" style="margin-top:6px;">
         <button class="btn small-btn view-profile-btn" data-id="${dogId}">View Info</button>
-        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}" ${blocked ? 'disabled title="Finish or cancel your current walk first"' : ''}>▶ Walk / Edit</button>
+        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}" ${blocked ? 'disabled title="Finish or cancel your current walk first"' : ''}>${cannotWalk ? '✎ Edit' : '▶ Walk / Edit'}</button>
       </div>`;
   }
 
@@ -603,6 +671,15 @@
     el.classList.add('hidden');
     if (overlayEntries.delete(el.id)) history.back();
   }
+  // Like closeOverlay, but waits for its "back" to actually land before
+  // returning -- needed whenever another overlay is about to open right
+  // after this one closes; doing both back to back races, and the pending
+  // "back" lands on the NEW overlay's history entry instead of this one's.
+  async function closeOverlayAwait(el) {
+    if (el.classList.contains('hidden')) return;
+    el.classList.add('hidden');
+    if (overlayEntries.delete(el.id)) await consumeHistoryEntry();
+  }
 
   // ---------- App dialogs (replace native alert/confirm/prompt) ----------
   let dialogCancel = null; // set while a dialog is open; dismisses it as "cancel"
@@ -681,6 +758,8 @@
     if (popup) return closeOverlay(popup);
     if (!settingsSheet.classList.contains('hidden')) return closeSheet(settingsSheet);
     if (!profileSheet.classList.contains('hidden')) return closeSheet(profileSheet);
+    const accountSheetEl = document.getElementById('accountSheet');
+    if (!accountSheetEl.classList.contains('hidden')) return closeSheet(accountSheetEl);
   });
 
   // A failed load gets a message and a retry button, not a dead end.
@@ -734,48 +813,235 @@
     if (auditBtn) auditBtn.classList.toggle('hidden', !user.canAudit);
   }
 
-  function openAccountPopup() {
-    const popup = document.getElementById('accountPopup');
-    const nameInput = document.getElementById('accountNameInput');
-    const statusEl = document.getElementById('accountNameStatus');
-    nameInput.value = state.currentUser.name;
-    statusEl.textContent = '';
+  // "My Account" is a sheet with its own little pages (Profile, Privacy &
+  // Data) rather than one long popup -- showAccountPage() just toggles
+  // which page div is visible; nothing is destroyed/rebuilt, so every
+  // element inside keeps the one-time listeners wired to it below.
+  function showAccountPage(page) {
+    document.getElementById('accountPageMenu').classList.toggle('hidden', page !== 'menu');
+    document.getElementById('accountPageProfile').classList.toggle('hidden', page !== 'profile');
+    document.getElementById('accountPagePrivacy').classList.toggle('hidden', page !== 'privacy');
+    const inner = document.querySelector('#accountSheet .sheet-inner');
+    if (inner) inner.scrollTop = 0;
+  }
+  document.querySelectorAll('.account-menu-row[data-page]').forEach((btn) => {
+    btn.addEventListener('click', () => showAccountPage(btn.dataset.page));
+  });
+  document.querySelectorAll('.account-back-btn').forEach((btn) => {
+    btn.addEventListener('click', () => showAccountPage(btn.dataset.backTo));
+  });
+
+  function openAccountSheet() {
+    showAccountPage('menu');
+    document.getElementById('accountNameInput').value = state.currentUser.name || '';
+    document.getElementById('accountNameStatus').textContent = '';
+    document.getElementById('accountHideNameCheck').checked = !!state.currentUser.hideNameWhileWalking;
     document.getElementById('adminPanelLink').classList.toggle('hidden', !state.currentUser.isStaff);
     // Staff accounts are removed from the staff panel (so the coordinators can
-    // never lock themselves out by accident).
+    // never lock themselves out by accident) -- that's specific to deleting
+    // the sign-in itself, so it's only this one button, not the data-only one.
     document.getElementById('deleteAccountBtn').classList.toggle('hidden', !!state.currentUser.isStaff);
+    openSheet(document.getElementById('accountSheet'), 'account');
+  }
+  document.getElementById('userBtn').addEventListener('click', openAccountSheet);
+  document.getElementById('closeAccountSheetBtn').addEventListener('click', () => {
+    closeSheet(document.getElementById('accountSheet'));
+  });
+
+  // ---------- Danger-zone confirmation (checkboxes + typed DELETE) ----------
+  // Shared by "delete my walk data" and "delete my account" -- every
+  // checkbox has to be ticked AND the word typed before Confirm enables, so
+  // the person has actively acknowledged each specific consequence rather
+  // than clicking through a stack of yes/no dialogs.
+  let dangerConfirmAction = null;
+  function showDangerConfirm({ title, intro, checks, confirmLabel, action }) {
+    const popup = document.getElementById('dangerConfirmPopup');
+    document.getElementById('dangerConfirmTitle').textContent = title;
+    document.getElementById('dangerConfirmIntro').innerHTML = intro.map((p) => `<p class="small">${p}</p>`).join('');
+    const checksEl = document.getElementById('dangerConfirmChecks');
+    checksEl.innerHTML = checks.map((c, i) => `
+      <label class="small" style="display:flex;align-items:flex-start;gap:8px;margin-top:8px;">
+        <input type="checkbox" class="danger-check" data-i="${i}" style="margin-top:3px;flex:0 0 auto;" />
+        <span>${c}</span>
+      </label>`).join('');
+    const input = document.getElementById('dangerConfirmInput');
+    const btn = document.getElementById('dangerConfirmBtn');
+    const status = document.getElementById('dangerConfirmStatus');
+    input.value = '';
+    status.textContent = '';
+    btn.textContent = confirmLabel;
+    btn.disabled = true;
+    dangerConfirmAction = action;
+    const checkEls = Array.from(checksEl.querySelectorAll('.danger-check'));
+    const update = () => {
+      btn.disabled = !(checkEls.every((c) => c.checked) && input.value.trim() === 'DELETE');
+    };
+    checkEls.forEach((c) => c.addEventListener('change', update));
+    input.oninput = update;
     openOverlay(popup);
   }
-  document.getElementById('userBtn').addEventListener('click', openAccountPopup);
-  document.getElementById('closeAccountPopupBtn').addEventListener('click', () => {
-    closeOverlay(document.getElementById('accountPopup'));
+  document.getElementById('dangerConfirmCancelBtn').addEventListener('click', () => {
+    closeOverlay(document.getElementById('dangerConfirmPopup'));
   });
-  // Permanent account deletion: three separate confirmations, the last one
-  // typed. Walks stay in the shelter's records but are disconnected from you.
-  document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
-    const step1 = await appConfirm(
-      "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, and private notes.\n\nThe walks you did stay in the shelter's records and totals, but they will no longer be connected to you in any way. Tips you shared stay on the dogs' boards, without your name.",
-      { title: 'Delete your account?', confirmText: 'Continue', cancelText: 'Keep my account', danger: true });
-    if (!step1) return;
-    const step2 = await appConfirm(
-      "There is no undo and no way to get it back, not even by asking staff. Backups are kept for 14 days and then disappear.\n\nIf you ever want to volunteer again you will need a brand-new invite, and you will start from scratch with no history.",
-      { title: 'This cannot be undone', confirmText: 'I understand', cancelText: 'Go back', danger: true });
-    if (!step2) return;
-    const typed = await appPrompt('Final confirmation. Type DELETE (all capitals) to permanently delete your account right now.', '',
-      { title: 'Last chance', confirmText: 'Delete my account forever' });
-    if (typed == null) return;
-    if (typed.trim() !== 'DELETE') {
-      appAlert('That was not "DELETE", so your account was not deleted.', 'Not deleted');
-      return;
-    }
-    toast('Deleting your account…');
+  document.getElementById('dangerConfirmBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('dangerConfirmBtn');
+    const status = document.getElementById('dangerConfirmStatus');
+    if (btn.disabled || !dangerConfirmAction) return;
+    btn.disabled = true;
+    status.textContent = '';
     try {
-      await api('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
+      await dangerConfirmAction();
+      closeOverlay(document.getElementById('dangerConfirmPopup'));
     } catch (err) {
-      appAlert(err.message, 'Your account was not deleted');
-      return;
+      status.textContent = err.message;
+      btn.disabled = false;
     }
-    showAccountDeletedScreen();
+  });
+
+  // Privacy & Data's "Read our Privacy Policy": a static, plain-language
+  // document, not something staff or anyone else can edit (unlike the
+  // Guide) -- it describes rules this app enforces in code, not a promise
+  // that depends on someone remembering to follow it.
+  function privacyPolicyHtml() {
+    return `
+      <div class="policy-doc">
+        <h3 style="margin-top:0;">Shelter Walk Privacy Policy</h3>
+        <p class="small muted">Last updated September 23, 2026</p>
+
+        <h4>In plain language</h4>
+        <ul>
+          <li>There is no built-in way for anyone - another volunteer, staff, or an admin screen - to look up another member's data. This isn't a setting. It doesn't exist in the app.</li>
+          <li>Your sign-in account and your walking-app profile are connected, so the app knows which profile is yours when you sign in and so staff can manage your account in one place. Staff can see your name, your role, and which extra features you have. They cannot see your email (nobody can - see below), and they have no screen that shows your walks. See "How your account and your data are connected" below for the specifics.</li>
+          <li>That data will never intentionally be looked at, shared, or used to evaluate, compare, or blame a volunteer. It exists only so the app can show you your own stats and history.</li>
+          <li>You can permanently delete your walking-app data yourself, at any time, without asking anyone's permission - see the buttons on this page.</li>
+        </ul>
+
+        <h4>What we collect</h4>
+        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown next to your walks while they're in progress, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
+
+        <h4>How your email is actually stored</h4>
+        <p>Neither this app nor the separate sign-in system ever stores a readable copy of your email, anywhere, at any point. Each keeps a one-way cryptographic fingerprint of it instead (the same idea as how a password is checked without the site ever keeping the password itself) - just enough to recognize you when you come back. Even a full copy of either database is useless for building a list of anyone's email address from it.</p>
+
+        <h4>How your account and your data are connected</h4>
+        <p>Signing in and using the app are handled by two separate systems, and they are linked on purpose:</p>
+        <ul>
+          <li>When you sign in, the sign-in system passes this app a stable placeholder that stands for your account - not your email. This app fingerprints that placeholder with a secret only it holds, and uses the fingerprint to find your profile.</li>
+          <li>Because of that link, staff can manage everything about you from one line on the accounts page: your role, extra features like Alumni Access or Audit Mode, and whether the account is active. The accounts page shows the name you entered when you joined; it does not show your email, your walks, or your notes.</li>
+          <li>The honest limit: someone who controlled both systems and this app's secret could work out which profile belongs to which account. What the design prevents is anyone getting your email out of either database, and anything in the app showing who walked which dog once a walk is over.</li>
+        </ul>
+
+        <h4>How your data is used</h4>
+        <ul>
+          <li>To show you your own stats and walk history.</li>
+          <li>To show other volunteers which dog is currently out, and with whom, unless you've turned that off.</li>
+          <li>To combine everyone's walks into shelter-wide totals, without ever exposing who contributed what.</li>
+          <li>To send you a sign-in code by email.</li>
+        </ul>
+        <p>Nothing here is used to evaluate volunteers, and nothing is sold, shared for advertising, or shown to any third party - there is no advertising in this app.</p>
+
+        <h4>Where your data lives</h4>
+        <p>Shelter Walk runs on a server hosted by <strong>DigitalOcean</strong>. Sign-in emails are sent through <strong>Resend</strong>, our email delivery provider - it only ever sees the email address needed to send you a code, never your walk history, notes, or stats. Your name and email are never shared with any other third party, for any reason.</p>
+
+        <h4>Backups</h4>
+        <p>The site takes automatic backups every day, kept for 14 days and then permanently deleted. They exist for one reason: recovering the <em>entire</em> site if something goes badly wrong. They are not a tool for looking up or restoring one person's data - restoring one means restoring everyone's data to that point in time, all at once, not pulling one person's data back out on its own.</p>
+        <p>Backups are encrypted, sent using encrypted connections, and stored on encrypted systems - one copy on Google's servers and one on the site owner's own private servers, for redundancy. Once a backup passes 14 days old, it's gone completely, everywhere.</p>
+
+        <h4>Your choices</h4>
+        <ul>
+          <li><strong>Hide your name while walking.</strong> Other volunteers see "a Volunteer" instead of your name on the live "currently out" badge. This never affects anything after a walk ends - that's hidden from everyone, always, regardless of this setting.</li>
+          <li><strong>Download your data.</strong> Get a copy of everything Shelter Walk has stored about you, any time.</li>
+          <li><strong>Delete your walk data.</strong> Permanently disconnect every walk you've done from your account while keeping your account and sign-in.</li>
+          <li><strong>Delete your account entirely.</strong> Permanently remove your account, sign-in, and all personal data.</li>
+        </ul>
+        <p class="small muted">Questions about this policy can be directed to whoever coordinates volunteers for your shelter.</p>
+      </div>
+    `;
+  }
+  document.getElementById('openPrivacyPolicyBtn').addEventListener('click', () => {
+    document.getElementById('privacyPolicyContent').innerHTML = privacyPolicyHtml();
+    openOverlay(document.getElementById('privacyPolicyPopup'));
+  });
+  document.getElementById('closePrivacyPolicyBtn').addEventListener('click', () => {
+    closeOverlay(document.getElementById('privacyPolicyPopup'));
+  });
+  document.getElementById('privacyPolicyPopup').addEventListener('click', (e) => {
+    if (e.target.id === 'privacyPolicyPopup') closeOverlay(e.target);
+  });
+
+  // Privacy & Data's "Download my data": a plain JSON file with everything
+  // this account has stored, saved straight to the device -- nothing here
+  // hits a server other than the one request to fetch it.
+  document.getElementById('downloadMyDataBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('downloadMyDataBtn');
+    const status = document.getElementById('downloadMyDataStatus');
+    btn.disabled = true;
+    status.textContent = 'Preparing your data…';
+    try {
+      const data = await api('/api/me/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `shelter-walk-my-data-${todayKey()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      status.textContent = 'Downloaded ✓';
+    } catch (err) {
+      status.textContent = `Couldn't download: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Permanent account deletion. Walks stay in the shelter's records but are
+  // disconnected from you.
+  document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
+    await closeSheetAwait(document.getElementById('accountSheet'));
+    showDangerConfirm({
+      title: 'Delete your account',
+      intro: [
+        "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, and private notes.",
+        "The walks you did stay in the shelter's records and totals, but they will no longer be connected to you in any way, not even for the site owner. Tips you shared stay on the dogs' boards, without your name.",
+        'The site keeps day-to-day backups for 14 days, but only to roll the whole site back after a major problem - restoring one means restoring everyone\'s data to that point in time, not pulling your data back out on its own. Those backups age out completely after 14 days either way.'
+      ],
+      checks: [
+        'I understand this cannot be undone.',
+        'I understand my sign-in, name, email, and all personal settings will be permanently deleted.',
+        'I understand any past walks I did will be permanently disconnected from my account, and no one - including the site owner - has a way to look that connection up again afterward.',
+        'I understand I will be signed out right away, and will need a brand-new invite to use Shelter Walk again.'
+      ],
+      confirmLabel: 'Delete my account forever',
+      action: async () => {
+        await api('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
+        showAccountDeletedScreen();
+      }
+    });
+  });
+
+  // "Delete my data, keep my account" (Privacy & Data): everything about the
+  // account itself is untouched; only the link to past walks is removed.
+  document.getElementById('deleteMyDataBtn').addEventListener('click', async () => {
+    await closeSheetAwait(document.getElementById('accountSheet'));
+    showDangerConfirm({
+      title: 'Delete your walk data',
+      intro: [
+        "This disconnects every walk you've done from your account. Your personal stats and per-dog history reset to zero, and any private notes you wrote are deleted. Shared tips you wrote stay on the dogs' boards, without your name (they never showed it anyway).",
+        'Your account, sign-in, name, email, and settings are not affected - you can keep walking dogs normally afterward, starting from a blank history.',
+        'The site keeps day-to-day backups for 14 days, but only to roll the whole site back after a major problem - restoring one means restoring everyone\'s data to that point in time, not pulling your data back out on its own. Those backups age out completely after 14 days either way.'
+      ],
+      checks: [
+        'I understand this cannot be undone.',
+        'I understand that data connecting my account to a walk will be permanently deleted, and no one - including the site owner - has a way to look that connection up again afterward.',
+        'I understand my personal stats and dog history will reset to zero, even though the walks themselves stay in the shelter\'s overall totals.'
+      ],
+      confirmLabel: 'Delete my walk data',
+      action: async () => {
+        await api('/api/me/data', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
+        toast('Your walk data has been deleted.');
+      }
+    });
   });
 
   // Nothing about the person may linger on this device either.
@@ -798,9 +1064,8 @@
   }
 
   document.getElementById('saveAccountNameBtn').addEventListener('click', async () => {
-    const nameInput = document.getElementById('accountNameInput');
     const statusEl = document.getElementById('accountNameStatus');
-    const name = nameInput.value.trim();
+    const name = document.getElementById('accountNameInput').value.trim();
     if (!name) { statusEl.textContent = 'Enter a name first.'; return; }
     try {
       const updated = await api('/api/me', { method: 'PUT', body: JSON.stringify({ name }) });
@@ -808,6 +1073,20 @@
       statusEl.textContent = 'Saved ✓';
     } catch (err) {
       statusEl.textContent = `Failed: ${err.message}`;
+    }
+  });
+
+  // Privacy & Data: whether your name shows on the live "currently being
+  // walked by" badge. Saves immediately on toggle, same as any other
+  // checkbox-style preference in this app (no separate Save button to miss).
+  document.getElementById('accountHideNameCheck').addEventListener('change', async (e) => {
+    const checked = e.target.checked;
+    try {
+      await api('/api/me/privacy', { method: 'PUT', body: JSON.stringify({ hideNameWhileWalking: checked }) });
+      state.currentUser.hideNameWhileWalking = checked;
+    } catch (err) {
+      e.target.checked = !checked; // revert on failure
+      toast(err.message, 'error');
     }
   });
 
@@ -824,6 +1103,7 @@
   function currentSheetName() {
     if (!settingsSheet.classList.contains('hidden')) return 'settings';
     if (!profileSheet.classList.contains('hidden')) return 'profile';
+    if (!document.getElementById('accountSheet').classList.contains('hidden')) return 'account';
     return null;
   }
 
@@ -846,6 +1126,7 @@
     });
     if (hs.sheet !== 'settings') closeSheetOnly(settingsSheet);
     if (hs.sheet !== 'profile') closeSheetOnly(profileSheet);
+    if (hs.sheet !== 'account') closeSheetOnly(document.getElementById('accountSheet'));
     if (hs.tab && hs.tab !== state.tab) {
       if ((state.tab === 'walk' || state.tab === 'audit') && hs.tab !== state.tab) stopQrScanner();
       state.tab = hs.tab;
@@ -881,6 +1162,13 @@
     // with what the hardware back button would do.
     history.back();
   }
+  // Like closeSheet, but waits for its "back" to actually land before
+  // returning -- needed whenever another overlay is about to open right
+  // after this sheet closes (same reasoning as closeOverlayAwait).
+  async function closeSheetAwait(el) {
+    if (el.classList.contains('hidden')) return;
+    await consumeHistoryEntry();
+  }
 
   // ---------- Tabs ----------
   tabButtons.forEach((btn) => {
@@ -893,6 +1181,14 @@
       stopQrScanner();
     }
     if (tab === 'walk' && state.walk.phase === 'idle') {
+      state.walk.phase = 'scanning';
+    }
+    // Tapping Scan while already on the scan tab with a dog up (picked but
+    // not yet walking, or a finished walk's summary still showing) jumps
+    // back to the camera, rather than just flashing the same screen. Never
+    // while a walk is actually running -- that's still reachable this way.
+    if (tab === 'walk' && state.tab === 'walk' && state.walk.phase !== 'scanning' && !activeWalkDogId()) {
+      stopQrScanner();
       state.walk.phase = 'scanning';
     }
     state.tab = tab;
@@ -1072,29 +1368,26 @@
 
     if (step === 'name') {
       // A name that came from splitting the email address ("Jsmith4943")
-      // isn't worth pre-filling; only offer a real-looking "First Last".
+      // isn't worth pre-filling; only offer it if it already looks like a
+      // real "First Last" someone typed themselves.
       const existing = (state.currentUser.name || '').trim();
       const looksReal = /^\S+\s+\S+/.test(existing) && !/\d/.test(existing);
-      const [first, ...rest] = looksReal ? existing.split(/\s+/) : ['', ''];
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
         <h2>Welcome to Shelter Walk 🐾</h2>
         <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? Other volunteers and staff will see it next to your walks.</p>
-        <label for="onboardingFirstName" class="small">First name</label>
-        <input type="text" id="onboardingFirstName" maxlength="40" autocomplete="given-name" value="${esc(first)}" />
-        <label for="onboardingLastName" class="small" style="margin-top:8px;display:block;">Last name</label>
-        <input type="text" id="onboardingLastName" maxlength="40" autocomplete="family-name" value="${esc(rest.join(' '))}" />
+        <label for="onboardingNameInput" class="small">Name</label>
+        <input type="text" id="onboardingNameInput" maxlength="60" autocomplete="name" value="${esc(looksReal ? existing : '')}" />
         <p id="onboardingNameStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingNameNext" class="btn primary" style="margin-top:6px;">Continue</button>`;
       const submit = async () => {
-        const firstName = document.getElementById('onboardingFirstName').value.trim();
-        const lastName = document.getElementById('onboardingLastName').value.trim();
+        const name = document.getElementById('onboardingNameInput').value.trim();
         const statusEl = document.getElementById('onboardingNameStatus');
-        if (!firstName || !lastName) { statusEl.textContent = 'Please enter both your first and last name.'; return; }
+        if (!name) { statusEl.textContent = 'Please enter your name.'; return; }
         const btn = document.getElementById('onboardingNameNext');
         btn.disabled = true;
         try {
-          const updated = await api('/api/me', { method: 'PUT', body: JSON.stringify({ name: `${firstName} ${lastName}` }) });
+          const updated = await api('/api/me', { method: 'PUT', body: JSON.stringify({ name }) });
           state.currentUser.name = updated.name;
           const nameEl = document.getElementById('userBtnName');
           if (nameEl) nameEl.textContent = updated.name;
@@ -1377,20 +1670,18 @@
   // tapping outside are simply discarded (only the Save button persists
   // them). Guarded on e.target === the overlay itself so clicks inside the
   // actual panel never bubble into an accidental close.
-  [settingsSheet, profileSheet].forEach((el) => {
+  [settingsSheet, profileSheet, document.getElementById('accountSheet')].forEach((el) => {
     el.addEventListener('click', (e) => { if (e.target === el) closeSheet(el); });
   });
-  document.getElementById('accountPopup').addEventListener('click', (e) => {
-    if (e.target.id === 'accountPopup') closeOverlay(e.target);
-  });
 
-  // ---------- Dog notes: shared whiteboard + private note ----------
+  // ---------- Dog notes: shared tips + private note ----------
   // One component, mounted on the dog profile and the pre-walk screen.
-  //  - Whiteboard: sticky-note tips that EVERY walker can add, edit, or erase
-  //    (tap a note to change it). No names are ever shown or stored with what
-  //    is returned, so the board can't be used to single anyone out.
+  //  - Tips: a compact bullet list that EVERY walker can add, edit, or delete
+  //    from (tap the pencil/x next to a line). No names are ever shown or
+  //    stored with what is returned, so the list can't be used to single
+  //    anyone out.
   //  - Private note: one per walker per dog, visible only to its writer.
-  // Notes written at the end of past walks sit on the board too (read-only).
+  // Notes written at the end of past walks are listed too (read-only).
   function dogNotesShellHtml() {
     return `<div class="dog-notes"><p class="muted small center">Loading notes…</p></div>`;
   }
@@ -1405,97 +1696,147 @@
       return;
     }
     const reload = () => mountDogNotes(container, dog, walks);
-    // Colour and tilt are derived from the note's id, so a note looks the same
-    // every time it's shown and for everyone.
-    const look = (id) => `c${id % 5}" style="--tilt:${(((id * 37) % 7) - 3) * 0.6}deg`;
     const items = [
       ...data.sharedTips.map((t) => ({ kind: 'tip', id: t.id, body: t.body, when: t.createdAt })),
       ...(walks || []).filter((w) => w.notes).map((w) => ({ kind: 'walk', body: w.notes, when: w.started_at }))
     ].sort((a, b) => (a.when < b.when ? 1 : -1));
-    const stickies = items.map((n) => n.kind === 'tip'
-      ? `<div class="sticky ${look(n.id)}" data-tip="${n.id}" tabindex="0" role="button" aria-label="Edit this note">
-           <div class="note-text">${esc(n.body)}</div>
-           <div class="sticky-date">${fmtDate(n.when)} · tap to edit</div>
-         </div>`
-      : `<div class="sticky walk">
-           <div class="note-text">${esc(n.body)}</div>
-           <div class="sticky-date">${fmtDate(n.when)} · from a walk</div>
-         </div>`).join('');
+    const tipRows = items.map((n) => n.kind === 'tip'
+      ? `<li class="tip-item" data-tip="${n.id}">
+           <span class="tip-bullet">•</span>
+           <span class="tip-text">${esc(n.body)}</span>
+           <span class="tip-item-actions">
+             <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
+             <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
+           </span>
+         </li>`
+      : `<li class="tip-item tip-item-walk">
+           <span class="tip-bullet">•</span>
+           <span class="tip-text">${esc(n.body)} <span class="muted">(from a walk)</span></span>
+         </li>`).join('');
     container.innerHTML = `
-      <label class="small muted" style="display:block;margin-top:12px;">Tips board <span class="badge neutral">Anyone can edit or delete</span></label>
-      <div class="whiteboard">
-        <div class="board-notes">
-          ${stickies}
-          <div class="sticky add-sticky">
-            <textarea class="tip-input" rows="3" maxlength="1000" placeholder="Write a tip about ${esc(dog.name)}…"></textarea>
-            <button type="button" class="btn small-btn primary tip-add-btn">Stick it up</button>
-          </div>
-        </div>
+      <label class="small muted" style="display:block;margin-top:12px;">Tips <span class="badge neutral">Anyone can edit or delete</span></label>
+      <ul class="tip-list">
+        ${tipRows}
+      </ul>
+      <div class="tip-add-row">
+        <input type="text" class="tip-input" maxlength="1000" placeholder="Add a tip about ${esc(dog.name)}…" />
+        <button type="button" class="btn small-btn primary tip-add-btn">Add</button>
       </div>
-      <p class="small muted" style="margin:4px 0 0;">Like a whiteboard: every walker can add, change, or erase notes here. No names are shown.</p>
+      <p class="small muted" style="margin:4px 0 0;">Anonymous - can be edited or deleted by anyone.</p>
       <label class="small muted" style="display:block;margin-top:14px;">My private notes <span class="badge neutral">Only you can see this</span></label>
-      <textarea class="private-note-input" rows="3" maxlength="4000" placeholder="Reminders just for you (what works with ${esc(dog.name)}, where you left off…)">${esc(data.privateNote ? data.privateNote.body : '')}</textarea>
-      <div class="row" style="align-items:center;margin-top:6px;">
-        <button type="button" class="btn small-btn private-note-save" style="flex:0 0 auto;width:auto;">Save private note</button>
-        <span class="small muted private-note-status"></span>
+      <ul class="tip-list">
+        ${data.privateNote ? `<li class="tip-item" data-private="1">
+             <span class="tip-bullet">•</span>
+             <span class="tip-text">${esc(data.privateNote.body)}</span>
+             <span class="tip-item-actions">
+               <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit your private note">✎</button>
+               <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete your private note">✕</button>
+             </span>
+           </li>` : ''}
+      </ul>
+      <div class="tip-add-row private-note-add-row"${data.privateNote ? ' style="display:none;"' : ''}>
+        <input type="text" class="tip-input private-note-input" maxlength="4000" placeholder="Reminders just for you (what works with ${esc(dog.name)}, where you left off…)" />
+        <button type="button" class="btn small-btn primary private-note-add-btn">Add</button>
       </div>`;
 
-    const input = container.querySelector('.tip-input');
-    container.querySelector('.tip-add-btn').addEventListener('click', async () => {
+    const input = container.querySelector('.tip-add-row:not(.private-note-add-row) .tip-input');
+    const addTip = async () => {
       const body = input.value.trim();
       if (!body) { input.focus(); return; }
       try {
         await api(`/api/dogs/${dog.id}/notes`, { method: 'POST', body: JSON.stringify({ body }) });
-        toast('Note added to the board');
+        toast('Tip added');
         reload();
       } catch (err) { toast(err.message, 'error'); }
-    });
+    };
+    container.querySelector('.tip-add-btn').addEventListener('click', addTip);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTip(); } });
 
-    // Tap a note to edit it in place: Save, Erase, or Cancel.
-    container.querySelectorAll('.sticky[data-tip]').forEach((el) => {
-      const startEdit = () => {
-        if (el.classList.contains('editing')) return;
-        const id = el.dataset.tip;
-        const current = (data.sharedTips.find((t) => String(t.id) === id) || {}).body || '';
-        el.classList.add('editing');
-        el.innerHTML = `
-          <textarea class="tip-edit-input" rows="4" maxlength="1000">${esc(current)}</textarea>
-          <div class="sticky-actions">
-            <button type="button" class="btn small-btn primary" data-act="save">Save</button>
-            <button type="button" class="btn small-btn danger" data-act="erase">Erase</button>
-            <button type="button" class="btn small-btn" data-act="cancel">Cancel</button>
-          </div>`;
-        const ta = el.querySelector('textarea');
-        ta.focus();
-        ta.setSelectionRange(ta.value.length, ta.value.length);
-        el.querySelector('[data-act="cancel"]').addEventListener('click', (e) => { e.stopPropagation(); reload(); });
-        el.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const next = ta.value.trim();
-          if (!next) { toast('Use Erase to remove a note.', 'error'); return; }
+    // Edit a tip in place: the bullet becomes a one-line textbox with Save/Cancel.
+    container.querySelectorAll('.tip-item[data-tip]').forEach((li) => {
+      const id = li.dataset.tip;
+      const current = (data.sharedTips.find((t) => String(t.id) === id) || {}).body || '';
+      li.querySelector('[data-act="edit"]').addEventListener('click', () => {
+        li.classList.add('editing');
+        li.innerHTML = `
+          <input type="text" class="tip-edit-input" maxlength="1000" value="${esc(current)}" />
+          <span class="tip-item-actions">
+            <button type="button" class="mini-icon-btn" data-act="save" aria-label="Save">✓</button>
+            <button type="button" class="mini-icon-btn" data-act="cancel" aria-label="Cancel">✕</button>
+          </span>`;
+        const inp = li.querySelector('.tip-edit-input');
+        inp.focus();
+        inp.setSelectionRange(inp.value.length, inp.value.length);
+        const save = async () => {
+          const next = inp.value.trim();
+          if (!next) { toast('Use the ✕ next to a tip to delete it.', 'error'); return; }
           if (next === current) { reload(); return; }
-          try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Note updated'); reload(); }
+          try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); reload(); }
           catch (err) { toast(err.message, 'error'); }
+        };
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); save(); }
+          if (e.key === 'Escape') { e.preventDefault(); reload(); }
         });
-        el.querySelector('[data-act="erase"]').addEventListener('click', async (e) => {
-          e.stopPropagation();
-          if (!(await appConfirm('Erase this note from the board? Every walker will stop seeing it.', { title: 'Erase note', confirmText: 'Erase', danger: true }))) return;
-          try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'DELETE' }); toast('Note erased'); reload(); }
-          catch (err) { toast(err.message, 'error'); }
-        });
-      };
-      el.addEventListener('click', startEdit);
-      el.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && !el.classList.contains('editing')) { e.preventDefault(); startEdit(); } });
+        li.querySelector('[data-act="save"]').addEventListener('click', save);
+        li.querySelector('[data-act="cancel"]').addEventListener('click', reload);
+      });
+      li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
+        if (!(await appConfirm('Delete this tip? Every walker will stop seeing it.', { title: 'Delete tip', confirmText: 'Delete', danger: true }))) return;
+        try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'DELETE' }); toast('Tip deleted'); reload(); }
+        catch (err) { toast(err.message, 'error'); }
+      });
     });
 
-    container.querySelector('.private-note-save').addEventListener('click', async () => {
-      const status = container.querySelector('.private-note-status');
+    // Add: the empty-state input row.
+    const savePrivate = async (body) => {
       try {
-        await api(`/api/dogs/${dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body: container.querySelector('.private-note-input').value }) });
-        status.textContent = 'Saved ✓';
-        setTimeout(() => { status.textContent = ''; }, 2000);
-      } catch (err) { status.textContent = err.message; }
-    });
+        await api(`/api/dogs/${dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body }) });
+        reload();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    const addBtn = container.querySelector('.private-note-add-btn');
+    if (addBtn) {
+      const addInput = container.querySelector('.private-note-add-row .private-note-input');
+      const doAdd = () => { const body = addInput.value.trim(); if (!body) { addInput.focus(); return; } savePrivate(body); };
+      addBtn.addEventListener('click', doAdd);
+      addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doAdd(); } });
+    }
+
+    // Edit/erase: same in-place pattern as the shared tips.
+    const privateLi = container.querySelector('.tip-item[data-private]');
+    if (privateLi) {
+      const current = data.privateNote ? data.privateNote.body : '';
+      privateLi.querySelector('[data-act="edit"]').addEventListener('click', () => {
+        privateLi.classList.add('editing');
+        privateLi.innerHTML = `
+          <input type="text" class="tip-edit-input" maxlength="4000" value="${esc(current)}" />
+          <span class="tip-item-actions">
+            <button type="button" class="mini-icon-btn" data-act="save" aria-label="Save">✓</button>
+            <button type="button" class="mini-icon-btn" data-act="cancel" aria-label="Cancel">✕</button>
+          </span>`;
+        const inp = privateLi.querySelector('.tip-edit-input');
+        inp.focus();
+        inp.setSelectionRange(inp.value.length, inp.value.length);
+        const save = () => {
+          const next = inp.value.trim();
+          if (!next) { toast('Use the ✕ next to your note to delete it.', 'error'); return; }
+          if (next === current) { reload(); return; }
+          savePrivate(next);
+        };
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); save(); }
+          if (e.key === 'Escape') { e.preventDefault(); reload(); }
+        });
+        privateLi.querySelector('[data-act="save"]').addEventListener('click', save);
+        privateLi.querySelector('[data-act="cancel"]').addEventListener('click', reload);
+      });
+      privateLi.querySelector('[data-act="erase"]').addEventListener('click', async () => {
+        if (!(await appConfirm('Delete your private note for this dog?', { title: 'Delete note', confirmText: 'Delete', danger: true }))) return;
+        try { await api(`/api/dogs/${dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body: '' }) }); toast('Note deleted'); reload(); }
+        catch (err) { toast(err.message, 'error'); }
+      });
+    }
   }
 
   function showProfileSheet(dog, walks) {
@@ -1523,16 +1864,19 @@
         <span id="profileMarkerBadges" class="${hasMarkers ? 'marker-badges-toggle' : ''}">${markerBadges(dog)}</span>
       </h2>
       <div id="profileMarkerBreakdown" class="marker-breakdown hidden">${markerBreakdownHtml(dog)}</div>
-      <p class="muted small" style="margin-top:-6px;">ID ${dog.id}</p>
+      <p class="muted small nowrap" style="margin-top:-6px;">ID ${dog.id}</p>
       ${currentWalkBadge(dog)}
       ${dog.stillListed === false ? `<span class="badge neutral">Adopted/Removed${dog.removedAt ? ' on ' + fmtDate(dog.removedAt) : ''}</span>` : ''}
       <span class="badge neutral">Walked ${dog.walkCount}× ${dog.walkCount ? '· last ' + fmtDate(dog.lastWalkedAt) : ''}</span>
       <p class="muted">${esc(dog.breed || 'Unknown breed')} · ${esc(dog.sex || '?')} · ${esc(dog.age || '?')} · ${esc(dog.weight || '?')}</p>
       <p class="small">In shelter since ${fmtDate(dog.dateInShelter)} (${shelterDaysHtml(dog)}) · ${esc(dog.location || '')}</p>
-      ${dog.stillListed === false ? '' : `<p class="small">🏠 Current kennel spot: ${esc(dog.kennelLocation || 'Unknown')}</p>`}
+      ${dog.stillListed === false ? '' : `<p class="small">Current kennel spot: <span class="nowrap">🏠 ${esc(dog.kennelLocation || 'Unknown')}</span></p>`}
       <div>${tags}</div>
       ${dog.summary ? `<div class="dog-summary">${sanitizeHtml(dog.summary)}</div>` : ''}
-      <p class="small"><a href="${esc(dog.adoptUrl)}" target="_blank" rel="noopener">View on pets.wake.gov →</a></p>
+      <p class="small" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <a href="${esc(dog.adoptUrl)}" target="_blank" rel="noopener">View on pets.wake.gov →</a>
+        <button type="button" class="link-btn dog-qr-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}">▦ Show QR code</button>
+      </p>
       <button type="button" id="profileStatsBtn" class="btn small-btn" style="margin-top:4px;">📊 Our walks together</button>
       <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
       <p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>
@@ -1571,6 +1915,54 @@
       content.innerHTML = `<h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3><p class="small muted">Couldn't load stats: ${esc(err.message)}</p>`;
     }
   }
+
+  // The "returned" icon's popup: this dog's current stay plus any earlier
+  // one(s) reconstructed from the shelter's event log (see the server route
+  // for why it's capped to the last several months).
+  async function showStayHistoryPopup(dogId, dogName) {
+    const popup = document.getElementById('markerInfoPopup');
+    const content = document.getElementById('markerInfoPopupContent');
+    if (!popup || !content) return;
+    const title = `🔄 ${esc(dogName)}'s stay history`;
+    content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="muted small center">Loading…</p>`;
+    openOverlay(popup);
+    try {
+      const [{ dog }, history] = await Promise.all([
+        api(`/api/dogs/${dogId}?userId=${state.currentUser.id}`),
+        api(`/api/dogs/${dogId}/stay-history`)
+      ]);
+      const stayDays = (fromIso, toIso) => Math.max(1, Math.round((new Date(toIso) - new Date(fromIso)) / 86400000));
+      const stayLine = (fromIso, toIso, current) => {
+        const days = current ? dog.daysInShelter : stayDays(fromIso, toIso);
+        const range = current ? `Since ${fmtDate(fromIso)}` : `${fmtDate(fromIso)} - ${fmtDate(toIso)}`;
+        return `<li class="tip-item"><span class="tip-bullet">•</span><span class="tip-text">${range} (${days} day${days === 1 ? '' : 's'}${current ? ', current' : ''})</span></li>`;
+      };
+      const priorStays = history.priorStays.slice().reverse(); // most recent first
+      const rows = [
+        stayLine(dog.dateInShelter, dog.removedAt, dog.stillListed),
+        ...priorStays.map((s) => stayLine(s.arrivedAt, s.leftAt, false))
+      ].join('');
+      const itemizedDays = history.priorStays.reduce((sum, s) => sum + stayDays(s.arrivedAt, s.leftAt), 0);
+      const unaccountedDays = Math.max(0, history.previousDaysInShelter - itemizedDays);
+      const totalDays = dog.daysInShelter + history.previousDaysInShelter;
+      content.innerHTML = `
+        <h3 style="margin-top:0;">${title}</h3>
+        <p class="small muted">The ${dog.daysInShelter}d/${totalDays}d on their card is this stay, then every stay combined --
+           the list below is most recent first.</p>
+        <ul class="tip-list">${rows}</ul>
+        ${unaccountedDays > 0 ? `<p class="small muted">Plus ${unaccountedDays} earlier day${unaccountedDays === 1 ? '' : 's'} from before this was tracked.</p>` : ''}
+        <p class="small muted">Showing return history from the last ${history.months} months.</p>
+      `;
+    } catch (err) {
+      content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="small muted">Couldn't load stay history: ${esc(err.message)}</p>`;
+    }
+  }
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.returned-icon-btn');
+    if (!trigger) return;
+    e.stopPropagation();
+    showStayHistoryPopup(trigger.dataset.dogId, trigger.dataset.dogName);
+  });
 
   // ---------- Guide (wiki) ----------
   // Staff-editable reference sections (sticker meanings, tips, how-tos).
@@ -2348,7 +2740,7 @@
             <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
               <p class="dog-name">${esc(dog.name)} ${markerBadges(dog)}</p>
-              <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · Walked ${dog.walkCount}× · 🏠 ${esc(dog.kennelLocation || '?')} · ID ${dog.id}</p>
+              <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · Walked ${dog.walkCount}× · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
               <p class="dog-meta${!dog.recentWalkCount ? ' attention-low' : ''}">${dog.recentWalkCount || 0} walk${dog.recentWalkCount === 1 ? '' : 's'} this week</p>
               ${slotGridHtml(dog.id)}
               ${currentWalkBadge(dog)}
@@ -2359,7 +2751,7 @@
               <span class="small muted">Out</span>
             </label>
           </div>
-          ${dogActionButtons(dog.id)}
+          ${dogActionButtons(dog.id, dog.tooYoung || dog.eligible === false)}
         </div>`;
     }).join('');
     appEl.innerHTML = lastUpdatedLine + filterRow + `<div class="stack tight">${cards}</div>`;
@@ -2612,7 +3004,7 @@
           <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>
-            <p class="dog-meta">${esc(d.breed || '')} · 🏠 ${esc(d.kennelLocation || '?')}</p>
+            <p class="dog-meta">${esc(d.breed || '')} · <span class="nowrap">🏠 ${esc(d.kennelLocation || '?')}</span></p>
           </div>
         </div>`).join('') : '<p class="muted small">No matches.</p>';
       results.querySelectorAll('.search-result').forEach((row) => {
@@ -2724,7 +3116,8 @@
         <div class="marker-row">
           <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
           <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-          <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only">PB</button>
+          <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, for an injured or fragile dog">PB</button>
+          <button type="button" class="marker-shape pb-early" data-group="pbEarly" title="Potty Break Early - a short walk before the shelter's hold is up">PB-E</button>
         </div>
         <div class="row" style="margin-top:10px;">
           <button id="auditSaveBtn" class="btn primary">Save &amp; Confirm Location</button>
@@ -2735,7 +3128,8 @@
       blueMarkers: [...(dog.blueMarkers || [])],
       pooStatus: dog.pooStatus || 'none',
       starFlag: !!dog.starFlag,
-      pbFlag: !!dog.pbFlag
+      pbFlag: !!dog.pbFlag,
+      pbEarlyFlag: !!dog.pbEarlyFlag
     };
     wireMarkerPicker(state.audit.pendingMarkers);
     document.getElementById('auditSaveBtn').addEventListener('click', async () => {
@@ -2775,7 +3169,7 @@
           <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>
-            <p class="dog-meta">${esc(d.breed || '')} · 🏠 ${esc(d.kennelLocation || '?')}</p>
+            <p class="dog-meta">${esc(d.breed || '')} · <span class="nowrap">🏠 ${esc(d.kennelLocation || '?')}</span></p>
           </div>
         </div>`).join('') : '<p class="muted small">No matches.</p>';
       resultsEl.querySelectorAll('.search-result').forEach((row) => {
@@ -3025,7 +3419,7 @@
             <input type="time" class="edit-end-time" value="${w.ended_at ? toLocalTimeInput(w.ended_at) : ''}" />
             <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="flex:0 0 auto;width:auto;">Save</button>
           </div>
-          <p class="dog-meta">🏠 ${esc(w.location || '-')}</p>
+          <p class="dog-meta nowrap">🏠 ${esc(w.location || '-')}</p>
           <p class="small">${w.notes ? esc(w.notes) : '<span class="muted">No notes</span>'}</p>
           <div class="row" style="margin-top:6px;align-items:center;justify-content:flex-end;">
             <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit times" aria-label="Edit times">✎</button>
@@ -3201,10 +3595,14 @@
   // the same shelter-level event feed; `personalHighlight` (from the
   // server, based on this user's notification_prefs + walk history) is the
   // one bit of personalization, for "a dog I walked was adopted".
-  function eventIcon(kind) {
+  function eventIcon(kind, detail) {
     if (kind === 'adopted') return '🎉';
     if (kind === 'new_dog') return '🐶';
-    if (kind === 'returned') return '↩️';
+    // Two different reasons a dog can reappear: actually adopted and then
+    // returned (↩️, same as before), or never really left shelter care at
+    // all -- pulled for vet work, a hold, a data hiccup -- and is simply
+    // back on the floor (🐾, new -- good news, not a medical-alarm icon).
+    if (kind === 'returned') return detail === 'adopted_return' ? '↩️' : '🐾';
     return '📣'; // 'removed', or anything future/unrecognized
   }
 
@@ -3254,9 +3652,9 @@
             // shortcut (wireDogActionButtons, wired via their [data-id]
             // ancestor below) and shouldn't have two competing behaviors.
             ? `<img loading="lazy" decoding="async" class="dog-photo small${r.kind === 'adopted' ? ' photo-bio-trigger' : ''}"${r.kind === 'adopted' ? ` data-dog-id="${r.dog_id}"` : ''} src="${r.photo_url ? esc(r.photo_url) : '/icons/icon-192.png'}" alt="" />`
-            : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind)}</div>`}
+            : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind, r.detail)}</div>`}
           <div class="dog-info">
-            <p class="dog-name">${r.dog_id ? eventIcon(r.kind) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
+            <p class="dog-name">${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
             ${r.personalHighlight ? '<span class="badge eligible">You walked this dog</span>' : ''}
             <p class="dog-meta">${fmtDate(r.occurred_at)}</p>
           </div>
@@ -3695,7 +4093,8 @@
         blueMarkers: [...(dog.blueMarkers || [])],
         pooStatus: dog.pooStatus,
         starFlag: dog.starFlag,
-        pbFlag: dog.pbFlag
+        pbFlag: dog.pbFlag,
+        pbEarlyFlag: dog.pbEarlyFlag
       };
       renderWalk();
     } catch (err) {
@@ -3738,6 +4137,7 @@
       <div class="stack tight walk-confirm">
         ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies 6 months or younger can't be walked - no exceptions.</strong></div>` : ''}
         ${!tooYoung && dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
+        ${!tooYoung && dog.pbEarlyFlag && !dog.pbEarlyExpired ? `<div class="pb-warning-banner pb-early-banner">Potty Break Early: short walk, still within the shelter's hold</div>` : ''}
         <div class="card compact" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
             <svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="currentColor" aria-hidden="true">
@@ -3792,7 +4192,8 @@
           <div class="marker-row">
             <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
             <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-            <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, clears the days-in-shelter wait">PB</button>
+            <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, for an injured or fragile dog">PB</button>
+            <button type="button" class="marker-shape pb-early" data-group="pbEarly" title="Potty Break Early - a short walk before the shelter's hold is up">PB-E</button>
           </div>
           <label for="locationInput" style="display:block;margin-top:14px;">Kennel location</label>
           <div class="row" style="gap:6px;">
@@ -3808,7 +4209,6 @@
           <p id="saveAllStatus" class="small muted" style="margin:6px 0 0;"></p>
         </div>
         <button id="startWalkBtn" class="btn primary big" ${tooYoung ? 'disabled' : ''}>${tooYoung ? 'Cannot Walk This Dog' : 'Start Walk'}</button>
-        ${tooYoung ? '' : `<p class="small muted center" style="margin:0;">Walks stop automatically after 20 minutes. You can add time during the walk.</p>`}
         <button id="backToScanBtn2" class="btn">Scan a different dog</button>
       </div>`;
 
@@ -3872,16 +4272,22 @@
       return bumpedDog ? ` (cleared this spot from ${esc(bumpedDog.name)} - looks like they were moved)` : '';
     }
 
-    function applyMarkerUpdate(updated) {
+    async function applyMarkerUpdate(updated) {
       dog.blueMarkers = updated.blueMarkers;
       dog.pooStatus = updated.pooStatus;
       dog.starFlag = updated.starFlag;
-      // PB overrides the days-in-shelter caution — mirror the server's OR
-      // logic here too so the badge/background update immediately without
-      // needing to leave and re-enter this screen.
-      const pbJustEnabled = updated.pbFlag && !dog.pbFlag;
       dog.pbFlag = updated.pbFlag;
-      if (pbJustEnabled) dog.eligible = true;
+      dog.pbEarlyFlag = updated.pbEarlyFlag;
+      // Eligibility can depend on several of these at once, plus PB-E's
+      // hold-window cutoff, which only the server tracks -- re-fetch rather
+      // than duplicating that logic here, so this can't drift out of sync
+      // with server.js the way the old PB-only shortcut eventually did.
+      try {
+        const fresh = await api(`/api/dogs/${dog.id}?userId=${state.currentUser.id}`);
+        dog.eligible = fresh.dog.eligible;
+        dog.notEligibleReason = fresh.dog.notEligibleReason;
+        dog.pbEarlyExpired = fresh.dog.pbEarlyExpired;
+      } catch (err) { /* best effort -- badges just won't refresh instantly if this fails */ }
     }
 
     // One button saves everything on this screen — markers and kennel
@@ -3894,7 +4300,7 @@
       const location = document.getElementById('locationInput').value.trim();
       try {
         const markerUpdate = await saveMarkers();
-        applyMarkerUpdate(markerUpdate);
+        await applyMarkerUpdate(markerUpdate);
         let msg = 'Saved ✓';
         if (location) {
           const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
@@ -3918,6 +4324,16 @@
 
     const startBtn = document.getElementById('startWalkBtn');
     startBtn.addEventListener('click', async () => {
+      // Not a hard block (that's tooYoung, which already disables this
+      // button) -- just make sure it's a deliberate choice, since the
+      // caution background alone is easy to miss in the moment.
+      if (!dog.tooYoung && dog.eligible === false) {
+        const proceed = await appConfirm(
+          `Based on your current experience level, you're not cleared to walk ${dog.name} right now (${notEligibleReasonText(dog)}). You can change your level any time from Settings (the gear icon, top right).`,
+          { title: 'Not cleared for this dog', confirmText: 'Walk anyway', cancelText: 'Cancel', danger: true }
+        );
+        if (!proceed) return;
+      }
       const location = document.getElementById('locationInput').value.trim();
       startBtn.disabled = true;
       try {
@@ -4035,6 +4451,8 @@
     if (starBtn) starBtn.classList.toggle('active', pending.starFlag);
     const pbBtn = document.querySelector('.marker-shape[data-group="pb"]');
     if (pbBtn) pbBtn.classList.toggle('active', pending.pbFlag);
+    const pbEarlyBtn = document.querySelector('.marker-shape[data-group="pbEarly"]');
+    if (pbEarlyBtn) pbEarlyBtn.classList.toggle('active', pending.pbEarlyFlag);
   }
 
   // Wires click-to-toggle behavior directly on the DOM (no re-render), so an
@@ -4045,8 +4463,14 @@
   //   - poo shapes (plain / priority "*"): strict single-select, unlinked —
   //     you can have plain OR priority OR neither, never both.
   //   - star: an independent boolean, distinct from POO priority.
-  //   - pb (Potty Break OK): an independent boolean; clears the days-in-
-  //     shelter caution since it authorizes a short walk regardless.
+  //   - pb (Potty Break OK): an independent boolean, for an injured or
+  //     otherwise fragile dog who needs a short walk. Does NOT override the
+  //     days-in-shelter wait any more -- see the eligibility rules in
+  //     server.js.
+  //   - pbEarly (Potty Break Early, "PB-E"): the opposite case -- a dog who
+  //     can't meet the days-in-shelter threshold yet but can have a short
+  //     early walk anyway. Grants eligibility only up to
+  //     PB_EARLY_HOLD_DAYS; past that it's a no-op (server.js again).
   function wireMarkerPicker(pending, onChange) {
     applyPickerState(pending);
     document.querySelectorAll('.marker-shape').forEach((btn) => {
@@ -4065,6 +4489,8 @@
           pending.starFlag = !pending.starFlag;
         } else if (group === 'pb') {
           pending.pbFlag = !pending.pbFlag;
+        } else if (group === 'pbEarly') {
+          pending.pbEarlyFlag = !pending.pbEarlyFlag;
         }
         applyPickerState(pending);
         if (onChange) onChange();
@@ -4078,12 +4504,13 @@
     appEl.innerHTML = `
       <div class="stack">
         ${w.dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
+        ${w.dog.pbEarlyFlag && !w.dog.pbEarlyExpired ? `<div class="pb-warning-banner pb-early-banner">Potty Break Early: short walk, still within the shelter's hold</div>` : ''}
         <div class="card">
           <div class="timer-display">${fmtClock(w.startedAt)}</div>
           <p class="muted small center" style="margin-top:-8px;">⏰ Check-out time - write this on the kennel</p>
-          <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)}</p>
+          <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
           <p class="muted small center" style="margin-top:-6px;">ID ${w.dog.id}</p>
-          <p class="walk-location">🏠 Return to: ${w.location ? esc(w.location) : 'location not recorded'}</p>
+          <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
           <div class="timer-display" id="timerDisplay">00:00</div>
         </div>
         <div class="card compact autostop-card" id="autoStopCard">
@@ -4091,10 +4518,32 @@
           <button type="button" id="extendWalkBtn" class="btn small-btn">＋10 min</button>
         </div>
         ${w.bumpedDog ? `<p class="muted small center">Cleared this spot from ${esc(w.bumpedDog.name)} - looks like they were moved.</p>` : ''}
+        <div class="card compact">
+          <button type="button" id="walkNotesToggle" class="notes-toggle" aria-expanded="false">
+            <span>📝 Tips &amp; notes</span><span class="notes-toggle-chevron">▾</span>
+          </button>
+          <div class="dog-notes-mount hidden"></div>
+        </div>
         <button id="viewProfileBtn" class="btn">View Full Profile</button>
         <button id="endWalkBtn" class="btn danger big">End Walk</button>
         <button id="cancelWalkBtn" class="btn">Cancel Walk</button>
       </div>`;
+    // Collapsed by default -- kept out of the way while you're actually
+    // with the dog -- and only fetched/mounted the first time it's opened,
+    // so it's not a wasted request for a walk where no one ever taps it.
+    const notesMount = appEl.querySelector('.dog-notes-mount');
+    let notesLoaded = false;
+    document.getElementById('walkNotesToggle').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      const open = notesMount.classList.toggle('hidden') === false;
+      btn.setAttribute('aria-expanded', String(open));
+      btn.classList.toggle('open', open);
+      if (open && !notesLoaded) {
+        notesLoaded = true;
+        notesMount.innerHTML = dogNotesShellHtml();
+        mountDogNotes(notesMount, w.dog, state.walk.allWalks);
+      }
+    });
     document.getElementById('viewProfileBtn').addEventListener('click', () => showProfileSheet(w.dog, state.walk.allWalks));
     document.getElementById('endWalkBtn').addEventListener('click', () => {
       clearInterval(timerInterval);

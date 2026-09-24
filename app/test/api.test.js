@@ -167,3 +167,82 @@ test('walks stop automatically at 20 minutes, flagged, and can be extended befor
   c2.close();
   assert.equal((await call('POST', `/api/walks/${fresh}/extend`)).status, 409);
 });
+
+test('Profile: name is a single field', async () => {
+  const user = 'profile.tester@example.com';
+  assert.equal((await call('PUT', '/api/me', { user, body: { name: '' } })).status, 400, 'name is required');
+  const saved = await call('PUT', '/api/me', { user, body: { name: 'Jamie Smith' } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.name, 'Jamie Smith');
+  const me = await call('GET', '/api/me', { user });
+  assert.equal(me.json.name, 'Jamie Smith');
+});
+
+test('PB no longer overrides the days-in-shelter wait; PB-E grants it only until day 7', async () => {
+  const established = 'established.walker@example.com';
+  const beginner = 'beginner.walker@example.com';
+  const estId = (await call('GET', '/api/me', { user: established })).json.id;
+  const begId = (await call('GET', '/api/me', { user: beginner })).json.id;
+  await call('PUT', `/api/users/${estId}/settings`, { user: established, body: { experienceLevel: 'established' } });
+  await call('PUT', `/api/users/${begId}/settings`, { user: beginner, body: { experienceLevel: 'beginner' } });
+
+  const db = new Database(dbFile);
+  const today = new Date().toISOString();
+  const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const twentyDaysAgo = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+  const ins = db.prepare(`
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, pb_flag, pb_early_flag)
+    VALUES (?, ?, 'Male', '3 Years', ?, 1, ?, ?, ?, ?)
+  `);
+  ins.run(101, 'PbBrandNew', today, today, today, 1, 0); // PB, 0 days
+  ins.run(102, 'PbSeasoned', twentyDaysAgo, twentyDaysAgo, twentyDaysAgo, 1, 0); // PB, 20 days
+  ins.run(103, 'PbeInHold', today, today, today, 0, 1); // PB-E, 0 days (within the 7-day hold)
+  ins.run(104, 'PbeExpired', tenDaysAgo, tenDaysAgo, tenDaysAgo, 0, 1); // PB-E, 10 days (past the hold)
+  db.close();
+
+  const dogAs = async (id, user) => (await call('GET', `/api/dogs/${id}`, { user })).json.dog;
+
+  // PB (brand new, 0 days): no longer an automatic yes for established --
+  // it still has to clear the normal day threshold like anything else.
+  const pbNewEst = await dogAs(101, established);
+  assert.equal(pbNewEst.eligible, false);
+  assert.equal(pbNewEst.notEligibleReason, 'days', 'PB does not excuse the wait any more');
+  const pbNewBeg = await dogAs(101, beginner);
+  assert.equal(pbNewBeg.eligible, false);
+  assert.equal(pbNewBeg.notEligibleReason, 'pb_restricted', 'beginners still are not trusted with PB dogs at all');
+
+  // PB (seasoned, 20 days): eligible for established the ordinary way; the
+  // PB flag itself grants nothing here, it's just informational.
+  const pbOldEst = await dogAs(102, established);
+  assert.equal(pbOldEst.eligible, true);
+
+  // PB-E, still within the 7-day hold: grants early eligibility for
+  // established, but never for a level that isn't trusted with PB at all.
+  const pbeHoldEst = await dogAs(103, established);
+  assert.equal(pbeHoldEst.eligible, true);
+  assert.equal(pbeHoldEst.pbEarlyExpired, false);
+  const pbeHoldBeg = await dogAs(103, beginner);
+  assert.equal(pbeHoldBeg.eligible, false);
+  assert.equal(pbeHoldBeg.notEligibleReason, 'pb_restricted');
+  assert.equal(pbeHoldBeg.pbEarlyExpired, false, 'expiry is about the dog, not the viewer');
+
+  // PB-E, past day 7: the exception has nothing left to grant -- eligibility
+  // reverts to the ordinary day-threshold rule for everyone, and the flag
+  // reads as expired regardless of who's looking.
+  const pbeExpiredEst = await dogAs(104, established);
+  assert.equal(pbeExpiredEst.eligible, true, '10 days clears the established 7-day bar on its own now');
+  assert.equal(pbeExpiredEst.pbEarlyExpired, true);
+  const pbeExpiredBeg = await dogAs(104, beginner);
+  assert.equal(pbeExpiredBeg.eligible, false);
+  assert.equal(pbeExpiredBeg.notEligibleReason, 'days', 'not pb_restricted -- the early exception no longer applies past day 7');
+  assert.equal(pbeExpiredBeg.pbEarlyExpired, true);
+});
+
+test('the markers endpoint saves and returns pbEarlyFlag alongside the rest', async () => {
+  const r = await call('PUT', '/api/dogs/101/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: false, pbFlag: false, pbEarlyFlag: true } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.pbEarlyFlag, true);
+  const db = new Database(dbFile, { readonly: true });
+  assert.equal(db.prepare('SELECT pb_early_flag FROM dogs WHERE shelter_buddy_id = 101').get().pb_early_flag, 1);
+  db.close();
+});

@@ -54,22 +54,55 @@ function deleteLoginAccount(email) {
 }
 
 function register(app, { db }) {
-  const anonymize = db.transaction((userId, name) => {
+  // Shared by both "delete my data" and "delete my account": detach this
+  // user's walk history so it can never be matched back to them again. Kept
+  // as its own function since the full account deletion needs it as one step
+  // among several, while "delete my data" is just this, on its own.
+  const wipeWalkData = db.transaction((userId) => {
     // A walk still in progress can't be left behind un-owned: cancel it.
     db.prepare('DELETE FROM walks WHERE user_id = ? AND ended_at IS NULL').run(userId);
-    // Completed walks stay; only their owner is removed.
+    // Completed walks stay -- the shelter's totals and every other
+    // volunteer's history are unaffected -- only this user's ownership of
+    // them is removed, irreversibly (nothing anywhere records which row
+    // used to belong to which user).
     db.prepare('UPDATE walks SET user_id = NULL WHERE user_id = ?').run(userId);
     db.prepare('UPDATE manual_shift_checkoffs SET user_id = NULL WHERE user_id = ?').run(userId);
-    // Notes: private ones are personal and go; shared tips stay, unattributed
-    // (0 = nobody).
+    // Notes: private ones are personal dog-history and go; shared tips stay
+    // on the board, unattributed (0 = nobody) -- they never showed who wrote
+    // them anyway.
     db.prepare("DELETE FROM dog_notes WHERE user_id = ? AND visibility = 'private'").run(userId);
     db.prepare('UPDATE dog_notes SET user_id = 0 WHERE user_id = ?').run(userId);
+  });
+
+  const anonymize = db.transaction((userId, name) => {
+    wipeWalkData(userId);
     db.prepare('DELETE FROM notification_prefs WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM saved_filters WHERE user_id = ?').run(userId);
     // Guide sections remember the last editor's name; forget it.
     db.prepare('UPDATE wiki_sections SET updated_by = NULL WHERE updated_by = ?').run(name);
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  });
+
+  // "Delete my data, keep my account" (Privacy & Data): the account, sign-in,
+  // name, email and settings are untouched -- only the link between this
+  // person and any walk they've done is permanently removed. Their personal
+  // stats and per-dog history reset to zero as a direct result (they're
+  // computed from walks.user_id, which no longer points at them).
+  app.delete('/api/me/data', (req, res) => {
+    const me = req.me;
+    if (!me) return res.status(401).json({ error: 'Not signed in.' });
+    if (!req.body || req.body.confirm !== 'DELETE') {
+      return res.status(400).json({ error: 'The confirmation was not received, so nothing was deleted.' });
+    }
+    try {
+      wipeWalkData(me.id);
+    } catch (err) {
+      console.error(`[account] wipe-my-data failed for user ${me.id}:`, err);
+      return res.status(500).json({ error: 'Something went wrong, so nothing was deleted. Please try again.' });
+    }
+    console.warn(`[account] user ${me.id} deleted their walk data; account kept`);
+    res.json({ deleted: true });
   });
 
   app.delete('/api/me', async (req, res) => {

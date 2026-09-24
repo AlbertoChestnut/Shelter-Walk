@@ -4,17 +4,19 @@ A mobile-first web app that helps volunteers at an animal shelter walk dogs
 safely and fairly: who is available to walk, who has been out, what each dog
 needs, and how the shelter is doing as a whole.
 
-It is two small apps behind one reverse proxy:
-
 | Folder | What it is | Stack |
 |---|---|---|
 | [`app/`](app) | The walking app: available dogs, QR scan, timed walks, stats, updates feed, guide, notes | Node, Express, SQLite (better-sqlite3), plain JavaScript front end (PWA) |
-| [`login/`](login) | Invite-only sign-in: email codes and passkeys, staff tools, invite codes | Django, django-allauth |
-| [`deploy/`](deploy) | Reverse proxy config, systemd units, backup scripts, health check, env templates | Caddy, systemd |
+| [`deploy/`](deploy) | Reverse proxy config, systemd unit, backup scripts, health check, env template | Caddy, systemd |
 
-Caddy sends every request for the app through the login site first
-(`forward_auth`). The login site answers with the signed-in email, and the app
-trusts only that header, which it can only receive from Caddy.
+The app expects a reverse proxy to authenticate every request first and pass
+along who signed in (see `deploy/Caddyfile`); it never has a login of its own
+and trusts the `X-Auth-Email`/`X-Auth-Staff` headers only because nothing but
+that proxy can set them. This repository doesn't include a sign-in service:
+the production deployment uses an invite-only Django/allauth site (email
+codes, passkeys, staff tools) that isn't published here since it's the gate
+that decides who may access shelter dogs. Any auth provider that can act as a
+Caddy `forward_auth` backend will work in its place.
 
 This is an independent volunteer project. It is not affiliated with, or
 endorsed by, any shelter or county. It reads the shelter's public adoptable
@@ -29,7 +31,7 @@ dog listings; no shelter data, photos, or volunteer data are in this repository.
 - **Stats:** personal stats, plus **Together**, anonymous shelter-wide totals
 - **Updates feed:** new, returned, and adopted dogs
 - **Guide (wiki):** staff-editable sections with sticker meanings and images
-- **Dog notes:** an anonymous shared "whiteboard" of tips, plus private notes
+- **Dog notes:** an anonymous shared tip list per dog, plus private notes
 - **Installable, works on flaky Wi-Fi** (service worker), light and dark themes
 - **Account deletion** with three confirmations; walk records are kept but no
   longer linked to anyone
@@ -45,17 +47,25 @@ the tests in `app/test/privacy.test.js` are release blockers:
   by their owner, with no staff override.
 - Every API call is scoped to the signed-in account; user ids in requests are
   ignored.
-- Deleting an account removes the login and all personal data first, then
-  detaches walk history from the person (`user_id` becomes NULL).
+- Deleting an account tells your auth service to remove the sign-in and all
+  personal data first, then detaches walk history from the person
+  (`user_id` becomes NULL) only once that succeeds (`app/src/account.js`).
 
 ## Security notes
 
 - Every query uses bound parameters; user text is escaped or sanitized before
   display; a strict Content-Security-Policy blocks inline and third-party script.
-- The login site rate-limits sign-in and invite guessing per real client IP and
-  temporarily bans abusive IPs. Sign-in codes are invalidated after 3 wrong tries.
+- Every write from the auth service to the app (account deletion, and looking up
+  or changing an account's extra features) requires a shared bearer token
+  (`INTERNAL_API_TOKEN`); nothing else can call it.
+- The app never stores an email address. `X-Auth-Email` can carry any stable
+  per-account identifier (production sends a placeholder, not a real email);
+  the app keeps only a keyed one-way hash of it (`app/src/emailHash.js`, secret
+  `EMAIL_HASH_PEPPER`, which must never change).
 - Secrets are read from environment files only. Nothing in this repository is a
   credential; see `deploy/env/*.example`.
+- Rate-limiting sign-in and invite attempts is your auth service's job, not
+  this app's; whatever you pair it with should do that per real client IP.
 
 If you find a security problem, please open a private security advisory on
 GitHub rather than a public issue.
@@ -73,27 +83,15 @@ In production the app receives `X-Auth-Email` and `X-Auth-Staff` headers from
 the proxy. For local experiments, put a tiny proxy in front that injects them.
 Never expose the app port directly: it trusts those headers.
 
-Login site (Python 3.12+):
-
-    cd login
-    python -m venv .venv && source .venv/bin/activate
-    pip install -r requirements.txt
-    export DJANGO_DEBUG=1 SITE_URL=http://127.0.0.1:8000
-    python manage.py migrate && python manage.py createcachetable
-    python manage.py create_staff you@example.org --superuser
-    python manage.py runserver
-    DJANGO_DEBUG=1 python manage.py test invites
-
-See [`login/SPEC.md`](login/SPEC.md) for the login site's requirements.
-
 ## Deploying
 
-`deploy/` holds what runs on the single server: `Caddyfile`, systemd units for
-both apps, nightly database backups, weekly photo backups, and a health check
-that emails when something breaks. Copy `deploy/env/*.example` to
-`/etc/dogwalk/env` and `/etc/shelterapp/env`, fill in real values, and keep
-them out of version control (`chmod 600`). The value of `INTERNAL_API_TOKEN`
-and `DOGWALK_INTERNAL_TOKEN` must match.
+`deploy/` holds what runs on the server for this app: `Caddyfile` (the
+`shelterwalk.com` block only; add your own auth service's block beside it),
+the `dogwalk` systemd unit, nightly database backups, weekly photo backups,
+and a health check that emails when something breaks. Copy
+`deploy/env/dogwalk.env.example` to `/etc/dogwalk/env`, fill in real values,
+and keep it out of version control (`chmod 600`). `INTERNAL_API_TOKEN` must
+match whatever your auth service sends as its bearer token.
 
 Replace the example domains and email addresses with your own.
 

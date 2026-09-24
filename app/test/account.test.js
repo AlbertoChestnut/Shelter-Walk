@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { hashEmail } = require('../src/emailHash');
 
 const PORT = 4100 + Math.floor(Math.random() * 90);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-acct-'));
@@ -123,7 +124,7 @@ test('deleting: login removed first, walks kept but disowned, everything persona
   assert.equal(db.prepare('SELECT COUNT(*) c FROM walks WHERE user_id IS NULL AND ended_at IS NOT NULL').get().c, 3, 'their 3 walks are now unattributed');
   assert.equal(db.prepare("SELECT notes FROM walks WHERE notes = 'walk note stays'").get().notes, 'walk note stays');
   assert.equal(db.prepare('SELECT 1 FROM users WHERE id = ?').get(ids.leaver), undefined);
-  assert.equal(db.prepare('SELECT 1 FROM users WHERE auth_email = ?').get(LEAVER), undefined, 'their email is gone');
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE auth_email_hash = ?').get(hashEmail(LEAVER)), undefined, 'their email is gone');
   for (const t of ['notification_prefs', 'push_subscriptions', 'saved_filters']) {
     assert.equal(db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE user_id = ?`).get(ids.leaver).c, 0, `${t} cleared`);
   }

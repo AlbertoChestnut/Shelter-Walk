@@ -27,36 +27,19 @@ shelterwalk.com {
 	}
 
 	handle {
+		# Every other request must be authenticated by your own sign-in
+		# service first (not included in this repo). It must expose an
+		# endpoint that returns 2xx for a signed-in visitor and a non-2xx
+		# otherwise, and set these two response headers on success so Caddy
+		# forwards them to the app below:
+		#   X-Auth-Email  a stable identifier for the signed-in account, an
+		#                 email or any placeholder (the app trusts this
+		#                 completely, so nothing but Caddy may ever set it)
+		#   X-Auth-Staff  "1" for staff/admin accounts, otherwise absent
 		forward_auth 127.0.0.1:8001 {
 			uri /internal/authcheck/
 			copy_headers X-Auth-Email X-Auth-Staff
 		}
 		reverse_proxy 127.0.0.1:3000
 	}
-}
-
-login.shelterwalk.com {
-	encode gzip
-	import security_headers
-
-	# Sign-in pages use a few inline scripts/styles (allauth + our templates),
-	# so script-src keeps 'unsafe-inline' here; the policy still forbids any
-	# third-party script, embedding this site in a frame, and posting forms
-	# anywhere except this site and the app it signs you into.
-	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self' https://shelterwalk.com; frame-ancestors 'none'"
-
-	# Only Caddy's own forward_auth subrequest (from the shelterwalk.com
-	# site block above) should ever hit this -- never expose it to the
-	# public internet.
-	handle /internal/* {
-		respond 404
-	}
-
-	handle /static/* {
-		root * /opt/shelterapp/app/staticfiles
-		uri strip_prefix /static
-		file_server
-	}
-
-	reverse_proxy 127.0.0.1:8001
 }

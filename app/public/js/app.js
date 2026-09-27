@@ -69,6 +69,8 @@
     presetMinDaysAtLeast: null, // set by the "Beginner" built-in preset
     ageMinYears: null, // adopter age range; null = no limit
     ageMaxYears: null,
+    minShelterDays: null, // advanced filter: at least this many days in the shelter (this stay)
+    openFilterSections: new Set(), // folding filter sections the user has opened ('breed', 'advanced')
     availableSort: 'shelterTime',
     availableSortDir: 'desc',
     availableSearch: '',
@@ -2600,6 +2602,18 @@
     const breedHide = breedKeys.filter((k) => filters[k] === 'hide').map((k) => k.slice(6));
     if (breedOnly.length) result = result.filter((d) => breedOnly.some((b) => dogHasBreed(d, b)));
     if (breedHide.length) result = result.filter((d) => !breedHide.some((b) => dogHasBreed(d, b)));
+    // Advanced: shelter tags (compatibility, heartworm, stray hold, video)
+    // are each their own AND'd criterion; sizes OR within each mode.
+    Object.keys(filters).filter((k) => k.startsWith('tag:')).forEach((k) => {
+      const tag = k.slice(4);
+      if (filters[k] === 'only') result = result.filter((d) => (d.tags || []).includes(tag));
+      else if (filters[k] === 'hide') result = result.filter((d) => !(d.tags || []).includes(tag));
+    });
+    const sizeOnly = SIZE_FILTERS.filter((z) => filters[z.key] === 'only');
+    const sizeHide = SIZE_FILTERS.filter((z) => filters[z.key] === 'hide');
+    if (sizeOnly.length) result = result.filter((d) => sizeOnly.some((z) => z.test(weightLbs(d))));
+    if (sizeHide.length) result = result.filter((d) => !sizeHide.some((z) => z.test(weightLbs(d))));
+    if (state.minShelterDays != null) result = result.filter((d) => (d.daysInShelter || 0) >= state.minShelterDays);
     if (state.ageMinYears != null || state.ageMaxYears != null) {
       // "Up to 3 years" includes 3 years and some months. Unknown ages drop out.
       const minMonths = state.ageMinYears != null ? state.ageMinYears * 12 : 0;
@@ -2638,6 +2652,31 @@
     return names.map((name) => ({ name, count: dogs.filter((d) => dogHasBreed(d, name)).length }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
+  // Advanced filters. Tags come straight from the shelter's listing.
+  const TAG_FILTERS = [
+    { tag: 'Best in Home without Dogs', label: 'Best without other dogs' },
+    { tag: 'Dog Selective', label: 'Dog selective' },
+    { tag: 'No small dogs or little critters', label: 'No small dogs / critters' },
+    { tag: 'Best in Home without Cats', label: 'Best without cats' },
+    { tag: 'Best in Home without Children', label: 'Best without children' },
+    { tag: 'Not compatible with Livestock', label: 'Not good with livestock' }
+  ];
+  const HEALTH_TAG_FILTERS = [
+    { tag: 'Heartworm Positive', label: 'Heartworm positive' },
+    { tag: 'On Stray Hold', label: 'On stray hold (not adoptable yet)' },
+    { tag: 'Video', label: '🎬 Has a video' }
+  ];
+  function weightLbs(dog) {
+    const m = /([\d.]+)/.exec(dog.weight || '');
+    return m ? Number(m[1]) : null;
+  }
+  const SIZE_FILTERS = [
+    { key: 'size_small', label: 'Small (under 25 lbs)', test: (w) => w != null && w < 25 },
+    { key: 'size_medium', label: 'Medium (25-49)', test: (w) => w != null && w >= 25 && w < 50 },
+    { key: 'size_large', label: 'Large (50-79)', test: (w) => w != null && w >= 50 && w < 80 },
+    { key: 'size_xl', label: 'Extra large (80+)', test: (w) => w != null && w >= 80 }
+  ];
+  const SHELTER_DAYS_OPTIONS = [7, 14, 30, 60, 90, 180];
   const AGE_MIN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 10];
   const AGE_MAX_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10];
 
@@ -2717,6 +2756,7 @@
     state.presetMinDaysAtLeast = filter.minDaysAtLeast != null ? filter.minDaysAtLeast : null;
     state.ageMinYears = filter.ageMinYears != null ? filter.ageMinYears : null;
     state.ageMaxYears = filter.ageMaxYears != null ? filter.ageMaxYears : null;
+    state.minShelterDays = filter.minShelterDays != null ? filter.minShelterDays : null;
     state.showMoreFilters = true;
     state.filtersTab = 'filters';
     redrawAvailableList();
@@ -2728,7 +2768,8 @@
       locationFilter: [...state.locationFilter],
       minDaysAtLeast: state.presetMinDaysAtLeast,
       ageMinYears: state.ageMinYears,
-      ageMaxYears: state.ageMaxYears
+      ageMaxYears: state.ageMaxYears,
+      minShelterDays: state.minShelterDays
     };
   }
 
@@ -2738,6 +2779,7 @@
     state.presetMinDaysAtLeast = null;
     state.ageMinYears = null;
     state.ageMaxYears = null;
+    state.minShelterDays = null;
     state.needsShiftWalkOnly = false;
     state.showFoster = false;
     redrawAvailableList();
@@ -2842,6 +2884,32 @@
       </div>`;
     const breedChips = breedCounts(state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster'))
       .map((b) => textChip(`breed:${b.name}`, `${esc(b.name)} <span class="chip-count">${b.count}</span>`, b.name)).join('');
+    const listedDogs = state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster');
+    const tagChips = (list) => list.map((t) => {
+      const n = listedDogs.filter((d) => (d.tags || []).includes(t.tag)).length;
+      return textChip(`tag:${t.tag}`, `${esc(t.label)} <span class="chip-count">${n}</span>`, t.tag);
+    }).join('');
+    const sizeChips = SIZE_FILTERS.map((z) => {
+      const n = listedDogs.filter((d) => z.test(weightLbs(d))).length;
+      return textChip(z.key, `${esc(z.label)} <span class="chip-count">${n}</span>`);
+    }).join('');
+    const advancedSectionHtml = () => `
+        <details class="advanced-filters" data-section="advanced" ${advancedActive || state.openFilterSections.has('advanced') ? 'open' : ''}>
+          <summary class="small muted">Advanced filters${advancedActive ? ` (${advancedActive} active)` : ''}</summary>
+          <p class="small muted" style="margin:6px 0 2px;">Home compatibility (hide these to find dogs without the restriction):</p>
+          <div class="marker-row" style="gap:6px;">${tagChips(TAG_FILTERS)}</div>
+          <p class="small muted" style="margin:8px 0 2px;">Size (by listed weight):</p>
+          <div class="marker-row" style="gap:6px;">${sizeChips}</div>
+          <p class="small muted" style="margin:8px 0 2px;">Health and status:</p>
+          <div class="marker-row" style="gap:6px;">${tagChips(HEALTH_TAG_FILTERS)}</div>
+          <div class="row" style="align-items:center;gap:6px;margin-top:8px;">
+            <label class="small muted" for="minShelterDaysSelect" style="flex:0 0 auto;margin:0;">In the shelter at least:</label>
+            <select id="minShelterDaysSelect" class="small" style="flex:1;">
+              <option value="">Any time</option>
+              ${SHELTER_DAYS_OPTIONS.map((n) => `<option value="${n}" ${state.minShelterDays === n ? 'selected' : ''}>${n} days</option>`).join('')}
+            </select>
+          </div>
+        </details>`;
     const locationChips = KENNEL_LETTERS.map((letter) => `
       <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 44px;">${letter}</button>`).join('');
 
@@ -2858,8 +2926,12 @@
     const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
     const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
     const ageActive = state.ageMinYears != null || state.ageMaxYears != null ? 1 : 0;
+    const tagActive = Object.keys(state.markerFilters).filter((k) => k.startsWith('tag:')).length;
+    const sizeModes = SIZE_FILTERS.map((z) => state.markerFilters[z.key]);
+    const sizeActive = (sizeModes.includes('only') ? 1 : 0) + (sizeModes.includes('hide') ? 1 : 0);
+    const advancedActive = tagActive + sizeActive + (state.minShelterDays != null ? 1 : 0);
     const activeFilterCount = (state.showFoster ? 1 : 0) + (state.needsShiftWalkOnly ? 1 : 0)
-      + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive
+      + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive + advancedActive
       + state.locationFilter.size + (state.presetMinDaysAtLeast != null ? 1 : 0);
 
     // One-time pointer to the Guide for people who were using the app before
@@ -2909,13 +2981,14 @@
         <label class="small muted" style="margin:6px 0 0;">Tap once for only, twice to hide, again to clear:</label>
         <div class="marker-row" style="gap:6px;">${adopterChips}</div>
         ${ageRow}
-        <details class="breed-filter" ${breedActive ? 'open' : ''}>
+        <details class="breed-filter" data-section="breed" ${breedActive || state.openFilterSections.has('breed') ? 'open' : ''}>
           <summary class="small muted">Breed${breedActive ? ' (filtering)' : ''}</summary>
           <div class="marker-row" style="gap:6px;margin-top:6px;">${breedChips}</div>
         </details>
         <div class="marker-row" style="gap:6px;">${starChip}</div>
         <div class="marker-row" style="gap:6px;">${blueChips}</div>
         <div class="marker-row" style="gap:6px;">${otherChips}</div>
+        ${advancedSectionHtml()}
         <button type="button" id="clearFiltersBtn" class="btn small-btn" style="margin-top:8px;">Clear Filters</button>
         `}
         ` : ''}
@@ -3025,6 +3098,15 @@
     const readAge = (el) => (el.value === '' ? null : Number(el.value));
     if (ageMin) ageMin.addEventListener('change', () => { state.ageMinYears = readAge(ageMin); redrawAvailableList(); });
     if (ageMax) ageMax.addEventListener('change', () => { state.ageMaxYears = readAge(ageMax); redrawAvailableList(); });
+    // Folding sections stay as the user left them across redraws.
+    document.querySelectorAll('details[data-section]').forEach((el) => {
+      el.addEventListener('toggle', () => {
+        if (el.open) state.openFilterSections.add(el.dataset.section);
+        else state.openFilterSections.delete(el.dataset.section);
+      });
+    });
+    const minDaysSel = document.getElementById('minShelterDaysSelect');
+    if (minDaysSel) minDaysSel.addEventListener('change', () => { state.minShelterDays = readAge(minDaysSel); redrawAvailableList(); });
     const shiftCb = document.getElementById('needsShiftWalkCheck');
     if (shiftCb) shiftCb.addEventListener('change', () => { state.needsShiftWalkOnly = shiftCb.checked; redrawAvailableList(); });
     document.querySelectorAll('.filter-chip[data-filter-key]').forEach((chip) => {

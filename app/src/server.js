@@ -827,6 +827,21 @@ app.get('/api/dogs/:id/walk-stats', (req, res) => {
   res.json({ mine, everyone });
 });
 
+// Every finished walk this dog has had, newest first. Each one says only
+// whether it was yours: never who else walked, and no notes, since a note
+// with a time next to it could give away who wrote it.
+app.get('/api/dogs/:id/walk-history', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const dog = db.prepare('SELECT name FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  if (!dog) return res.status(404).json({ error: 'Dog not found' });
+  const walks = db.prepare(`
+    SELECT started_at AS startedAt, ended_at AS endedAt, duration_seconds AS durationSeconds,
+           CASE WHEN user_id = ? THEN 1 ELSE 0 END AS mine
+    FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL ORDER BY started_at DESC
+  `).all(req.me.id, id).map((w) => ({ ...w, mine: w.mine === 1 }));
+  res.json({ name: dog.name, walks });
+});
+
 // blank + alphabetical letter codes, with the EVO rectangle last.
 const VALID_BLUE_MARKERS = [
   'blue', 'blue_c', 'blue_d', 'blue_e', 'blue_h', 'blue_j',
@@ -1087,7 +1102,14 @@ app.get('/api/walks/active', (req, res) => {
     WHERE w.ended_at IS NULL AND w.user_id = ? ORDER BY w.started_at DESC LIMIT 1
   `).get(userId);
   if (row) { row.photo_url = cachedPhotoUrl(row.dog_id, row.photo_url); row.stopsAt = walkStopsAt(row); }
-  res.json({ walk: row || null });
+  // No walk going, but the time limit stopped one recently and the walker
+  // hasn't said when it really ended: the app shows its end screen again.
+  const wrapUp = row ? null : db.prepare(`
+    SELECT id, dog_id, location, started_at, ended_at FROM walks
+    WHERE user_id = ? AND wrap_up_pending = 1 AND auto_stopped = 1 AND ended_at > ?
+    ORDER BY started_at DESC LIMIT 1
+  `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
+  res.json({ walk: row || null, wrapUp: wrapUp || null });
 });
 
 app.post('/api/walks/start', (req, res) => {
@@ -1133,6 +1155,9 @@ app.post('/api/walks/start', (req, res) => {
   }
   if (trimmedLocation) setKennelLocation(dogId, trimmedLocation);
 
+  // Out with the next dog: any stopped walk still waiting for its real end
+  // time keeps the time-limit end (it can still be fixed in Stats).
+  db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ? AND wrap_up_pending = 1').run(userId);
   const startedAt = new Date().toISOString();
   const info = db.prepare(`
     INSERT INTO walks (dog_id, location, started_at, user_id) VALUES (?, ?, ?, ?)
@@ -1187,13 +1212,28 @@ app.post('/api/walks/:id/extend', (req, res) => {
   res.json({ walkId: id, stopsAt: walkStopsAt(updated), addedMinutes: EXTEND_MINUTES });
 });
 
+// Ending a walk by hand: it ended when End Walk was tapped (endTappedAt),
+// not when the notes were saved. That's also true if the time limit ran out
+// while the notes were being typed.
+//
+// Wrapping up a walk the time limit stopped (wrap_up_pending): the walker
+// gets the same end screen, and says when it really ended -- endedAt, any
+// time from the start up to now (walks top out at MAX_TOTAL_MINUTES), or
+// left out to keep the time-limit end. A changed time marks the walk as
+// edited, keeping the time-limit end as the original.
 app.put('/api/walks/:id/end', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { notes } = req.body;
   const walk = db.prepare('SELECT * FROM walks WHERE id = ?').get(id);
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
   if (walkAccessDenied(req, res, walk)) return;
-  if (walk.ended_at) {
+  const now = Date.now();
+  const handEndLimit = Math.min(now, new Date(walkStopsAt(walk)).getTime());
+  const tapped = req.body.endTappedAt ? walkEndTime(req.body.endTappedAt, walk.started_at, handEndLimit) : null;
+  if (tapped && tapped.error) return res.status(400).json({ error: tapped.error });
+  const endedByHand = !walk.ended_at || (walk.auto_stopped && tapped && new Date(tapped.iso) < new Date(walk.ended_at));
+  const wrappingUp = !endedByHand && walk.auto_stopped && walk.wrap_up_pending;
+  if (!endedByHand && !wrappingUp) {
     return res.status(409).json({
       error: walk.auto_stopped ? `This walk was stopped automatically after ${Math.round(walk.duration_seconds / 60)} minutes.` : 'Walk already ended',
       autoStopped: !!walk.auto_stopped,
@@ -1202,14 +1242,33 @@ app.put('/api/walks/:id/end', (req, res) => {
     });
   }
 
-  const endedAt = new Date().toISOString();
+  let endedAt;
+  let recordedEnd;
+  if (endedByHand) {
+    endedAt = tapped ? tapped.iso : new Date(handEndLimit).toISOString();
+    recordedEnd = endedAt;
+  } else {
+    const latest = Math.min(now, new Date(walk.started_at).getTime() + MAX_TOTAL_MINUTES * 60000);
+    const picked = req.body.endedAt
+      ? walkEndTime(req.body.endedAt, walk.started_at, latest, `Walks can't be longer than ${MAX_TOTAL_MINUTES / 60} hours.`)
+      : { iso: walk.ended_at };
+    if (picked.error) return res.status(400).json({ error: picked.error });
+    endedAt = picked.iso;
+    recordedEnd = walk.ended_at;
+  }
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(walk.started_at)) / 1000));
+  const edited = endedAt !== recordedEnd;
+  const autoStopped = wrappingUp ? 1 : 0;
 
   db.prepare(`
-    UPDATE walks SET ended_at = ?, duration_seconds = ?, notes = ? WHERE id = ?
-  `).run(endedAt, durationSeconds, notes ? String(notes).trim() : null, id);
+    UPDATE walks SET ended_at = ?, duration_seconds = ?, notes = ?, auto_stopped = ?, wrap_up_pending = 0,
+           edited = CASE WHEN ? THEN 1 ELSE edited END,
+           original_started_at = CASE WHEN ? THEN COALESCE(original_started_at, started_at) ELSE original_started_at END,
+           original_ended_at = CASE WHEN ? THEN COALESCE(original_ended_at, ?) ELSE original_ended_at END
+    WHERE id = ?
+  `).run(endedAt, durationSeconds, notes ? String(notes).trim() : null, autoStopped, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
 
-  res.json({ walkId: id, endedAt, durationSeconds });
+  res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped });
 });
 
 // Correct a walk's recorded times after the fact (you forgot to end it
@@ -1223,6 +1282,10 @@ app.put('/api/walks/:id', (req, res) => {
   const endedAt = req.body.endedAt !== undefined ? req.body.endedAt : walk.ended_at;
   const location = req.body.location !== undefined ? String(req.body.location).trim() : walk.location;
   const notes = req.body.notes !== undefined ? (req.body.notes ? String(req.body.notes).trim() : null) : walk.notes;
+  if (endedAt && (endedAt !== walk.ended_at || startedAt !== walk.started_at)) {
+    const checked = walkEndTime(endedAt, startedAt, Date.now());
+    if (checked.error) return res.status(400).json({ error: checked.error });
+  }
   const durationSeconds = endedAt
     ? Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000))
     : null;
@@ -1256,6 +1319,8 @@ app.post('/api/walks/manual', (req, res) => {
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
+  const checked = walkEndTime(endedAt, startedAt, Date.now());
+  if (checked.error) return res.status(400).json({ error: checked.error });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
   const cleanLocation = location && String(location).trim() ? String(location).trim() : null;
   const info = db.prepare(`
@@ -1437,12 +1502,31 @@ app.use((err, req, res, next) => {
 // The walker can add EXTEND_MINUTES at a time (before it stops) for a longer
 // walk. A walk the system ended is flagged auto_stopped, and is recorded as
 // running exactly to its limit -- not to whenever we noticed.
-const AUTO_STOP_MINUTES = 20;
+const AUTO_STOP_MINUTES = 30;
 const EXTEND_MINUTES = 10;
 const MAX_TOTAL_MINUTES = 180;
 const WARN_MINUTES_BEFORE = 3;
+// How long a stopped walk keeps asking for its real end time when the app is
+// next opened. After that it keeps the time-limit end (fixable in Stats).
+const WRAP_UP_HOURS = 12;
 const walkLimitMinutes = (w) => AUTO_STOP_MINUTES + (w.extend_minutes || 0);
 const walkStopsAt = (w) => new Date(new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000).toISOString();
+
+// Phones and the server can disagree on the time by a little, so an end
+// time up to this far in the future is taken as "now", not rejected.
+const CLOCK_SKEW_MS = 2 * 60000;
+// Checks an end time the walker sent: after the start, and no later than
+// latestMs (now, or an earlier cap such as the walk's limit, which gets
+// tooLateError). Returns { iso } or { error }.
+function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time can't be after the walk's time limit.") {
+  const ms = new Date(value).getTime();
+  if (!Number.isFinite(ms)) return { error: 'That end time is not a valid time.' };
+  if (ms <= new Date(startedAt).getTime()) return { error: 'The end time has to be after the walk started.' };
+  if (ms > latestMs + CLOCK_SKEW_MS) {
+    return { error: latestMs < Date.now() - CLOCK_SKEW_MS ? tooLateError : "The end time can't be in the future." };
+  }
+  return { iso: new Date(Math.min(ms, latestMs)).toISOString() };
+}
 
 function enforceWalkLimits() {
   const open = db.prepare(`
@@ -1454,13 +1538,13 @@ function enforceWalkLimits() {
     const stopsAt = new Date(walkStopsAt(w)).getTime();
     if (now >= stopsAt) {
       const minutes = walkLimitMinutes(w);
-      db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1 WHERE id = ? AND ended_at IS NULL')
+      db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
         .run(new Date(stopsAt).toISOString(), minutes * 60, w.id);
       console.warn(`[server] auto-stopped walk ${w.id} after ${minutes} min`);
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: stopped automatically`,
-          body: `Walks stop after ${minutes} minutes. If it ran longer, you can fix the time in Stats.`,
+          body: `Walks stop after ${minutes} minutes. Open the app to say when it really ended.`,
           url: '/',
           tag: WALK_PUSH_TAG
         }).catch(() => {});

@@ -53,6 +53,7 @@ html[data-theme="dark"] .badge.not-eligible { background: rgba(217, 105, 90, 0.2
 html[data-theme="dark"] .badge.neutral { background: rgba(255, 255, 255, 0.08); }
 html[data-theme="dark"] .avail-card.evo-caution { background: rgba(217, 105, 90, 0.12); }
 html[data-theme="dark"] .tag-chip { background: rgba(63, 138, 99, 0.18); color: #8fd6ac; }
+html[data-theme="dark"] .walk-history-row.mine { background: rgba(63, 138, 99, 0.18); }
 
 /* Same translucent-card effect as the light theme, just tinted from the
    dark surface color instead of white -- otherwise this one card would
@@ -1127,6 +1128,12 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .autostop-card .btn { width: auto; flex: 0 0 auto; }
 .autostop-card.warn { border-color: var(--amber); background: rgba(217, 164, 65, 0.15); }
 .autostop-card.warn #autoStopText { font-weight: 700; }
+/* Walk history popup: one row per walk, yours highlighted. */
+.walk-history-list { max-height: 60vh; overflow-y: auto; }
+.walk-history-day { font-weight: 700; margin: 12px 0 4px; }
+.walk-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 8px; }
+.walk-history-row .badge { margin-top: 0; }
+.walk-history-row.mine { background: #e3f3e9; }
 .badge.auto-stopped { background: rgba(217, 164, 65, 0.22); color: var(--text); }
 .autostop-note { background: rgba(217, 164, 65, 0.15); border-radius: 10px; padding: 8px 10px; text-align: left; }
 

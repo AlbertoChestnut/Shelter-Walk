@@ -426,6 +426,10 @@ db.exec(`
 if (!walkColumns.includes('auto_stopped')) db.exec('ALTER TABLE walks ADD COLUMN auto_stopped INTEGER NOT NULL DEFAULT 0');
 if (!walkColumns.includes('extend_minutes')) db.exec('ALTER TABLE walks ADD COLUMN extend_minutes INTEGER NOT NULL DEFAULT 0');
 if (!walkColumns.includes('warned')) db.exec('ALTER TABLE walks ADD COLUMN warned INTEGER NOT NULL DEFAULT 0');
+// wrap_up_pending: the time limit stopped this walk and the walker hasn't
+// said yet when it really ended (they get the end screen next time they
+// open the app, as if the walk were still going).
+if (!walkColumns.includes('wrap_up_pending')) db.exec('ALTER TABLE walks ADD COLUMN wrap_up_pending INTEGER NOT NULL DEFAULT 0');
 
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`

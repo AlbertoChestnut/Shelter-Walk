@@ -353,6 +353,46 @@
     e.stopPropagation();
     showDogQrLightbox(trigger.dataset.dogId, trigger.dataset.dogName);
   });
+  // Every finished walk a dog has had, grouped by day. Yours are marked;
+  // anyone else's just says "another volunteer" (the server never sends who).
+  async function showDogWalkHistory(dogId) {
+    const popup = document.getElementById('markerInfoPopup');
+    const content = document.getElementById('markerInfoPopupContent');
+    if (!popup || !content) return;
+    content.innerHTML = '<h3 style="margin-top:0;">🕘 Walk history</h3><p class="muted small center">Loading…</p>';
+    openOverlay(popup);
+    try {
+      const { name, walks } = await api(`/api/dogs/${dogId}/walk-history`);
+      const mineCount = walks.filter((w) => w.mine).length;
+      const days = new Map();
+      for (const w of walks) {
+        const key = dateKey(w.startedAt);
+        if (!days.has(key)) days.set(key, []);
+        days.get(key).push(w);
+      }
+      const daysHtml = Array.from(days.entries()).map(([key, dayWalks]) => `
+        <p class="small walk-history-day">${fmtDayHeading(key)}</p>
+        ${dayWalks.map((w) => `
+          <div class="walk-history-row${w.mine ? ' mine' : ''}">
+            <span class="small">${fmtClock(w.startedAt)} – ${fmtClock(w.endedAt)} · ${fmtDuration(w.durationSeconds)}</span>
+            ${w.mine ? '<span class="badge eligible">You</span>' : '<span class="small muted">Another volunteer</span>'}
+          </div>`).join('')}`).join('');
+      content.innerHTML = `
+        <h3 style="margin-top:0;">🕘 ${esc(name)}'s walks</h3>
+        ${walks.length
+    ? `<p class="small muted">${walks.length} walk${walks.length === 1 ? '' : 's'}${mineCount ? `, ${mineCount} with you` : ''}.</p><div class="walk-history-list">${daysHtml}</div>`
+    : `<p class="small muted">${esc(name)} hasn't been walked yet.</p>`}
+      `;
+    } catch (err) {
+      content.innerHTML = `<h3 style="margin-top:0;">🕘 Walk history</h3><p class="small muted">Couldn't load the walk history: ${esc(err.message)}</p>`;
+    }
+  }
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.walk-history-btn');
+    if (!trigger) return;
+    e.stopPropagation();
+    showDogWalkHistory(trigger.dataset.dogId);
+  });
   document.getElementById('closeDogQrLightboxBtn').addEventListener('click', () => {
     closeOverlay(document.getElementById('dogQrLightbox'));
   });
@@ -537,6 +577,7 @@
     return `
       <div class="row" style="margin-top:6px;">
         <button class="btn small-btn view-profile-btn" data-id="${dogId}">View Info</button>
+        <button class="btn small-btn walk-history-btn" data-dog-id="${dogId}" title="Walk history" aria-label="Walk history" style="flex:0 0 auto;width:auto;">🕘</button>
         <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}" ${blocked ? 'disabled title="Finish or cancel your current walk first"' : ''}>${cannotWalk ? '✎ Edit' : '▶ Walk / Edit'}</button>
       </div>`;
   }
@@ -1856,7 +1897,10 @@
         <a href="${esc(dog.adoptUrl)}" target="_blank" rel="noopener">View on pets.wake.gov →</a>
         <button type="button" class="link-btn dog-qr-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}">▦ Show QR code</button>
       </p>
-      <button type="button" id="profileStatsBtn" class="btn small-btn" style="margin-top:4px;">📊 Our walks together</button>
+      <div class="row" style="margin-top:4px;">
+        <button type="button" id="profileStatsBtn" class="btn small-btn">📊 Our walks together</button>
+        <button type="button" class="btn small-btn walk-history-btn" data-dog-id="${dog.id}">🕘 Walk history</button>
+      </div>
       <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
       <p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>
     `;
@@ -4451,6 +4495,8 @@
     document.getElementById('viewProfileBtn').addEventListener('click', () => showProfileSheet(w.dog, state.walk.allWalks));
     document.getElementById('endWalkBtn').addEventListener('click', () => {
       clearInterval(timerInterval);
+      // The walk ended now, not when the notes are saved.
+      state.walk.endTappedAt = new Date().toISOString();
       state.walk.phase = 'ending';
       renderWalk();
     });
@@ -4481,7 +4527,7 @@
 
     if (timerInterval) clearInterval(timerInterval);
     const startedMs = new Date(w.startedAt).getTime();
-    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + 20 * 60000);
+    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + 30 * 60000);
     const tick = () => {
       const el = document.getElementById('timerDisplay');
       if (!el) { clearInterval(timerInterval); return; }
@@ -4505,9 +4551,14 @@
     if (handlingAutoStop || state.walk.phase !== 'active') return;
     handlingAutoStop = true;
     try {
-      const { walk } = await api(`/api/walks/active?userId=${state.currentUser.id}`);
+      const { walk, wrapUp } = await api(`/api/walks/active?userId=${state.currentUser.id}`);
       if (walk && walk.id === state.walk.walkId) {
         state.walk.stopsAt = walk.stopsAt; // still running (extended elsewhere): carry on
+        renderWalk();
+      } else if (wrapUp && wrapUp.id === state.walk.walkId && state.walk.phase === 'active') {
+        // Same end screen as End Walk, asking when it really ended.
+        state.walk.wrapUpEndedAt = wrapUp.ended_at;
+        state.walk.phase = 'ending';
         renderWalk();
       } else if (state.walk.phase === 'active') {
         const secs = Math.round((new Date(state.walk.stopsAt || Date.now()).getTime() - new Date(state.walk.startedAt).getTime()) / 1000);
@@ -4522,13 +4573,31 @@
     } finally { handlingAutoStop = false; }
   }
 
+  // Ending by hand: the walk ended when End Walk was tapped. If the time
+  // limit stopped it instead (wrapUpEndedAt), the same screen asks when it
+  // really ended: just now, at the limit, or a picked time -- after the
+  // start, not in the future, and within the 3 hour maximum. A changed time
+  // shows as Edited, with the time-limit end kept as the original.
   function renderWalkEnding() {
     const w = state.walk;
+    const wrapUp = !!w.wrapUpEndedAt;
+    const tappedAt = w.endTappedAt || new Date().toISOString();
+    const startedMs = new Date(w.startedAt).getTime();
+    const latestMs = () => Math.min(Date.now(), startedMs + 3 * 3600000);
     appEl.innerHTML = `
       <div class="stack">
         <div class="card">
           <p class="walk-dog-name">${esc(w.dog.name)}</p>
-          <p class="center muted">Walk finished. Add any notes before saving.</p>
+          ${wrapUp ? `
+          <p class="small autostop-note">⏱ This walk reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.</p>
+          <label>When did the walk end?</label>
+          <div id="endTimeChoice" class="marker-row" style="gap:6px;">
+            <button type="button" class="btn small-btn filter-chip active" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>
+            <button type="button" class="btn small-btn filter-chip" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(w.wrapUpEndedAt)}</button>
+            <button type="button" class="btn small-btn filter-chip" data-end="pick" style="width:auto;flex:1 1 0;">Pick a time</button>
+          </div>
+          <input type="time" id="walkEndTime" class="hidden" value="${toLocalTimeInput(w.wrapUpEndedAt)}" style="margin-top:6px;" />
+          <p class="small muted" id="walkEndSummary" style="margin:4px 0 10px;"></p>` : '<p class="center muted">Walk finished. Add any notes before saving.</p>'}
           <label for="walkNotes">Note for other walkers (optional)</label>
           <textarea id="walkNotes" placeholder="e.g. Pulls on leash, loves other dogs, needs a firmer walker"></textarea>
           <p class="small muted" style="margin:2px 0 10px;">Shared with every walker. Your name is not shown.</p>
@@ -4538,22 +4607,65 @@
         <button id="saveWalkBtn" class="btn primary big">Save &amp; Finish</button>
         <button id="cancelWalkBtn" class="btn">Cancel Walk</button>
       </div>`;
+
+    // Wrap-up only: the chosen end time as an ISO time, or null to keep the
+    // time-limit end. A picked time earlier in the day than the start means
+    // the walk ran past midnight.
+    let choice = 'now';
+    const endInput = document.getElementById('walkEndTime');
+    const chosenEnd = () => {
+      if (choice === 'now') return new Date(latestMs()).toISOString();
+      if (choice === 'limit' || !endInput.value || endInput.value === toLocalTimeInput(w.wrapUpEndedAt)) return null;
+      let ms = new Date(localTimeToIso(dateKey(w.startedAt), endInput.value)).getTime();
+      if (ms <= startedMs) ms += 24 * 3600000;
+      return new Date(ms).toISOString();
+    };
+    let summaryTimer = null;
+    if (wrapUp) {
+      const updateEndSummary = () => {
+        const summary = document.getElementById('walkEndSummary');
+        if (!summary) { clearInterval(summaryTimer); return; }
+        const secs = (new Date(chosenEnd() || w.wrapUpEndedAt).getTime() - startedMs) / 1000;
+        summary.textContent = `Walk time: ${fmtDuration(secs)}`;
+      };
+      document.querySelectorAll('#endTimeChoice [data-end]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          choice = btn.dataset.end;
+          document.querySelectorAll('#endTimeChoice [data-end]').forEach((b) => b.classList.toggle('active', b === btn));
+          endInput.classList.toggle('hidden', choice !== 'pick');
+          if (choice === 'pick') endInput.focus();
+          updateEndSummary();
+        });
+      });
+      endInput.addEventListener('input', updateEndSummary);
+      updateEndSummary();
+      summaryTimer = setInterval(updateEndSummary, 15000); // "Just now" keeps moving
+    }
+
     document.getElementById('saveWalkBtn').addEventListener('click', async () => {
       const notes = document.getElementById('walkNotes').value.trim();
       const privateNote = document.getElementById('walkPrivateNote').value.trim();
+      const endedAt = wrapUp ? chosenEnd() : null;
+      if (endedAt && choice === 'pick') {
+        const ms = new Date(endedAt).getTime();
+        if (ms > Date.now()) { appAlert("The end time can't be in the future."); return; }
+        if (ms > startedMs + 3 * 3600000) { appAlert("Walks can't be longer than 3 hours."); return; }
+      }
+      const body = wrapUp ? { notes, ...(endedAt ? { endedAt } : {}) } : { notes, endTappedAt: tappedAt };
       try {
         let res;
         try {
-          res = await api(`/api/walks/${w.walkId}/end`, { method: 'PUT', body: JSON.stringify({ notes }) });
+          res = await api(`/api/walks/${w.walkId}/end`, { method: 'PUT', body: JSON.stringify(body) });
         } catch (err) {
-          // The time limit hit while they were typing notes: the walk is
-          // already saved (flagged as auto-stopped), so just attach the notes.
+          // Already stopped by the time limit and no longer waiting for an
+          // end time (e.g. saved from another device): just attach the notes.
           if (err.status === 409 && err.body && err.body.autoStopped) {
             if (notes) await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ notes }) }).catch(() => {});
             res = { durationSeconds: err.body.durationSeconds };
             state.walk.autoStopped = true;
           } else { throw err; }
         }
+        clearInterval(summaryTimer);
         state.walk.durationSeconds = res.durationSeconds;
         if (privateNote) {
           // Never blocks saving the walk itself.
@@ -4617,7 +4729,7 @@
     refreshUpdatesBadge();
     refreshUpdatesTabVisibility();
     try {
-      const { walk } = await api(`/api/walks/active?userId=${state.currentUser.id}`);
+      const { walk, wrapUp } = await api(`/api/walks/active?userId=${state.currentUser.id}`);
       if (walk) {
         const { dog, walks } = await api(`/api/dogs/${walk.dog_id}?userId=${state.currentUser.id}`);
         state.walk = {
@@ -4628,6 +4740,20 @@
           startedAt: walk.started_at,
           stopsAt: walk.stopsAt,
           location: walk.location
+        };
+        switchTab('walk');
+        return;
+      }
+      if (wrapUp) {
+        const { dog, walks } = await api(`/api/dogs/${wrapUp.dog_id}?userId=${state.currentUser.id}`);
+        state.walk = {
+          phase: 'ending',
+          dog,
+          allWalks: walks,
+          walkId: wrapUp.id,
+          startedAt: wrapUp.started_at,
+          wrapUpEndedAt: wrapUp.ended_at,
+          location: wrapUp.location
         };
         switchTab('walk');
         return;

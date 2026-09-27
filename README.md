@@ -26,8 +26,12 @@ dog listings; no shelter data, photos, or volunteer data are in this repository.
 
 - **Available list** with filters, experience levels, and time-slot awareness
 - **Scan a kennel QR code**, start a timed walk, add notes at the end
-- **Walk limits:** walks stop automatically after 20 minutes (extendable to 3
+- **Walk limits:** walks stop automatically after 30 minutes (extendable to 3
   hours) and are flagged as automatically stopped
+- **Accurate end times:** a walk ends when End Walk is tapped, not when the
+  notes are saved. If the time limit stopped it, the walker gets the same end
+  screen (even after reopening the app) and says when it really ended: just
+  now, at the limit, or a picked time (never a future one)
 - **Stats:** personal stats, plus **Together**, anonymous shelter-wide totals
 - **Updates feed:** new, returned, and adopted dogs
 - **Guide (wiki):** staff-editable sections with sticker meanings and images

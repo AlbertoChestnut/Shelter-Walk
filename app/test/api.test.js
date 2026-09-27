@@ -125,7 +125,7 @@ test('a brand-new walker does not start with a pile of unread updates', async ()
   assert.equal((await call('GET', `/api/updates/unread-count?userId=${me.json.id}`)).json.count, 0);
 });
 
-test('walks stop automatically at 20 minutes, flagged, and can be extended before that', async () => {
+test('walks stop automatically at 30 minutes, flagged, and can be extended before that', async () => {
   // (The database seeds two default walkers, so real ids come from /api/me, not from counting.)
   const idOf = async (email) => (await call('GET', '/api/me', { user: email })).json.id;
   const [walkerId, secondId, thirdId] = [await idOf('walker@example.com'), await idOf('second@example.com'), await idOf('third@example.com')];
@@ -133,7 +133,7 @@ test('walks stop automatically at 20 minutes, flagged, and can be extended befor
   const now = Date.now();
   const insert = db.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (?, ?, ?)');
   const fresh = insert.run(1, walkerId, new Date(now - 5 * 60000).toISOString()).lastInsertRowid;      // 5 min in: still running
-  const nearEnd = insert.run(3, secondId, new Date(now - 19 * 60000).toISOString()).lastInsertRowid;    // 19 min in: about to stop
+  const nearEnd = insert.run(3, secondId, new Date(now - 29 * 60000).toISOString()).lastInsertRowid;    // 29 min in: about to stop
   const overdue = insert.run(2, thirdId, new Date(now - 90 * 60000).toISOString()).lastInsertRowid;    // forgotten for 90 min
   db.close();
   // A request that touches walk state runs the limit check right away.
@@ -146,26 +146,110 @@ test('walks stop automatically at 20 minutes, flagged, and can be extended befor
   assert.equal(rows[fresh].ended_at, null);
   assert.ok(rows[overdue].ended_at, 'the forgotten walk was stopped');
   assert.equal(rows[overdue].auto_stopped, 1, 'and flagged as automatic');
-  assert.equal(rows[overdue].duration_seconds, 1200, 'recorded as exactly the limit, not the 90 minutes it sat there');
-  assert.equal(new Date(rows[overdue].ended_at).getTime() - new Date(rows[overdue].started_at).getTime(), 20 * 60000);
+  assert.equal(rows[overdue].duration_seconds, 1800, 'recorded as exactly the limit, not the 90 minutes it sat there');
+  assert.equal(new Date(rows[overdue].ended_at).getTime() - new Date(rows[overdue].started_at).getTime(), 30 * 60000);
 
   // Extending: only the walker, only while running, and it pushes the deadline out.
   assert.equal((await call('POST', `/api/walks/${fresh}/extend`, { user: 'second@example.com' })).status, 403, 'not someone else\'s walk');
   const ext = await call('POST', `/api/walks/${fresh}/extend`);
   assert.equal(ext.status, 200);
-  assert.equal(new Date(ext.json.stopsAt).getTime() - new Date(rows[fresh].started_at).getTime(), 30 * 60000);
+  assert.equal(new Date(ext.json.stopsAt).getTime() - new Date(rows[fresh].started_at).getTime(), 40 * 60000);
   assert.equal((await call('POST', `/api/walks/${overdue}/extend`, { user: 'third@example.com' })).status, 409, 'too late to extend a stopped walk');
 
-  // Ending an auto-stopped walk explains itself instead of failing mysteriously.
+  // The walker wraps up a stopped walk once (no end time given keeps the
+  // time-limit end); after that, ending it again explains itself.
   const late = await call('PUT', `/api/walks/${overdue}/end`, { user: 'third@example.com', body: { notes: 'x' } });
-  assert.equal(late.status, 409);
+  assert.equal(late.status, 200);
   assert.equal(late.json.autoStopped, true);
+  assert.equal(late.json.durationSeconds, 1800);
+  assert.equal(late.json.edited, false);
+  const again = await call('PUT', `/api/walks/${overdue}/end`, { user: 'third@example.com', body: { notes: 'x' } });
+  assert.equal(again.status, 409);
+  assert.equal(again.json.autoStopped, true);
 
   // Extending is capped so a walk can't be extended forever.
   const c2 = new Database(dbFile);
   c2.prepare('UPDATE walks SET extend_minutes = 160 WHERE id = ?').run(fresh);
   c2.close();
   assert.equal((await call('POST', `/api/walks/${fresh}/extend`)).status, 409);
+});
+
+test('ending a walk by hand uses the moment End Walk was tapped', async () => {
+  const user = 'ender@example.com';
+  const userId = (await call('GET', '/api/me', { user })).json.id;
+  const now = Date.now();
+  const read = (id) => { const c = new Database(dbFile, { readonly: true }); const r = c.prepare('SELECT * FROM walks WHERE id = ?').get(id); c.close(); return r; };
+  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
+  const end = (id, body) => call('PUT', `/api/walks/${id}/end`, { user, body });
+
+  const w = insertWalk(25);
+  assert.equal((await end(w, { endTappedAt: new Date(now + 10 * 60000).toISOString() })).status, 400, 'not in the future');
+  assert.equal((await end(w, { endTappedAt: 'soon' })).status, 400, 'not garbage');
+  const tappedAt = new Date(now - 60000).toISOString();
+  const r = await end(w, { notes: 'x', endTappedAt: tappedAt, endedAt: new Date(now - 20 * 60000).toISOString() });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.endedAt, tappedAt, 'a walk ended by hand has no end-time choice');
+  assert.equal(r.json.durationSeconds, 24 * 60);
+  assert.equal(read(w).edited, 0);
+
+  // End was tapped before the limit, but it ran out while notes were typed:
+  // ended by hand at the tapped time, not flagged as auto-stopped.
+  const slow = insertWalk(31);
+  await call('GET', '/api/walks/active', { user });
+  assert.equal(read(slow).auto_stopped, 1);
+  const slowTapped = new Date(now - 2 * 60000).toISOString();
+  assert.equal((await end(slow, { notes: 'typed slowly', endTappedAt: slowTapped })).status, 200);
+  assert.equal(read(slow).auto_stopped, 0);
+  assert.equal(read(slow).ended_at, slowTapped);
+  assert.equal(read(slow).wrap_up_pending, 0);
+});
+
+test('a walk the time limit stopped asks when it really ended', async () => {
+  const user = 'wrapper@example.com';
+  const userId = (await call('GET', '/api/me', { user })).json.id;
+  const now = Date.now();
+  const read = (id) => { const c = new Database(dbFile, { readonly: true }); const r = c.prepare('SELECT * FROM walks WHERE id = ?').get(id); c.close(); return r; };
+  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
+  const end = (id, body) => call('PUT', `/api/walks/${id}/end`, { user, body });
+
+  // Stopped while the app was closed: opening it again offers the end screen.
+  const w = insertWalk(50);
+  const active = await call('GET', '/api/walks/active', { user });
+  assert.equal(active.json.walk, null);
+  assert.equal(active.json.wrapUp && active.json.wrapUp.id, w);
+  const limitEnd = read(w).ended_at;
+
+  assert.equal((await end(w, { endedAt: new Date(now + 10 * 60000).toISOString() })).status, 400, 'not in the future');
+  assert.equal((await end(w, { endedAt: new Date(now - 60 * 60000).toISOString() })).status, 400, 'not before the start');
+  // "Just now": past the time limit is fine, it's what really happened.
+  const r = await end(w, { notes: 'lost track of time', endedAt: new Date(now).toISOString() });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.durationSeconds, 50 * 60);
+  const row = read(w);
+  assert.equal(row.auto_stopped, 1, 'still shows it hit the limit');
+  assert.equal(row.edited, 1);
+  assert.equal(row.original_ended_at, limitEnd, 'the time-limit end is kept as the original');
+  assert.equal(row.wrap_up_pending, 0);
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.wrapUp, null, 'asked only once');
+
+  // No walk runs past the 3 hour maximum.
+  const long = insertWalk(200);
+  await call('GET', '/api/walks/active', { user });
+  assert.equal((await end(long, { endedAt: new Date(now).toISOString() })).status, 400);
+
+  // Starting the next walk moves on: the stopped one keeps its time-limit end.
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.wrapUp.id, long);
+  const c = new Database(dbFile);
+  const stamp = new Date().toISOString();
+  c.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (40, 'NextDog', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(stamp, stamp);
+  c.close();
+  const next = await call('POST', '/api/walks/start', { user, body: { dogId: 40, userId } });
+  assert.equal(next.status, 200);
+  assert.equal(read(long).wrap_up_pending, 0);
+  await call('DELETE', `/api/walks/${next.json.walkId}`, { user });
+
+  // Fixing times later in Stats can't put the end in the future either.
+  assert.equal((await call('PUT', `/api/walks/${w}`, { user, body: { endedAt: new Date(now + 60 * 60000).toISOString() } })).status, 400);
 });
 
 test('Profile: name is a single field', async () => {

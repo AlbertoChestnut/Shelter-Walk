@@ -202,6 +202,33 @@ test('a day\'s walks are listed in order with no walker identity; only your own 
   assert.equal(asAlice.json.walks.length, asCarol.json.walks.length, 'everyone sees the same day');
 });
 
+test('a dog\'s walk history marks only your own walks, and never says who else walked', async () => {
+  const db = new Database(dbFile);
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (7, 'Dog7', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(now, now);
+  const ins = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, notes) VALUES (7, ?, ?, ?, 600, ?)');
+  const t = Date.now() - 2 * 3600 * 1000;
+  ins.run(ids.alice, new Date(t).toISOString(), new Date(t + 600000).toISOString(), 'alice history note');
+  ins.run(ids.bob, new Date(t + 900000).toISOString(), new Date(t + 1500000).toISOString(), 'bob history note');
+  const open = db.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (7, ?, ?)').run(ids.carol, now).lastInsertRowid;
+  db.close();
+
+  const r = await call('GET', `/api/dogs/7/walk-history?userId=${ids.bob}`, { user: ALICE });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.walks.length, 2, 'finished walks only');
+  assert.deepEqual(r.json.walks.map((w) => w.mine), [false, true], 'newest first; only Alice\'s is hers, whatever userId is sent');
+  for (const w of r.json.walks) assert.deepEqual(Object.keys(w).sort(), ['durationSeconds', 'endedAt', 'mine', 'startedAt']);
+  const text = r.text.toLowerCase();
+  for (const forbidden of ['alice', 'bob', 'carol', 'zebrafish', '@example', 'user', 'note', 'email']) {
+    assert.ok(!text.includes(forbidden), `walk history must not contain "${forbidden}"`);
+  }
+  const bobView = await call('GET', '/api/dogs/7/walk-history', { user: BOB });
+  assert.deepEqual(bobView.json.walks.map((w) => w.mine), [true, false]);
+  const cleanup = new Database(dbFile);
+  cleanup.prepare('DELETE FROM walks WHERE id = ?').run(open);
+  cleanup.close();
+});
+
 test('quiet or invalid days are not opened up', async () => {
   assert.equal((await call('GET', '/api/impact/day?date=2020-01-01', { user: CAROL })).status, 404);
   assert.equal((await call('GET', '/api/impact/day?date=nope', { user: CAROL })).status, 400);

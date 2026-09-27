@@ -14,6 +14,7 @@ const account = require('./account');
 // so each one replaces the last on the phone rather than piling up.
 const WALK_PUSH_TAG = 'walk';
 const { hashEmail } = require('./emailHash');
+const walkHours = require('./walkHours');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -211,8 +212,9 @@ const getActiveWalk = db.prepare(`
   LIMIT 1
 `);
 
-const getWalkedByUserCount = db.prepare(`
-  SELECT COUNT(*) AS count FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL
+const getWalkedByUserStats = db.prepare(`
+  SELECT COUNT(*) AS count, MAX(started_at) AS last_started_at
+  FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL
 `);
 
 const getRecentWalkCount = db.prepare(`
@@ -236,7 +238,8 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   // purposes right away — no need to wait for the walk to end.
   const currentWalk = getActiveWalk.get(row.shelter_buddy_id) || null;
   const userIdInt = parseInt(userId, 10);
-  const walkedByMe = userIdInt ? getWalkedByUserCount.get(row.shelter_buddy_id, userIdInt).count > 0 : false;
+  const myStats = userIdInt ? getWalkedByUserStats.get(row.shelter_buddy_id, userIdInt) : { count: 0, last_started_at: null };
+  const walkedByMe = myStats.count > 0;
 
   const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
   const ageMonthsHard = ageMonths != null && ageMonths <= MAX_PUPPY_AGE_MONTHS;
@@ -326,6 +329,10 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     recentWalkCount,
     currentWalk,
     walkedByMe,
+    // This user's own walks with the dog, for the "walks together" lines on
+    // the profile and scan screens (walkCount above is shelter-wide).
+    myWalkCount: myStats.count,
+    myLastWalkedAt: myStats.last_started_at,
     adoptUrl: `https://pets.wake.gov/adopt/${row.shelter_buddy_id}`
   };
 }
@@ -1156,7 +1163,11 @@ app.get('/api/walks/active', (req, res) => {
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     WHERE w.ended_at IS NULL AND w.user_id = ? ORDER BY w.started_at DESC LIMIT 1
   `).get(userId);
-  if (row) { row.photo_url = cachedPhotoUrl(row.dog_id, row.photo_url); row.stopsAt = walkStopsAt(row); }
+  if (row) {
+    row.photo_url = cachedPhotoUrl(row.dog_id, row.photo_url);
+    row.stopsAt = walkStopsAt(row);
+    row.closesAt = walkHours.walkWindow(row.started_at).closesAt.toISOString();
+  }
   // No walk going, but the time limit stopped one recently and the walker
   // hasn't said when it really ended: the app shows its end screen again.
   const wrapUp = row ? null : db.prepare(`
@@ -1164,6 +1175,7 @@ app.get('/api/walks/active', (req, res) => {
     WHERE user_id = ? AND wrap_up_pending = 1 AND auto_stopped = 1 AND ended_at > ?
     ORDER BY started_at DESC LIMIT 1
   `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
+  if (wrapUp) wrapUp.closesAt = walkHours.walkWindow(wrapUp.started_at).closesAt.toISOString();
   res.json({ walk: row || null, wrapUp: wrapUp || null });
 });
 
@@ -1174,6 +1186,8 @@ app.post('/api/walks/start', (req, res) => {
   }
   const activity = activityFrom(req.body.activity);
   if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
+  const hoursError = walkHours.walkHoursError(new Date().toISOString(), null);
+  if (hoursError) return res.status(409).json({ error: hoursError });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
@@ -1247,6 +1261,7 @@ app.post('/api/walks/start', (req, res) => {
     location: finalLocation,
     startedAt,
     stopsAt: walkStopsAt({ started_at: startedAt, extend_minutes: 0 }),
+    closesAt: walkHours.walkWindow(startedAt).closesAt.toISOString(),
     autoStopMinutes: AUTO_STOP_MINUTES
   });
 });
@@ -1260,6 +1275,9 @@ app.post('/api/walks/:id/extend', (req, res) => {
   if (walkAccessDenied(req, res, walk)) return;
   if (walk.ended_at) {
     return res.status(409).json({ error: walk.auto_stopped ? 'This walk already stopped automatically. You can fix its time in Stats.' : 'This walk has already ended.', autoStopped: !!walk.auto_stopped });
+  }
+  if (walkStopsAt(walk) === walkHours.walkWindow(walk.started_at).closesAt.toISOString()) {
+    return res.status(409).json({ error: `Walks end at ${walkHours.CLOSE_LABEL}, so this one can't go any longer.` });
   }
   if (walkLimitMinutes(walk) + EXTEND_MINUTES > MAX_TOTAL_MINUTES) {
     return res.status(409).json({ error: `Walks can be extended up to ${MAX_TOTAL_MINUTES / 60} hours in total.` });
@@ -1305,9 +1323,14 @@ app.put('/api/walks/:id/end', (req, res) => {
     endedAt = tapped ? tapped.iso : new Date(handEndLimit).toISOString();
     recordedEnd = endedAt;
   } else {
-    const latest = Math.min(now, new Date(walk.started_at).getTime() + MAX_TOTAL_MINUTES * 60000);
-    const picked = req.body.endedAt
-      ? walkEndTime(req.body.endedAt, walk.started_at, latest, `Walks can't be longer than ${MAX_TOTAL_MINUTES / 60} hours.`)
+    const closesMs = walkHours.walkWindow(walk.started_at).closesAt.getTime();
+    const latest = Math.min(now, new Date(walk.started_at).getTime() + MAX_TOTAL_MINUTES * 60000, closesMs);
+    // A walk can't run past closing, so "just now" (or any time) after it
+    // means it ended at closing.
+    const sentMs = req.body.endedAt ? new Date(req.body.endedAt).getTime() : NaN;
+    const sent = Number.isFinite(sentMs) && sentMs > closesMs && closesMs <= now ? new Date(closesMs).toISOString() : req.body.endedAt;
+    const picked = sent
+      ? walkEndTime(sent, walk.started_at, latest, `Walks can't be longer than ${MAX_TOTAL_MINUTES / 60} hours.`)
       : { iso: walk.ended_at };
     if (picked.error) return res.status(400).json({ error: picked.error });
     endedAt = picked.iso;
@@ -1345,6 +1368,10 @@ app.put('/api/walks/:id', (req, res) => {
     const checked = walkEndTime(endedAt, startedAt, Date.now());
     if (checked.error) return res.status(400).json({ error: checked.error });
   }
+  if (startedAt !== walk.started_at || endedAt !== walk.ended_at) {
+    const hoursError = walkHours.walkHoursError(startedAt, endedAt);
+    if (hoursError) return res.status(400).json({ error: hoursError });
+  }
   const durationSeconds = endedAt
     ? Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000))
     : null;
@@ -1380,6 +1407,8 @@ app.post('/api/walks/manual', (req, res) => {
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const checked = walkEndTime(endedAt, startedAt, Date.now());
   if (checked.error) return res.status(400).json({ error: checked.error });
+  const hoursError = walkHours.walkHoursError(startedAt, endedAt);
+  if (hoursError) return res.status(400).json({ error: hoursError });
   const activity = activityFrom(req.body.activity);
   if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
@@ -1571,7 +1600,11 @@ const WARN_MINUTES_BEFORE = 3;
 // next opened. After that it keeps the time-limit end (fixable in Stats).
 const WRAP_UP_HOURS = 12;
 const walkLimitMinutes = (w) => AUTO_STOP_MINUTES + (w.extend_minutes || 0);
-const walkStopsAt = (w) => new Date(new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000).toISOString();
+// Whichever comes first: the time limit, or closing time for walks (7:15pm).
+const walkStopsAt = (w) => new Date(Math.min(
+  new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000,
+  walkHours.walkWindow(w.started_at).closesAt.getTime()
+)).toISOString();
 
 // Phones and the server can disagree on the time by a little, so an end
 // time up to this far in the future is taken as "now", not rejected.
@@ -1623,14 +1656,17 @@ function enforceWalkLimits() {
       }
     }
     if (now >= stopsAt) {
-      const minutes = walkLimitMinutes(w);
+      const seconds = Math.round((stopsAt - startedMs) / 1000);
+      const atClosing = stopsAt === walkHours.walkWindow(w.started_at).closesAt.getTime();
       db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
-        .run(new Date(stopsAt).toISOString(), minutes * 60, w.id);
-      console.warn(`[server] auto-stopped walk ${w.id} after ${minutes} min`);
+        .run(new Date(stopsAt).toISOString(), seconds, w.id);
+      console.warn(`[server] auto-stopped walk ${w.id} after ${Math.round(seconds / 60)} min${atClosing ? ' (closing time)' : ''}`);
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: stopped automatically`,
-          body: `Walks stop after ${minutes} minutes. Open the app to say when it really ended.`,
+          body: atClosing
+            ? `Walks end at ${walkHours.CLOSE_LABEL}. Open the app to say when it really ended.`
+            : `Walks stop after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
           url: '/',
           tag: WALK_PUSH_TAG
         }).catch(() => {});

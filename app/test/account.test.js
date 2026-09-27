@@ -46,7 +46,7 @@ test.before(async () => {
   stubPort = stub.address().port;
   proc = spawn('node', ['src/server.js'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', DJANGO_INTERNAL_URL: `http://127.0.0.1:${stubPort}`, INTERNAL_API_TOKEN: 'test-token' },
+    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00', DJANGO_INTERNAL_URL: `http://127.0.0.1:${stubPort}`, INTERNAL_API_TOKEN: 'test-token' },
     stdio: 'ignore'
   });
   for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }

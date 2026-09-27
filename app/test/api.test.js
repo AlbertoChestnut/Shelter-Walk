@@ -21,7 +21,7 @@ async function call(method, url, { user = 'walker@example.com', staff = false, b
   return { status: res.status, json, text };
 }
 async function startServer() {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1' }, stdio: 'ignore' });
+  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
   for (let i = 0; i < 50; i += 1) {
     try { if ((await fetch(`${base}/healthz`)).ok) return; } catch (e) { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -422,6 +422,15 @@ test('cuddle and matchmaking are timed like walks, switchable mid-session, and e
   assert.equal(history.json.walks.find((w) => w.mine).activity, 'matchmaking');
   const stats = await call('GET', '/api/stats', { user });
   assert.equal(stats.json.totals.totalWalks, 1, 'counts exactly like a walk');
+
+  // The dog's profile shows each person only their own walks with it.
+  const mineDog = (await call('GET', '/api/dogs/60', { user })).json.dog;
+  assert.equal(mineDog.myWalkCount, 1);
+  assert.ok(mineDog.myLastWalkedAt);
+  const otherDog = (await call('GET', '/api/dogs/60', { user: 'nobody-walked@example.com' })).json.dog;
+  assert.equal(otherDog.myWalkCount, 0, 'someone else\'s walks don\'t count as yours');
+  assert.equal(otherDog.myLastWalkedAt, null);
+  assert.equal(otherDog.walkCount, 1, 'the shelter-wide count is still there');
 
   // Editing afterwards can change it back.
   assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } })).json.activity, 'walk');

@@ -33,7 +33,7 @@ async function call(method, url, { user = CAROL, staff = false, body } = {}) {
 
 const ids = {};
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1' }, stdio: 'ignore' });
+  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
   for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
   for (const [k, e] of [['alice', ALICE], ['bob', BOB], ['carol', CAROL], ['staff', STAFF]]) ids[k] = (await call('GET', '/api/me', { user: e })).json.id;
   const db = new Database(dbFile);

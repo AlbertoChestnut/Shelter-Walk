@@ -1985,6 +1985,13 @@
     mountDogNotes(profileSheetInner.querySelector('.dog-notes-mount'), dog, walks);
   }
 
+  // Personal history only: how often *this* user has walked the dog.
+  function walksTogetherText(dog) {
+    const n = dog.myWalkCount || 0;
+    if (!n) return 'No walks together yet';
+    return `${n}× walk${n === 1 ? '' : 's'} together · last on ${fmtDate(dog.myLastWalkedAt)}`;
+  }
+
   function renderDogProfile(dog, walks) {
     const tags = (dog.tags || []).map((t) => `<span class="tag-chip">${esc(t)}</span>`).join(' ');
     const hasMarkers = markerBreakdownRows(dog).length > 0;
@@ -1998,7 +2005,7 @@
       <p class="muted small nowrap" style="margin-top:-6px;">ID ${dog.id}</p>
       ${currentWalkBadge(dog)}
       ${dog.stillListed === false ? `<span class="badge neutral">Adopted/Removed${dog.removedAt ? ' on ' + fmtDate(dog.removedAt) : ''}</span>` : ''}
-      <span class="badge neutral">Walked ${dog.walkCount}× ${dog.walkCount ? '· last ' + fmtDate(dog.lastWalkedAt) : ''}</span>
+      <span class="badge neutral">${walksTogetherText(dog)}</span>
       <p class="muted">${esc(dog.breed || 'Unknown breed')} · ${esc(dog.sex || '?')} · ${esc(dog.age || '?')} · ${esc(dog.weight || '?')}</p>
       <p class="small">In shelter since ${fmtDate(dog.dateInShelter)} (${shelterDaysHtml(dog)}) · ${esc(dog.location || '')}</p>
       ${dog.stillListed === false ? '' : `<p class="small">Current kennel spot: <span class="nowrap">🏠 ${esc(dog.kennelLocation || 'Unknown')}</span></p>`}
@@ -4319,7 +4326,7 @@
           </div>
         </div>` : ''}
         <div class="card compact">
-          <p class="small" style="margin:0 0 4px;"><strong>Walked before:</strong> ${dog.walkCount}× ${dog.walkCount ? '· last on ' + fmtDate(dog.lastWalkedAt) : ''}</p>
+          <p class="small" style="margin:0 0 4px;">${walksTogetherText(dog)}</p>
           <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
         </div>
         <div class="card compact">
@@ -4501,6 +4508,7 @@
         state.walk.walkId = res.walkId;
         state.walk.startedAt = res.startedAt;
         state.walk.stopsAt = res.stopsAt;
+        state.walk.closesAt = res.closesAt;
         state.walk.autoStopped = false;
         state.walk.activity = activity;
         state.walk.location = res.location || location;
@@ -4744,6 +4752,7 @@
       } else if (wrapUp && wrapUp.id === state.walk.walkId && state.walk.phase === 'active') {
         // Same end screen as End Walk, asking when it really ended.
         state.walk.wrapUpEndedAt = wrapUp.ended_at;
+        state.walk.closesAt = wrapUp.closesAt;
         state.walk.phase = 'ending';
         renderWalk();
       } else if (state.walk.phase === 'active') {
@@ -4769,17 +4778,22 @@
     const wrapUp = !!w.wrapUpEndedAt;
     const tappedAt = w.endTappedAt || new Date().toISOString();
     const startedMs = new Date(w.startedAt).getTime();
-    const latestMs = () => Math.min(Date.now(), startedMs + 3 * 3600000);
+    // Walks end by closing time (7:15pm), so nothing later can be picked.
+    const closesMs = w.closesAt ? new Date(w.closesAt).getTime() : Infinity;
+    const latestMs = () => Math.min(Date.now(), startedMs + 3 * 3600000, closesMs);
+    const stoppedAtClosing = wrapUp && new Date(w.wrapUpEndedAt).getTime() >= closesMs;
     appEl.innerHTML = `
       <div class="stack">
         <div class="card">
           <p class="walk-dog-name">${esc(w.dog.name)}</p>
           ${wrapUp ? `
-          <p class="small autostop-note">⏱ This walk reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.</p>
+          <p class="small autostop-note">⏱ ${stoppedAtClosing
+    ? `Walks end at ${fmtClock(w.closesAt)}, so this one stopped automatically then.`
+    : `This walk reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.`}</p>
           <label>When did the walk end?</label>
           <div id="endTimeChoice" class="marker-row" style="gap:6px;">
-            <button type="button" class="btn small-btn filter-chip active" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>
-            <button type="button" class="btn small-btn filter-chip" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(w.wrapUpEndedAt)}</button>
+            ${stoppedAtClosing ? '' : '<button type="button" class="btn small-btn filter-chip active" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>'}
+            <button type="button" class="btn small-btn filter-chip ${stoppedAtClosing ? 'active' : ''}" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(w.wrapUpEndedAt)}</button>
             <button type="button" class="btn small-btn filter-chip" data-end="pick" style="width:auto;flex:1 1 0;">Pick a time</button>
           </div>
           <input type="time" id="walkEndTime" class="hidden" value="${toLocalTimeInput(w.wrapUpEndedAt)}" style="margin-top:6px;" />
@@ -4797,7 +4811,7 @@
     // Wrap-up only: the chosen end time as an ISO time, or null to keep the
     // time-limit end. A picked time earlier in the day than the start means
     // the walk ran past midnight.
-    let choice = 'now';
+    let choice = stoppedAtClosing ? 'limit' : 'now';
     const endInput = document.getElementById('walkEndTime');
     const chosenEnd = () => {
       if (choice === 'now') return new Date(latestMs()).toISOString();
@@ -4836,6 +4850,7 @@
         const ms = new Date(endedAt).getTime();
         if (ms > Date.now()) { appAlert("The end time can't be in the future."); return; }
         if (ms > startedMs + 3 * 3600000) { appAlert("Walks can't be longer than 3 hours."); return; }
+        if (ms > closesMs) { appAlert(`Walks end by ${fmtClock(w.closesAt)}, so the end time can't be later than that.`); return; }
       }
       const body = wrapUp ? { notes, ...(endedAt ? { endedAt } : {}) } : { notes, endTappedAt: tappedAt };
       try {
@@ -4925,6 +4940,7 @@
           walkId: walk.id,
           startedAt: walk.started_at,
           stopsAt: walk.stopsAt,
+          closesAt: walk.closesAt,
           activity: walk.activity,
           location: walk.location
         };
@@ -4940,6 +4956,7 @@
           walkId: wrapUp.id,
           startedAt: wrapUp.started_at,
           wrapUpEndedAt: wrapUp.ended_at,
+          closesAt: wrapUp.closesAt,
           activity: wrapUp.activity,
           location: wrapUp.location
         };

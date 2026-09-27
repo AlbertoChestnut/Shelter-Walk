@@ -217,7 +217,7 @@ test('a dog\'s walk history marks only your own walks, and never says who else w
   assert.equal(r.status, 200);
   assert.equal(r.json.walks.length, 2, 'finished walks only');
   assert.deepEqual(r.json.walks.map((w) => w.mine), [false, true], 'newest first; only Alice\'s is hers, whatever userId is sent');
-  for (const w of r.json.walks) assert.deepEqual(Object.keys(w).sort(), ['durationSeconds', 'endedAt', 'mine', 'startedAt']);
+  for (const w of r.json.walks) assert.deepEqual(Object.keys(w).sort(), ['activity', 'durationSeconds', 'endedAt', 'mine', 'startedAt']);
   const text = r.text.toLowerCase();
   for (const forbidden of ['alice', 'bob', 'carol', 'zebrafish', '@example', 'user', 'note', 'email']) {
     assert.ok(!text.includes(forbidden), `walk history must not contain "${forbidden}"`);

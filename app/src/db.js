@@ -171,6 +171,11 @@ if (!userColumns.includes('hide_name_while_walking')) {
 }
 // walk_alert_minutes: up to 3 walk lengths (a JSON list of minutes, e.g.
 // [7, 10]) at which the walker wants a push notification. Empty = none.
+// default_activity: what the scan screen's start button offers first
+// (walk, cuddle, matchmaking or play group).
+if (!userColumns.includes('default_activity')) {
+  db.exec("ALTER TABLE users ADD COLUMN default_activity TEXT NOT NULL DEFAULT 'walk'");
+}
 if (!userColumns.includes('walk_alert_minutes')) {
   db.exec("ALTER TABLE users ADD COLUMN walk_alert_minutes TEXT NOT NULL DEFAULT '[]'");
 }
@@ -437,6 +442,9 @@ if (!walkColumns.includes('warned')) db.exec('ALTER TABLE walks ADD COLUMN warne
 if (!walkColumns.includes('wrap_up_pending')) db.exec('ALTER TABLE walks ADD COLUMN wrap_up_pending INTEGER NOT NULL DEFAULT 0');
 // alerted_minutes: the latest of the walker's length alerts already sent
 // for this walk, so each one goes out once.
+// activity: what the volunteer did with the dog. Every kind counts as time
+// with the dog exactly like a walk; only the label/emoji differs.
+if (!walkColumns.includes('activity')) db.exec("ALTER TABLE walks ADD COLUMN activity TEXT NOT NULL DEFAULT 'walk'");
 if (!walkColumns.includes('alerted_minutes')) db.exec('ALTER TABLE walks ADD COLUMN alerted_minutes INTEGER NOT NULL DEFAULT 0');
 
 // Indexes for the queries every screen leans on (all were full table scans).

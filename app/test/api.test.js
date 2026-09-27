@@ -392,3 +392,73 @@ test('finishing a fully scanned wing clears only the unscanned dogs in it', asyn
   const put = await call('PUT', '/api/dogs/102/location', { body: { location: 'C' } });
   assert.equal(put.json.name, 'PbSeasoned', 'saving a letter returns the name for the scan list');
 });
+
+test('cuddle and matchmaking are timed like walks, switchable mid-session, and editable', async () => {
+  const user = 'cuddler@example.com';
+  await call('GET', '/api/me', { user });
+  const seed = new Database(dbFile);
+  const ts = new Date().toISOString();
+  seed.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (60, 'Snuggles', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
+  seed.close();
+  assert.equal((await call('POST', '/api/walks/start', { user, body: { dogId: 60, userId: 1, activity: 'nap' } })).status, 400, 'unknown activity');
+  const s = await call('POST', '/api/walks/start', { user, body: { dogId: 60, userId: 1, activity: 'cuddle' } });
+  assert.equal(s.status, 200);
+  const id = s.json.walkId;
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.walk.activity, 'cuddle');
+  const out = await call('GET', '/api/dogs/60');
+  assert.equal(out.json.dog.currentWalk.activity, 'cuddle', 'the "currently out" badge knows the activity');
+
+  // Switch mid-session: same walk, same start time.
+  const sw = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'matchmaking' } });
+  assert.equal(sw.status, 200);
+  assert.equal(sw.json.endedAt, null, 'switching does not end it');
+  assert.equal(sw.json.edited, false, 'switching is not a time edit');
+  assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'nap' } })).status, 400);
+  assert.equal((await call('PUT', `/api/walks/${id}/end`, { user, body: {} })).status, 200);
+
+  const mine = (await call('GET', '/api/walks', { user })).json.walks.find((w) => w.id === id);
+  assert.equal(mine.activity, 'matchmaking');
+  const history = await call('GET', '/api/dogs/60/walk-history', { user });
+  assert.equal(history.json.walks.find((w) => w.mine).activity, 'matchmaking');
+  const stats = await call('GET', '/api/stats', { user });
+  assert.equal(stats.json.totals.totalWalks, 1, 'counts exactly like a walk');
+
+  // Editing afterwards can change it back.
+  assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } })).json.activity, 'walk');
+
+  // Hand-logged sessions take an activity too, defaulting to a walk.
+  const now = Date.now();
+  const manual = await call('POST', '/api/walks/manual', { user, body: { dogId: 60, userId: 1, activity: 'cuddle', startedAt: new Date(now - 3600000).toISOString(), endedAt: new Date(now - 3000000).toISOString() } });
+  assert.equal(manual.status, 200);
+  const plain = await call('POST', '/api/walks/manual', { user, body: { dogId: 60, userId: 1, startedAt: new Date(now - 7200000).toISOString(), endedAt: new Date(now - 6600000).toISOString() } });
+  const all = (await call('GET', '/api/walks', { user })).json.walks;
+  assert.equal(all.find((w) => w.id === manual.json.id).activity, 'cuddle');
+  assert.equal(all.find((w) => w.id === plain.json.id).activity, 'walk');
+});
+
+test('the usual activity is saved in Settings and play group is an activity', async () => {
+  const user = 'usual@example.com';
+  const me = (await call('GET', '/api/me', { user })).json;
+  assert.equal(me.defaultActivity, 'walk', 'walk until changed');
+  assert.equal((await call('PUT', `/api/users/${me.id}/settings`, { user, body: { defaultActivity: 'dance' } })).status, 400);
+  const saved = await call('PUT', `/api/users/${me.id}/settings`, { user, body: { defaultActivity: 'playgroup' } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.defaultActivity, 'playgroup');
+  assert.equal((await call('GET', '/api/me', { user })).json.defaultActivity, 'playgroup');
+  // Saving the experience level alone (onboarding) leaves it alone, and vice versa.
+  const level = await call('PUT', `/api/users/${me.id}/settings`, { user, body: { experienceLevel: 'expert' } });
+  assert.equal(level.json.defaultActivity, 'playgroup');
+  assert.equal(level.json.experienceLevel, 'expert');
+  assert.equal((await call('PUT', `/api/users/${me.id}/settings`, { user, body: { defaultActivity: 'cuddle' } })).json.experienceLevel, 'expert');
+  assert.equal((await call('PUT', `/api/users/${me.id}/settings`, { user, body: {} })).status, 400);
+  assert.equal((await call('PUT', `/api/users/${me.id}/settings`, { body: { defaultActivity: 'walk' } })).status, 403, 'not someone else\'s');
+
+  const seed = new Database(dbFile);
+  const ts = new Date().toISOString();
+  seed.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (61, 'Fetch', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
+  seed.close();
+  const s = await call('POST', '/api/walks/start', { user, body: { dogId: 61, userId: me.id, activity: 'playgroup' } });
+  assert.equal(s.status, 200);
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.walk.activity, 'playgroup');
+  assert.equal((await call('DELETE', `/api/walks/${s.json.walkId}`, { user })).status, 200);
+});

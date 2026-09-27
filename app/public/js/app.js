@@ -374,7 +374,7 @@
         <p class="small walk-history-day">${fmtDayHeading(key)}</p>
         ${dayWalks.map((w) => `
           <div class="walk-history-row${w.mine ? ' mine' : ''}">
-            <span class="small">${fmtClock(w.startedAt)} – ${fmtClock(w.endedAt)} · ${fmtDuration(w.durationSeconds)}</span>
+            <span class="small"><span title="${activityInfo(w.activity).label}">${activityInfo(w.activity).emoji}</span> ${fmtClock(w.startedAt)} – ${fmtClock(w.endedAt)} · ${fmtDuration(w.durationSeconds)}</span>
             ${w.mine ? '<span class="badge eligible">You</span>' : '<span class="small muted">Another volunteer</span>'}
           </div>`).join('')}`).join('');
       content.innerHTML = `
@@ -537,11 +537,30 @@
     }
   }
 
+  // What a volunteer can do with a dog. All of them are timed and count
+  // exactly like a walk; they only look different.
+  const ACTIVITIES = {
+    walk: { emoji: '🚶', label: 'Walk', noun: 'walk', out: 'Currently being walked by' },
+    cuddle: { emoji: '🤗', label: 'Cuddle', noun: 'cuddle', out: 'Currently cuddling with' },
+    matchmaking: { emoji: '💞', label: 'Matchmaking', noun: 'matchmaking session', out: 'Currently at matchmaking with' },
+    playgroup: { emoji: '🎾', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' }
+  };
+  function activityChipsHtml(selected) {
+    return Object.entries(ACTIVITIES).map(([key, a]) =>
+      `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}">${a.emoji} ${a.label}</button>`).join('');
+  }
+  const activityInfo = (key) => ACTIVITIES[key] || ACTIVITIES.walk;
+  function activityOptionsHtml(selected) {
+    return Object.entries(ACTIVITIES).map(([key, a]) =>
+      `<option value="${key}" ${key === (selected || 'walk') ? 'selected' : ''}>${a.emoji} ${a.label}</option>`).join('');
+  }
+
   // Shown wherever a dog card appears so it's obvious the dog isn't actually
   // available right now, even though its walk hasn't been recorded yet.
   function currentWalkBadge(dog) {
     if (!dog.currentWalk) return '';
-    return `<span class="badge out-now">🚶 Currently being walked by ${esc(dog.currentWalk.userName)}</span>`;
+    const a = activityInfo(dog.currentWalk.activity);
+    return `<span class="badge out-now">${a.emoji} ${a.out} ${esc(dog.currentWalk.userName)}</span>`;
   }
 
   function sexIcon(sex) {
@@ -1593,9 +1612,19 @@
     }
     return { minutes };
   }
+  const defaultActivityPicker = document.getElementById('defaultActivityPicker');
+  defaultActivityPicker.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-activity]');
+    if (!chip) return;
+    defaultActivityPicker.dataset.selected = chip.dataset.activity;
+    defaultActivityPicker.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+  });
   document.getElementById('settingsBtn').addEventListener('click', async () => {
     const levels = await loadExperienceLevels();
     document.getElementById('experienceLevelPicker').innerHTML = levelPickerHtml(levels, state.currentUser.experienceLevel);
+    const usual = ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk';
+    defaultActivityPicker.innerHTML = activityChipsHtml(usual);
+    defaultActivityPicker.dataset.selected = usual;
     document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((b) => {
@@ -1660,9 +1689,10 @@
     try {
       const updated = await api(`/api/users/${state.currentUser.id}/settings`, {
         method: 'PUT',
-        body: JSON.stringify({ experienceLevel: key })
+        body: JSON.stringify({ experienceLevel: key, defaultActivity: defaultActivityPicker.dataset.selected || 'walk' })
       });
       state.currentUser.experienceLevel = updated.experienceLevel;
+      state.currentUser.defaultActivity = updated.defaultActivity;
       const wantsAdopted = document.getElementById('settingsPrefAdopted').checked;
       const wantsWalkStarted = document.getElementById('settingsPrefWalkStarted').checked;
       await saveNotificationPref('adopted_walked_dog', wantsAdopted, true);
@@ -3446,14 +3476,14 @@
       <div class="card dog-card" data-dogid="${w.dog_id}">
         <img loading="lazy" decoding="async" class="dog-photo" src="${w.photo_url ? esc(w.photo_url) : '/icons/icon-192.png'}" alt="" />
         <div class="dog-info">
-          <p class="dog-name">${prefix}${esc(w.dog_name)} ${markerBadges({ blueMarkers: w.blue_markers ? JSON.parse(w.blue_markers) : [], pooStatus: w.poo_status || 'none', starFlag: !!w.star_flag, pbFlag: !!w.pb_flag, name: w.dog_name })} ${w.manual_entry ? '<span class="badge neutral">Manually added</span>' : ''}${w.auto_stopped ? '<span class="badge auto-stopped" title="This walk hit the time limit and was ended automatically. Edit the time if it ran longer.">Auto-stopped</span>' : ''}${!w.manual_entry && w.edited ? '<span class="badge neutral edited-badge" data-id="' + w.id + '" style="cursor:pointer;" title="Tap to see the original scanned times">Edited ✎</span>' : ''}</p>
+          <p class="dog-name">${prefix}<span title="${activityInfo(w.activity).label}">${activityInfo(w.activity).emoji}</span> ${esc(w.dog_name)} ${markerBadges({ blueMarkers: w.blue_markers ? JSON.parse(w.blue_markers) : [], pooStatus: w.poo_status || 'none', starFlag: !!w.star_flag, pbFlag: !!w.pb_flag, name: w.dog_name })} ${w.manual_entry ? '<span class="badge neutral">Manually added</span>' : ''}${w.auto_stopped ? '<span class="badge auto-stopped" title="This walk hit the time limit and was ended automatically. Edit the time if it ran longer.">Auto-stopped</span>' : ''}${!w.manual_entry && w.edited ? '<span class="badge neutral edited-badge" data-id="' + w.id + '" style="cursor:pointer;" title="Tap to see the original scanned times">Edited ✎</span>' : ''}</p>
           <p class="dog-meta walk-times-display" data-id="${w.id}">${fmtClock(w.started_at)} – ${fmtClock(w.ended_at)} · ${fmtDuration(w.duration_seconds)}</p>
           ${w.edited && (w.original_started_at || w.original_ended_at) ? `<p class="small muted original-times-display hidden" data-id="${w.id}">Originally scanned: ${fmtClock(w.original_started_at)} – ${w.original_ended_at ? fmtClock(w.original_ended_at) : '-'}</p>` : ''}
-          <div class="row edit-times-row hidden" data-id="${w.id}" style="align-items:center;margin:4px 0;">
-            <input type="time" class="edit-start-time" value="${toLocalTimeInput(w.started_at)}" />
-            <span class="muted">–</span>
-            <input type="time" class="edit-end-time" value="${w.ended_at ? toLocalTimeInput(w.ended_at) : ''}" />
-            <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="flex:0 0 auto;width:auto;">Save</button>
+          <div class="edit-times-row hidden" data-id="${w.id}" style="margin:4px 0;">
+            <select class="edit-activity" aria-label="Activity">${activityOptionsHtml(w.activity)}</select>
+            <label class="small edit-time-line">Start <input type="time" class="edit-start-time" value="${toLocalTimeInput(w.started_at)}" /></label>
+            <label class="small edit-time-line">End <input type="time" class="edit-end-time" value="${w.ended_at ? toLocalTimeInput(w.ended_at) : ''}" /></label>
+            <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="margin-top:4px;">Save</button>
           </div>
           <p class="dog-meta nowrap">🏠 ${esc(w.location || '-')}</p>
           <p class="small">${w.notes ? esc(w.notes) : '<span class="muted">No notes</span>'}</p>
@@ -3506,17 +3536,26 @@
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const row = btn.closest('.edit-times-row');
-        const startTime = row.querySelector('.edit-start-time').value;
-        const endTime = row.querySelector('.edit-end-time').value;
-        if (!startTime) { appAlert('Start time is required.'); return; }
-        if (endTime && endTime <= startTime) { appAlert('The end time has to be after the start time.'); return; }
+        const startInput = row.querySelector('.edit-start-time');
+        const endInput = row.querySelector('.edit-end-time');
+        const startTime = startInput.value;
+        const endTime = endInput.value;
+        const activity = row.querySelector('.edit-activity').value;
+        // Untouched times aren't re-sent: the boxes only hold whole minutes,
+        // so re-sending them would shift the times and mark the walk edited.
+        const timesTouched = startTime !== startInput.defaultValue || endTime !== endInput.defaultValue;
+        if (timesTouched) {
+          if (!startTime) { appAlert('Start time is required.'); return; }
+          if (endTime && endTime <= startTime) { appAlert('The end time has to be after the start time.'); return; }
+        }
         try {
           await api(`/api/walks/${btn.dataset.id}`, {
             method: 'PUT',
-            body: JSON.stringify({
+            body: JSON.stringify(timesTouched ? {
               startedAt: localTimeToIso(dayKey, startTime),
-              endedAt: endTime ? localTimeToIso(dayKey, endTime) : null
-            })
+              endedAt: endTime ? localTimeToIso(dayKey, endTime) : null,
+              activity
+            } : { activity })
           });
           await refresh();
         } catch (err) { appAlert(err.message); }
@@ -3532,7 +3571,9 @@
         <input type="text" id="addWalkDogSearch" placeholder="Start typing a dog's name…" autocomplete="off" />
         <div id="addWalkDogResults" style="max-height:150px;overflow-y:auto;margin-bottom:8px;"></div>
         <p id="addWalkSelectedDog" class="small muted"></p>
-        <div class="row" style="align-items:center;">
+        <label class="small" for="addWalkActivity">Activity</label>
+        <select id="addWalkActivity">${activityOptionsHtml('walk')}</select>
+        <div class="row" style="align-items:center;margin-top:8px;">
           <input type="time" id="addWalkStart" />
           <span class="muted">–</span>
           <input type="time" id="addWalkEnd" />
@@ -3901,6 +3942,7 @@
             userId: state.currentUser.id,
             startedAt: localTimeToIso(dateKey, startTime),
             endedAt: localTimeToIso(dateKey, endTime),
+            activity: document.getElementById('addWalkActivity').value,
             notes
           })
         });
@@ -3920,7 +3962,7 @@
     const btn = document.querySelector('.tab-btn[data-tab="walk"]');
     if (!btn) return;
     const inWalk = ['active', 'ending', 'summary'].includes(state.walk.phase);
-    btn.innerHTML = inWalk ? '🚶<span class="tab-label">Walk</span>' : '📷<span class="tab-label">Scan</span>';
+    btn.innerHTML = inWalk ? `${activityInfo(state.walk.activity).emoji}<span class="tab-label">Walk</span>` : '📷<span class="tab-label">Scan</span>';
   }
 
   function renderWalk() {
@@ -3930,8 +3972,9 @@
     // The header says what's actually going on: "Scan a Dog" while you're
     // picking one, but not while you're mid-walk (the tab already reads "Walk").
     if (state.tab === 'walk') {
-      topbarTitle.textContent = w.phase === 'active' || w.phase === 'ending' ? 'Walk in Progress'
-        : w.phase === 'summary' ? 'Walk Complete' : TAB_TITLES.walk;
+      const label = activityInfo(w.activity).label;
+      topbarTitle.textContent = w.phase === 'active' || w.phase === 'ending' ? `${label} in Progress`
+        : w.phase === 'summary' ? `${label} Complete` : TAB_TITLES.walk;
     }
     if (w.phase === 'idle') return renderWalkIdle();
     if (w.phase === 'scanning') return renderWalkScanning();
@@ -4145,10 +4188,13 @@
     }
   }
 
+  const startActivityLabel = (key) => `${activityInfo(key).emoji} Start ${activityInfo(key).label}`;
+
   function renderWalkConfirm() {
     const dog = state.walk.dog;
     const eligible = dog.eligible;
     const tooYoung = dog.tooYoung;
+    const startActivity = ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk';
     const isEvo = (dog.blueMarkers || []).includes('blue_evo');
     // EVO (experienced volunteers only) overrides every other background —
     // it's the one caution that must never be missed, even over the hard
@@ -4236,7 +4282,12 @@
           </div>
           <p id="saveAllStatus" class="small muted" style="margin:6px 0 0;"></p>
         </div>
-        <button id="startWalkBtn" class="btn primary big" ${tooYoung ? 'disabled' : ''}>${tooYoung ? 'Cannot Walk This Dog' : 'Start Walk'}</button>
+        ${tooYoung ? `<button id="startWalkBtn" class="btn primary big" disabled>Cannot Walk This Dog</button>` : `
+        <div class="row start-row">
+          <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
+          <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
+        </div>
+        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>`}
         <button id="backToScanBtn2" class="btn">Scan a different dog</button>
       </div>`;
 
@@ -4341,8 +4392,30 @@
       }
     });
 
+    // The start button offers the walker's usual activity (Settings);
+    // "Change" swaps it for this dog. Every activity starts the same timed
+    // session, only what's recorded differs.
+    const changeBtn = document.getElementById('changeActivityBtn');
+    const pickRow = document.getElementById('activityPickRow');
+    if (changeBtn) {
+      changeBtn.addEventListener('click', () => {
+        const open = pickRow.classList.toggle('hidden') === false;
+        changeBtn.setAttribute('aria-expanded', String(open));
+      });
+      pickRow.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-activity]');
+        if (!chip) return;
+        const btn = document.getElementById('startWalkBtn');
+        btn.dataset.activity = chip.dataset.activity;
+        btn.textContent = startActivityLabel(chip.dataset.activity);
+        pickRow.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+        pickRow.classList.add('hidden');
+        changeBtn.setAttribute('aria-expanded', 'false');
+      });
+    }
     const startBtn = document.getElementById('startWalkBtn');
     startBtn.addEventListener('click', async () => {
+      const activity = startBtn.dataset.activity || 'walk';
       // Not a hard block (that's tooYoung, which already disables this
       // button) -- just make sure it's a deliberate choice, since the
       // caution background alone is easy to miss in the moment.
@@ -4359,13 +4432,14 @@
         await saveMarkers();
         const res = await api('/api/walks/start', {
           method: 'POST',
-          body: JSON.stringify({ dogId: dog.id, location, userId: state.currentUser.id })
+          body: JSON.stringify({ dogId: dog.id, location, userId: state.currentUser.id, activity })
         });
         dog.kennelLocation = res.location;
         state.walk.walkId = res.walkId;
         state.walk.startedAt = res.startedAt;
         state.walk.stopsAt = res.stopsAt;
         state.walk.autoStopped = false;
+        state.walk.activity = activity;
         state.walk.location = res.location || location;
         state.walk.phase = 'active';
         renderWalk();
@@ -4483,6 +4557,10 @@
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
           <div class="timer-display" id="timerDisplay">00:00</div>
         </div>
+        <div class="card compact">
+          <label class="small">Doing something else?</label>
+          <div id="activityChoice" class="marker-row activity-chips">${activityChipsHtml(w.activity || 'walk')}</div>
+        </div>
         <div class="card compact autostop-card" id="autoStopCard">
           <span class="small" id="autoStopText"></span>
           <button type="button" id="extendWalkBtn" class="btn small-btn">＋10 min</button>
@@ -4494,9 +4572,28 @@
           <div class="dog-notes-mount hidden"></div>
         </div>
         <button id="viewProfileBtn" class="btn">View Full Profile</button>
-        <button id="endWalkBtn" class="btn danger big">End Walk</button>
-        <button id="cancelWalkBtn" class="btn">Cancel Walk</button>
+        <button id="endWalkBtn" class="btn danger big">End ${activityInfo(w.activity).label}</button>
+        <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
+    // Switching activity mid-session keeps the same timer; it just changes
+    // what gets recorded.
+    document.querySelectorAll('#activityChoice [data-activity]').forEach((chip) => {
+      chip.addEventListener('click', async () => {
+        const activity = chip.dataset.activity;
+        if (activity === (w.activity || 'walk')) return;
+        try {
+          await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ activity }) });
+          state.walk.activity = activity;
+          const a = activityInfo(activity);
+          document.querySelectorAll('#activityChoice [data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+          document.getElementById('endWalkBtn').textContent = `End ${a.label}`;
+          document.getElementById('cancelWalkBtn').textContent = `Cancel ${a.label}`;
+          topbarTitle.textContent = `${a.label} in Progress`;
+          updateWalkTabLabel();
+          toast(`Switched to ${a.emoji} ${a.label}`);
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
     // Collapsed by default -- kept out of the way while you're actually
     // with the dog -- and only fetched/mounted the first time it's opened,
     // so it's not a wasted request for a walk where no one ever taps it.
@@ -4626,7 +4723,7 @@
           <textarea id="walkPrivateNote" placeholder="Only you can see this"></textarea>
         </div>
         <button id="saveWalkBtn" class="btn primary big">Save &amp; Finish</button>
-        <button id="cancelWalkBtn" class="btn">Cancel Walk</button>
+        <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
 
     // Wrap-up only: the chosen end time as an ISO time, or null to keep the
@@ -4720,11 +4817,11 @@
     const w = state.walk;
     appEl.innerHTML = `
       <div class="card center">
-        <p class="walk-dog-name">Great walk with ${esc(w.dog.name)}! 🎉</p>
+        <p class="walk-dog-name">Great ${activityInfo(w.activity).noun} with ${esc(w.dog.name)}! ${activityInfo(w.activity).emoji}🎉</p>
         <p class="muted">Started at ${fmtClock(w.startedAt)} · Duration: ${fmtDuration(w.durationSeconds)}</p>
         ${w.autoStopped ? `<p class="small autostop-note">⏱ This walk was stopped automatically after ${fmtDuration(w.durationSeconds)}. If it ran longer, you can fix the time from Stats (tap the pencil on the walk).</p>` : ''}
         <button id="doneBtn" class="btn primary big">📷 Scan Next Dog</button>
-        <button id="deleteWalkBtn" class="btn danger">Cancel / Delete This Walk</button>
+        <button id="deleteWalkBtn" class="btn danger">Cancel / Delete This ${activityInfo(w.activity).label}</button>
       </div>`;
     document.getElementById('doneBtn').addEventListener('click', () => {
       state.walk = { phase: 'scanning', dog: null, walkId: null, startedAt: null, location: null };
@@ -4760,6 +4857,7 @@
           walkId: walk.id,
           startedAt: walk.started_at,
           stopsAt: walk.stopsAt,
+          activity: walk.activity,
           location: walk.location
         };
         switchTab('walk');
@@ -4774,6 +4872,7 @@
           walkId: wrapUp.id,
           startedAt: wrapUp.started_at,
           wrapUpEndedAt: wrapUp.ended_at,
+          activity: wrapUp.activity,
           location: wrapUp.location
         };
         switchTab('walk');

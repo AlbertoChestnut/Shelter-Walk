@@ -194,8 +194,17 @@ function resolvePhotoUrl(row) {
 // the ONLY thing that setting affects -- see the near-identical
 // substitution in the walk-start "already out" check below, the other
 // place a name could otherwise leak while a walk is in progress.
+// Walk, cuddle, matchmaking or play group: all timed and counted the same way.
+const ACTIVITIES = ['walk', 'cuddle', 'matchmaking', 'playgroup'];
+// The activity sent in a request, 'walk' when none was sent, or null if it
+// isn't one we know.
+function activityFrom(value) {
+  if (value === undefined || value === null || value === '') return 'walk';
+  return ACTIVITIES.includes(value) ? value : null;
+}
+
 const getActiveWalk = db.prepare(`
-  SELECT w.user_id AS userId, w.started_at AS startedAt,
+  SELECT w.user_id AS userId, w.started_at AS startedAt, w.activity,
          CASE WHEN u.hide_name_while_walking = 1 THEN 'a Volunteer' ELSE u.name END AS userName
   FROM walks w JOIN users u ON u.id = w.user_id
   WHERE w.dog_id = ? AND w.ended_at IS NULL
@@ -341,7 +350,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 // deterministic: anyone with both this app's pepper and Django's database
 // COULD reconstruct which walker profile belongs to which login account
 // -- that's a real, accepted tradeoff now, not an oversight.
-const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking';
+const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity';
 
 // Resolves (and if needed, creates or links) the walker profile for the
 // trusted X-Auth-Email header. Returns null if the header is missing, e.g.
@@ -383,7 +392,7 @@ function resolveAuthedUser(req) {
       ).run(name, nowIso, emailHash, nowIso);
       row = {
         id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false,
-        onboardingCompleted: false, hideNameWhileWalking: true
+        onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk'
       };
     }
   }
@@ -500,7 +509,7 @@ app.get('/api/me/export', (req, res) => {
   const me = req.me;
   if (!me) return res.status(401).json({ error: 'Not signed in.' });
   const profile = db.prepare(
-    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking, walk_alert_minutes AS walkAlertMinutes FROM users WHERE id = ?'
+    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, walk_alert_minutes AS walkAlertMinutes FROM users WHERE id = ?'
   ).get(me.id);
   profile.hideNameWhileWalking = !!profile.hideNameWhileWalking;
   profile.walkAlertMinutes = walkAlertMinutes(profile.walkAlertMinutes);
@@ -727,15 +736,28 @@ app.put('/api/users/:id/permissions', (req, res) => {
   res.json({ id, isPrivileged: !!isPrivileged, canAudit: !!canAudit });
 });
 
+// Either or both of: experienceLevel, defaultActivity (the scan screen's
+// usual activity).
 app.put('/api/users/:id/settings', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { experienceLevel } = req.body;
-  if (!Object.prototype.hasOwnProperty.call(EXPERIENCE_LEVELS, experienceLevel)) {
+  const { experienceLevel, defaultActivity } = req.body;
+  if (experienceLevel === undefined && defaultActivity === undefined) {
+    return res.status(400).json({ error: 'Nothing to save: send experienceLevel and/or defaultActivity.' });
+  }
+  if (experienceLevel !== undefined && !Object.prototype.hasOwnProperty.call(EXPERIENCE_LEVELS, experienceLevel)) {
     return res.status(400).json({ error: `experienceLevel must be one of: ${Object.keys(EXPERIENCE_LEVELS).join(', ')}` });
   }
-  const info = db.prepare('UPDATE users SET experience_level = ? WHERE id = ?').run(experienceLevel, id);
-  if (info.changes === 0) return res.status(404).json({ error: 'User not found' });
-  res.json({ id, experienceLevel });
+  if (defaultActivity !== undefined && !ACTIVITIES.includes(defaultActivity)) {
+    return res.status(400).json({ error: `defaultActivity must be one of: ${ACTIVITIES.join(', ')}` });
+  }
+  const user = db.prepare('SELECT experience_level, default_activity FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const next = {
+    experienceLevel: experienceLevel !== undefined ? experienceLevel : user.experience_level,
+    defaultActivity: defaultActivity !== undefined ? defaultActivity : user.default_activity
+  };
+  db.prepare('UPDATE users SET experience_level = ?, default_activity = ? WHERE id = ?').run(next.experienceLevel, next.defaultActivity, id);
+  res.json({ id, ...next });
 });
 
 // A garbage ?limit= (NaN, negative, absurdly large) used to reach SQLite as-is
@@ -868,7 +890,7 @@ app.get('/api/dogs/:id/walk-history', (req, res) => {
   const dog = db.prepare('SELECT name FROM dogs WHERE shelter_buddy_id = ?').get(id);
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const walks = db.prepare(`
-    SELECT started_at AS startedAt, ended_at AS endedAt, duration_seconds AS durationSeconds,
+    SELECT started_at AS startedAt, ended_at AS endedAt, duration_seconds AS durationSeconds, activity,
            CASE WHEN user_id = ? THEN 1 ELSE 0 END AS mine
     FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL ORDER BY started_at DESC
   `).all(req.me.id, id).map((w) => ({ ...w, mine: w.mine === 1 }));
@@ -1138,7 +1160,7 @@ app.get('/api/walks/active', (req, res) => {
   // No walk going, but the time limit stopped one recently and the walker
   // hasn't said when it really ended: the app shows its end screen again.
   const wrapUp = row ? null : db.prepare(`
-    SELECT id, dog_id, location, started_at, ended_at FROM walks
+    SELECT id, dog_id, location, started_at, ended_at, activity FROM walks
     WHERE user_id = ? AND wrap_up_pending = 1 AND auto_stopped = 1 AND ended_at > ?
     ORDER BY started_at DESC LIMIT 1
   `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
@@ -1150,6 +1172,8 @@ app.post('/api/walks/start', (req, res) => {
   if (!dogId || !userId) {
     return res.status(400).json({ error: 'dogId and userId are required' });
   }
+  const activity = activityFrom(req.body.activity);
+  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
@@ -1193,8 +1217,8 @@ app.post('/api/walks/start', (req, res) => {
   db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ? AND wrap_up_pending = 1').run(userId);
   const startedAt = new Date().toISOString();
   const info = db.prepare(`
-    INSERT INTO walks (dog_id, location, started_at, user_id) VALUES (?, ?, ?, ?)
-  `).run(dogId, trimmedLocation || null, startedAt, userId);
+    INSERT INTO walks (dog_id, location, started_at, user_id, activity) VALUES (?, ?, ?, ?, ?)
+  `).run(dogId, trimmedLocation || null, startedAt, userId, activity);
 
   const finalLocation = trimmedLocation || dog.kennel_location || null;
   // A standing reminder that survives the phone locking/the app being
@@ -1315,6 +1339,8 @@ app.put('/api/walks/:id', (req, res) => {
   const endedAt = req.body.endedAt !== undefined ? req.body.endedAt : walk.ended_at;
   const location = req.body.location !== undefined ? String(req.body.location).trim() : walk.location;
   const notes = req.body.notes !== undefined ? (req.body.notes ? String(req.body.notes).trim() : null) : walk.notes;
+  const activity = req.body.activity !== undefined ? activityFrom(req.body.activity) : walk.activity;
+  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
   if (endedAt && (endedAt !== walk.ended_at || startedAt !== walk.started_at)) {
     const checked = walkEndTime(endedAt, startedAt, Date.now());
     if (checked.error) return res.status(400).json({ error: checked.error });
@@ -1331,12 +1357,12 @@ app.put('/api/walks/:id', (req, res) => {
   const originalStartedAt = timesChanged && walk.original_started_at == null ? walk.started_at : walk.original_started_at;
   const originalEndedAt = timesChanged && walk.original_ended_at == null ? walk.ended_at : walk.original_ended_at;
   db.prepare(`
-    UPDATE walks SET started_at = ?, ended_at = ?, location = ?, notes = ?, duration_seconds = ?,
+    UPDATE walks SET started_at = ?, ended_at = ?, location = ?, notes = ?, duration_seconds = ?, activity = ?,
            edited = CASE WHEN ? THEN 1 ELSE edited END,
            original_started_at = ?, original_ended_at = ?
     WHERE id = ?
-  `).run(startedAt, endedAt, location, notes, durationSeconds, timesChanged ? 1 : 0, originalStartedAt, originalEndedAt, id);
-  res.json({ id, startedAt, endedAt, location, notes, durationSeconds, edited: timesChanged || !!walk.edited });
+  `).run(startedAt, endedAt, location, notes, durationSeconds, activity, timesChanged ? 1 : 0, originalStartedAt, originalEndedAt, id);
+  res.json({ id, startedAt, endedAt, location, notes, durationSeconds, activity, edited: timesChanged || !!walk.edited });
 });
 
 // Log a walk that already happened but was never entered live (forgot to
@@ -1354,12 +1380,14 @@ app.post('/api/walks/manual', (req, res) => {
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const checked = walkEndTime(endedAt, startedAt, Date.now());
   if (checked.error) return res.status(400).json({ error: checked.error });
+  const activity = activityFrom(req.body.activity);
+  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
   const cleanLocation = location && String(location).trim() ? String(location).trim() : null;
   const info = db.prepare(`
-    INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, manual_entry)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(dogId, userId, cleanLocation, startedAt, endedAt, durationSeconds, notes ? String(notes).trim() : null);
+    INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, manual_entry, activity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+  `).run(dogId, userId, cleanLocation, startedAt, endedAt, durationSeconds, notes ? String(notes).trim() : null, activity);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1564,10 +1592,11 @@ function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time ca
 // A length alert more than this late (the walker added it partway through
 // the walk, or the server was down) is skipped rather than sent stale.
 const ALERT_GRACE_MS = 2 * 60000;
+const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at play group' };
 
 function enforceWalkLimits() {
   const open = db.prepare(`
-    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, w.alerted_minutes, w.location,
+    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, w.alerted_minutes, w.location, w.activity,
            d.name AS dog_name, d.kennel_location, u.walk_alert_minutes
     FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id LEFT JOIN users u ON u.id = w.user_id
     WHERE w.ended_at IS NULL
@@ -1587,7 +1616,7 @@ function enforceWalkLimits() {
         const returnTo = w.location || w.kennel_location;
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: ${minutes} minutes`,
-          body: `You've been walking for ${minutes} minutes.${returnTo ? ` Return to: ${returnTo}` : ''}`,
+          body: `You've been ${ACTIVITY_VERBS[w.activity] || 'walking'} for ${minutes} minutes.${returnTo ? ` Return to: ${returnTo}` : ''}`,
           url: '/',
           tag: WALK_PUSH_TAG
         }).catch(() => {});

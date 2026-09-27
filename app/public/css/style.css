@@ -1131,6 +1131,18 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 /* Settings: the three walk-length alert boxes share one row. */
 .walk-alert-inputs input { flex: 1 1 0; min-width: 0; text-align: center; }
 
+/* Activity chips (Settings, scan screen): two per line on a phone. */
+.activity-chips { gap: 6px; }
+.activity-chips .btn { flex: 1 1 calc(50% - 6px); width: auto; }
+/* Scan screen: big start button with a small "Change" next to it. */
+.start-row { gap: 8px; align-items: stretch; }
+.start-row #startWalkBtn { flex: 1 1 auto; }
+.start-row #changeActivityBtn { flex: 0 0 auto; width: auto; }
+
+/* Stats walk editor: start and end each get a full line on narrow cards. */
+.edit-time-line { display: grid; grid-template-columns: 3em 1fr; align-items: center; gap: 8px; margin-top: 4px; }
+.edit-time-line input { min-width: 0; margin: 0; }
+
 /* Walk history popup: one row per walk, yours highlighted. */
 .walk-history-list { max-height: 60vh; overflow-y: auto; }
 .walk-history-day { font-weight: 700; margin: 12px 0 4px; }

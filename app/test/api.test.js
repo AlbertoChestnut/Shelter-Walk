@@ -178,7 +178,7 @@ test('Profile: name is a single field', async () => {
   assert.equal(me.json.name, 'Jamie Smith');
 });
 
-test('PB no longer overrides the days-in-shelter wait; PB-E grants it only until day 7', async () => {
+test('PB clears the days-in-shelter wait, but only for levels allowed PB dogs', async () => {
   const established = 'established.walker@example.com';
   const beginner = 'beginner.walker@example.com';
   const estId = (await call('GET', '/api/me', { user: established })).json.id;
@@ -188,61 +188,92 @@ test('PB no longer overrides the days-in-shelter wait; PB-E grants it only until
 
   const db = new Database(dbFile);
   const today = new Date().toISOString();
-  const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
   const twentyDaysAgo = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
   const ins = db.prepare(`
-    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, pb_flag, pb_early_flag)
-    VALUES (?, ?, 'Male', '3 Years', ?, 1, ?, ?, ?, ?)
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, pb_flag)
+    VALUES (?, ?, 'Male', '3 Years', ?, 1, ?, ?, ?)
   `);
-  ins.run(101, 'PbBrandNew', today, today, today, 1, 0); // PB, 0 days
-  ins.run(102, 'PbSeasoned', twentyDaysAgo, twentyDaysAgo, twentyDaysAgo, 1, 0); // PB, 20 days
-  ins.run(103, 'PbeInHold', today, today, today, 0, 1); // PB-E, 0 days (within the 7-day hold)
-  ins.run(104, 'PbeExpired', tenDaysAgo, tenDaysAgo, tenDaysAgo, 0, 1); // PB-E, 10 days (past the hold)
+  ins.run(101, 'PbBrandNew', today, today, today, 1); // PB, 0 days
+  ins.run(102, 'PbSeasoned', twentyDaysAgo, twentyDaysAgo, twentyDaysAgo, 1); // PB, 20 days
+  ins.run(103, 'PlainBrandNew', today, today, today, 0); // no PB, 0 days
   db.close();
 
   const dogAs = async (id, user) => (await call('GET', `/api/dogs/${id}`, { user })).json.dog;
 
-  // PB (brand new, 0 days): no longer an automatic yes for established --
-  // it still has to clear the normal day threshold like anything else.
+  // PB (brand new, 0 days): cleared for established even inside the wait.
   const pbNewEst = await dogAs(101, established);
-  assert.equal(pbNewEst.eligible, false);
-  assert.equal(pbNewEst.notEligibleReason, 'days', 'PB does not excuse the wait any more');
+  assert.equal(pbNewEst.eligible, true, 'PB excuses the days-in-shelter wait');
+  assert.equal(pbNewEst.notEligibleReason, null);
   const pbNewBeg = await dogAs(101, beginner);
   assert.equal(pbNewBeg.eligible, false);
-  assert.equal(pbNewBeg.notEligibleReason, 'pb_restricted', 'beginners still are not trusted with PB dogs at all');
+  assert.equal(pbNewBeg.notEligibleReason, 'pb_restricted', 'beginners are not trusted with PB dogs at all');
 
-  // PB (seasoned, 20 days): eligible for established the ordinary way; the
-  // PB flag itself grants nothing here, it's just informational.
-  const pbOldEst = await dogAs(102, established);
-  assert.equal(pbOldEst.eligible, true);
+  // PB (seasoned, 20 days): still off-limits to beginners, whatever the days.
+  assert.equal((await dogAs(102, established)).eligible, true);
+  assert.equal((await dogAs(102, beginner)).notEligibleReason, 'pb_restricted');
 
-  // PB-E, still within the 7-day hold: grants early eligibility for
-  // established, but never for a level that isn't trusted with PB at all.
-  const pbeHoldEst = await dogAs(103, established);
-  assert.equal(pbeHoldEst.eligible, true);
-  assert.equal(pbeHoldEst.pbEarlyExpired, false);
-  const pbeHoldBeg = await dogAs(103, beginner);
-  assert.equal(pbeHoldBeg.eligible, false);
-  assert.equal(pbeHoldBeg.notEligibleReason, 'pb_restricted');
-  assert.equal(pbeHoldBeg.pbEarlyExpired, false, 'expiry is about the dog, not the viewer');
+  // No PB, 0 days: the ordinary day threshold applies.
+  const plainEst = await dogAs(103, established);
+  assert.equal(plainEst.eligible, false);
+  assert.equal(plainEst.notEligibleReason, 'days');
 
-  // PB-E, past day 7: the exception has nothing left to grant -- eligibility
-  // reverts to the ordinary day-threshold rule for everyone, and the flag
-  // reads as expired regardless of who's looking.
-  const pbeExpiredEst = await dogAs(104, established);
-  assert.equal(pbeExpiredEst.eligible, true, '10 days clears the established 7-day bar on its own now');
-  assert.equal(pbeExpiredEst.pbEarlyExpired, true);
-  const pbeExpiredBeg = await dogAs(104, beginner);
-  assert.equal(pbeExpiredBeg.eligible, false);
-  assert.equal(pbeExpiredBeg.notEligibleReason, 'days', 'not pb_restricted -- the early exception no longer applies past day 7');
-  assert.equal(pbeExpiredBeg.pbEarlyExpired, true);
+  // PB-E is gone: no leftover fields on the dog.
+  assert.equal('pbEarlyFlag' in pbNewEst, false);
+  assert.equal('pbEarlyExpired' in pbNewEst, false);
 });
 
-test('the markers endpoint saves and returns pbEarlyFlag alongside the rest', async () => {
-  const r = await call('PUT', '/api/dogs/101/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: false, pbFlag: false, pbEarlyFlag: true } });
+test('the markers endpoint saves pbFlag and ignores the retired pbEarlyFlag', async () => {
+  const r = await call('PUT', '/api/dogs/103/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: false, pbFlag: true, pbEarlyFlag: true } });
   assert.equal(r.status, 200);
-  assert.equal(r.json.pbEarlyFlag, true);
+  assert.equal(r.json.pbFlag, true);
+  assert.equal('pbEarlyFlag' in r.json, false);
   const db = new Database(dbFile, { readonly: true });
-  assert.equal(db.prepare('SELECT pb_early_flag FROM dogs WHERE shelter_buddy_id = 101').get().pb_early_flag, 1);
+  const row = db.prepare('SELECT pb_flag, pb_early_flag FROM dogs WHERE shelter_buddy_id = 103').get();
+  assert.equal(row.pb_flag, 1);
+  assert.equal(row.pb_early_flag, 0);
   db.close();
+});
+
+test('kennel locations are just the wing letter, and many dogs can share one', async () => {
+  const put = (id, location) => call('PUT', `/api/dogs/${id}/location`, { body: { location } });
+  const a = await put(101, 'b17');
+  assert.equal(a.status, 200);
+  assert.equal(a.json.location, 'B', 'a full code comes down to its letter');
+  assert.equal('bumpedDog' in a.json, false);
+  assert.equal((await put(102, 'B')).json.location, 'B');
+  assert.equal((await put(103, 'Da12')).json.location, 'A', 'the kennel-card leading-D quirk');
+  assert.equal((await put(101, 'Z')).status, 400);
+  assert.equal((await put(101, '')).status, 400);
+  const db = new Database(dbFile, { readonly: true });
+  const rows = db.prepare('SELECT shelter_buddy_id id, kennel_location loc FROM dogs WHERE shelter_buddy_id IN (101, 102, 103) ORDER BY id').all();
+  db.close();
+  assert.deepEqual(rows.map((r) => r.loc), ['B', 'B', 'A'], 'setting B on 102 did not clear it from 101');
+  assert.equal((await call('GET', '/api/dogs/by-location/B')).status, 404, 'the old one-dog-per-spot lookup is gone');
+});
+
+test('finishing a fully scanned wing clears only the unscanned dogs in it', async () => {
+  // After the previous test: 101 and 102 are in B, 103 is in A.
+  const auditor = 'auditor.walker@example.com';
+  const url = '/api/audit/clear-unscanned';
+  assert.equal((await call('POST', url, { user: auditor, body: { letter: 'B', scannedIds: [101] } })).status, 403, 'needs audit access');
+
+  const preview = await call('POST', url, { staff: true, body: { letter: 'B', scannedIds: [101], dryRun: true } });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.json.cleared.map((d) => d.id), [102]);
+  const db = new Database(dbFile, { readonly: true });
+  const loc = (id) => db.prepare('SELECT kennel_location l FROM dogs WHERE shelter_buddy_id = ?').get(id).l;
+  assert.equal(loc(102), 'B', 'a dry run changes nothing');
+
+  assert.equal((await call('POST', url, { staff: true, body: { letter: 'B', scannedIds: [] } })).status, 400, 'refuses with nothing scanned');
+  assert.equal((await call('POST', url, { staff: true, body: { letter: 'B12', scannedIds: [101] } })).status, 400);
+
+  const done = await call('POST', url, { staff: true, body: { letter: 'B', scannedIds: [101] } });
+  assert.deepEqual(done.json.cleared.map((d) => d.id), [102]);
+  assert.equal(loc(101), 'B', 'the scanned dog keeps its letter');
+  assert.equal(loc(102), null, 'the unscanned one is cleared');
+  assert.equal(loc(103), 'A', 'other wings are untouched');
+  db.close();
+
+  const put = await call('PUT', '/api/dogs/102/location', { body: { location: 'C' } });
+  assert.equal(put.json.name, 'PbSeasoned', 'saving a letter returns the name for the scan list');
 });

@@ -189,21 +189,18 @@ if (!dogColumns.includes('star_flag')) {
   db.exec('ALTER TABLE dogs ADD COLUMN star_flag INTEGER NOT NULL DEFAULT 0');
 }
 // pb_flag: "Potty Break OK" — yellow circle, independent of POO/star. Marks
-// a dog as needing a short, bathroom-only walk (an injury or similar), not
-// a shortcut around the days-in-shelter threshold -- an otherwise-too-new
-// PB dog still isn't eligible until it meets it.
+// a dog as cleared for a short, bathroom-only walk, which also clears the
+// days-in-shelter wait for levels allowed to walk PB dogs (see server.js).
 if (!dogColumns.includes('pb_flag')) {
   db.exec('ALTER TABLE dogs ADD COLUMN pb_flag INTEGER NOT NULL DEFAULT 0');
 }
-// pb_early_flag: "PB-E", Potty Break Early — the opposite kind of exception:
-// clears a dog for a short walk *before* the shelter's 7-day hold is up,
-// for volunteer levels trusted with PB walks. Unlike pb_flag it deliberately
-// does grant early eligibility, but only up to PB_EARLY_HOLD_DAYS (see
-// server.js) -- once the dog reaches that many days it's eligible the
-// normal way regardless, so the flag has nothing left to grant.
+// pb_early_flag: leftover from the retired "PB-E" (Potty Break Early)
+// marker, folded back into plain PB. The column stays so older backups
+// still load; any dog still carrying it is moved over to pb_flag here.
 if (!dogColumns.includes('pb_early_flag')) {
   db.exec('ALTER TABLE dogs ADD COLUMN pb_early_flag INTEGER NOT NULL DEFAULT 0');
 }
+db.exec('UPDATE dogs SET pb_flag = 1, pb_early_flag = 0 WHERE pb_early_flag = 1');
 // Alumni (returned dog): adds bonus days on top of actual days-in-shelter
 // for eligibility purposes only — gated to privileged users, see users
 // migration below.
@@ -225,6 +222,20 @@ if (!dogColumns.includes('blue_markers')) {
 if (!dogColumns.includes('kennel_location')) {
   db.exec('ALTER TABLE dogs ADD COLUMN kennel_location TEXT');
 }
+// Kennel locations went from exact spots ("B17") to just the wing letter
+// ("B"). Folds any older full code down to its letter, including the
+// kennel-card "Da12" quirk (a redundant leading D); anything that isn't
+// an A-E code is cleared. Walk history keeps whatever was recorded then.
+db.exec(`
+  UPDATE dogs SET kennel_location = CASE
+    WHEN upper(trim(kennel_location)) GLOB 'D[A-E][0-9]*' THEN substr(upper(trim(kennel_location)), 2, 1)
+    WHEN upper(substr(trim(kennel_location), 1, 1)) IN ('A','B','C','D','E') THEN upper(substr(trim(kennel_location), 1, 1))
+    ELSE NULL
+  END
+  WHERE kennel_location IS NOT NULL AND length(kennel_location) != 1
+     OR kennel_location IS NOT NULL AND upper(kennel_location) NOT IN ('A','B','C','D','E')
+     OR kennel_location IS NOT NULL AND kennel_location != upper(kennel_location)
+`);
 // Cumulative days from every PRIOR completed stay at the shelter for this
 // dog (auto-computed by the scraper when a previously-removed dog reappears
 // in a fresh scrape — see detectReturn() in scraper.js), uncapped and

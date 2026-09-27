@@ -81,7 +81,7 @@
     statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous)
     togetherDay: null, // dateKey of the Together day being viewed, if any
     statsRange: 'today', // 'today' | 'lifetime' -- which Stats tiles are shown
-    audit: { location: '', dog: null, loading: false, assignSearch: '', pendingMarkers: null }
+    audit: { location: '', dog: null, loading: false, pendingMarkers: null, recent: [], scanned: {}, scanError: '' }
   };
 
   // ---------- API helper ----------
@@ -234,16 +234,6 @@
       html += `<span class="marker-star${starPending ? ' pending' : ''}" title="${starTitle}">★</span>`;
     }
     if (dog.pbFlag) html += `<span class="marker-dot pb" title="Potty Break OK - short walk only">PB</span>`;
-    if (dog.pbEarlyFlag) {
-      // Once the hold window has passed the flag has nothing left to grant
-      // (see server.js) -- greyed out rather than hidden, since it's still
-      // true that this dog once needed it, just not actionable any more.
-      const expired = !isHistorical && dog.pbEarlyExpired;
-      const title = expired
-        ? "Potty Break Early - the shelter's hold period is over now, so this no longer applies"
-        : "Potty Break Early - cleared for a short walk before the shelter's hold is up";
-      html += `<span class="marker-dot pb-early${expired ? ' expired' : ''}" title="${title}">PB-E</span>`;
-    }
     if (dog.isPendingAdoption) html += `<span class="marker-dot pending" title="Someone has started adopting this dog - Beginners can't walk them">Adopted</span>`;
     return html;
   }
@@ -261,8 +251,6 @@
       pooStatus: dog.pooStatus || 'none',
       starFlag: !!dog.starFlag,
       pbFlag: !!dog.pbFlag,
-      pbEarlyFlag: !!dog.pbEarlyFlag,
-      pbEarlyExpired: !!dog.pbEarlyExpired,
       isPendingAdoption: !!dog.isPendingAdoption,
       isHistorical: !!isHistorical
     }));
@@ -287,15 +275,6 @@
       rows.push({ icon: `<span class="marker-star${starPending ? ' pending' : ''}">★</span>`, name: starPending ? 'Good for beginners - but not right now, pending adoption' : 'Good for beginners' });
     }
     if (dog.pbFlag) rows.push({ icon: '<span class="marker-dot pb">PB</span>', name: 'Potty Break OK - short walk only, no play' });
-    if (dog.pbEarlyFlag) {
-      const expired = !isHistorical && dog.pbEarlyExpired;
-      rows.push({
-        icon: `<span class="marker-dot pb-early${expired ? ' expired' : ''}">PB-E</span>`,
-        name: expired
-          ? "Potty Break Early - the shelter's hold period is over now, so this no longer applies"
-          : "Potty Break Early - cleared for a short walk before the shelter's hold is up"
-      });
-    }
     if (dog.isPendingAdoption) rows.push({ icon: '<span class="marker-dot pending">Adopted</span>', name: "Someone has started adopting this dog - Beginners can't walk them" });
     return rows;
   }
@@ -2467,13 +2446,6 @@
 
   // Redraws from already-fetched data — used for search/filter changes so
   // they don't need a network round-trip each time.
-  // Splits "A12" into { letter: 'A', num: 12 } for natural A1 -> E60 ordering
-  // (plain string compare would put "A10" before "A2").
-  function parseLocation(loc) {
-    const m = /^([A-Za-z])\s*(\d+)/.exec((loc || '').trim());
-    return m ? { letter: m[1].toUpperCase(), num: parseInt(m[2], 10) } : { letter: '~', num: 0 };
-  }
-
   const AVAILABLE_SORTS = {
     shelterTime: { label: 'Days in shelter (most first)', cmp: (a, b) => (b.daysInShelter || 0) - (a.daysInShelter || 0) },
     lastWalked: {
@@ -2495,12 +2467,9 @@
       cmp: (a, b) => (a.recentWalkCount || 0) - (b.recentWalkCount || 0) || (b.daysInShelter || 0) - (a.daysInShelter || 0)
     },
     location: {
-      label: 'Location (A1 → E60)',
-      cmp: (a, b) => {
-        const pa = parseLocation(a.kennelLocation);
-        const pb = parseLocation(b.kennelLocation);
-        return pa.letter === pb.letter ? pa.num - pb.num : pa.letter.localeCompare(pb.letter);
-      }
+      label: 'Location (A → E)',
+      // Dogs with no letter on file go last; within a wing, by name.
+      cmp: (a, b) => (a.kennelLocation || '~').localeCompare(b.kennelLocation || '~') || a.name.localeCompare(b.name)
     }
   };
 
@@ -2651,8 +2620,7 @@
       <button type="button" class="marker-shape poo-priority filter-chip ${filterChipClass(state.markerFilters.poo_priority)}" data-filter-key="poo_priority" title="High priority POO dog">${ASTERISK_SVG}</button>
       <button type="button" class="marker-shape pb filter-chip ${filterChipClass(state.markerFilters.pb)}" data-filter-key="pb" title="Potty Break OK">PB</button>
       <button type="button" class="marker-shape rect pending filter-chip ${filterChipClass(state.markerFilters.pendingAdoption)}" data-filter-key="pendingAdoption" title="Someone has started adopting this dog">Adopted</button>`;
-    const LOCATIONS = ['A', 'B', 'C', 'D', 'E'];
-    const locationChips = LOCATIONS.map((letter) => `
+    const locationChips = KENNEL_LETTERS.map((letter) => `
       <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 44px;">${letter}</button>`).join('');
 
     // Shown on the collapsed "Filters" toggle so it's obvious something is
@@ -2907,83 +2875,195 @@
 
   // ---------- Audit tab ----------
   // Gated to users with canAudit (a separate permission from isPrivileged —
-  // see the ⚙ gear on the confirm screen). Step through kennel codes one at
-  // a time with </>, verify/set whoever's there, and confirm their location
-  // and markers in one pass — built for physically walking the kennel row.
+  // see the ⚙ gear on the confirm screen). Built for walking a wing kennel
+  // to kennel: pick the letter, open the scanner, and scan card after card.
+  // The scanner stays open, every scan saves that letter straight away
+  // without waiting on the network, and the last 3 dogs scanned sit at the
+  // top so it's obvious each scan landed. "Finish wing" then asks whether
+  // every kennel was scanned -- if so, dogs still recorded in that wing
+  // that weren't scanned get their letter cleared.
   async function renderAudit() {
     appEl.innerHTML = `
       <div class="stack tight">
+        <div id="auditRecent"></div>
         <div class="card compact">
-          <label for="auditLocationInput">Kennel location</label>
-          <div class="row" style="gap:6px;">
-            <button type="button" id="auditBackBtn" class="btn" style="width:44px;flex:0 0 auto;padding:12px 0;">◀</button>
-            <input type="text" id="auditLocationInput" placeholder="e.g. B12" autocapitalize="characters" value="${esc(state.audit.location)}" />
-            <button type="button" id="auditForwardBtn" class="btn" style="width:44px;flex:0 0 auto;padding:12px 0;">▶</button>
-          </div>
-          <p class="small muted" style="margin:6px 0 0;">Empty kennel or part of a double? Just tap ▶ to skip it - nothing to save.</p>
-        </div>
-        <div class="card compact">
-          <label class="small">Or find a dog directly</label>
-          <div class="row" style="margin-top:6px;">
-            <button type="button" id="auditScanBtn" class="btn">📷 Scan QR/Barcode</button>
+          <label class="small">Kennel location</label>
+          ${kennelLetterPickerHtml('auditLetterPicker', state.audit.location)}
+          <div class="row" style="margin-top:10px;">
+            <button type="button" id="auditScanBtn" class="btn primary" ${state.audit.location ? '' : 'disabled'}>📷 Start scanning</button>
           </div>
           <div id="auditQrSection" class="hidden" style="margin-top:10px;">
             <div id="audit-qr-reader"></div>
             <div id="auditScanError" class="small"></div>
-            <button type="button" id="auditCancelScanBtn" class="btn">Cancel Scan</button>
+            <button type="button" id="auditCancelScanBtn" class="btn">Stop scanning</button>
           </div>
-          <label for="auditNameSearch" class="small" style="display:block;margin-top:10px;">Search by name</label>
+          <div id="auditFinish"></div>
+        </div>
+        <div class="card compact">
+          <label for="auditNameSearch" class="small">Or find a dog by name</label>
           <input type="text" id="auditNameSearch" placeholder="Start typing a dog's name…" autocomplete="off" />
           <div id="auditNameSearchResults" class="stack tight" style="margin-top:8px;"></div>
         </div>
         <div id="auditResult"></div>
       </div>`;
-    wireAuditLocationInput();
-    wireAuditDirectFind();
-    await loadAuditLocation();
+    wireKennelLetterPicker('auditLetterPicker', (letter) => {
+      state.audit.location = letter;
+      document.getElementById('auditScanBtn').disabled = !letter;
+      renderAuditFinish();
+    }, { required: true });
+    wireAuditScanner();
+    wireAuditNameSearch();
+    renderAuditRecent();
+    renderAuditFinish();
+    renderAuditResult();
   }
 
-  // Jumps straight to a specific dog (via QR/barcode scan or typed name),
-  // bypassing the location lookup — for when it's easier to identify the
-  // dog first and confirm/step their location second. Populates the
-  // location field from what's already on file so Save still works, or
-  // leaves it blank if none is known yet.
-  async function loadAuditDog(animalId) {
-    state.audit.loading = true;
-    renderAuditResult();
+  function auditScannedSet(letter) {
+    if (!state.audit.scanned[letter]) state.audit.scanned[letter] = new Set();
+    return state.audit.scanned[letter];
+  }
+
+  // The last 3 dogs scanned, newest first. Scanning a dog already on the
+  // list just moves it back to the top instead of adding it twice.
+  function renderAuditRecent() {
+    const el = document.getElementById('auditRecent');
+    if (!el) return;
+    const rows = state.audit.recent;
+    const err = state.audit.scanError;
+    if (!rows.length && !err) { el.innerHTML = ''; return; }
+    const icon = (r) => (r.status === 'ok' ? '✓' : r.status === 'error' ? '⚠' : '…');
+    el.innerHTML = `
+      <div class="card compact">
+        ${err ? `<p class="small" style="margin:0 0 4px;color:var(--red);">⚠ ${esc(err)}</p>` : ''}
+        ${rows.map((r, i) => `
+          <p class="${i === 0 ? '' : 'small muted'}" style="margin:0;${r.status === 'error' ? 'color:var(--red);' : ''}">
+            <span style="display:inline-block;width:1.4em;">${icon(r)}</span>${i === 0 ? '<strong>' : ''}${esc(r.name)}${i === 0 ? '</strong>' : ''} → ${esc(r.letter)}${r.status === 'error' ? ` · ${esc(r.error)}` : ''}
+          </p>`).join('')}
+      </div>`;
+  }
+
+  function upsertAuditRecent(entry) {
+    state.audit.recent = [entry, ...state.audit.recent.filter((r) => r.id !== entry.id)].slice(0, 3);
+    state.audit.scanError = '';
+    renderAuditRecent();
+  }
+
+  function renderAuditFinish() {
+    const el = document.getElementById('auditFinish');
+    if (!el) return;
+    const letter = state.audit.location;
+    const count = letter ? auditScannedSet(letter).size : 0;
+    el.innerHTML = count ? `
+      <div class="row" style="margin-top:10px;">
+        <button type="button" id="auditFinishBtn" class="btn">Finish wing ${esc(letter)} (${count} scanned)</button>
+      </div>` : '';
+    const btn = document.getElementById('auditFinishBtn');
+    if (btn) btn.addEventListener('click', () => finishAuditWing(letter));
+  }
+
+  async function finishAuditWing(letter) {
+    const scannedIds = [...auditScannedSet(letter)];
+    const allScanned = await appConfirm(
+      `Did you scan every kennel in wing ${letter}? If you did, any dog still recorded in ${letter} that you didn't scan will have its location cleared.`,
+      { title: `Finish wing ${letter}`, confirmText: 'Yes, every kennel', cancelText: 'No, only some' }
+    );
+    if (!allScanned) {
+      auditScannedSet(letter).clear();
+      renderAuditFinish();
+      appAlert(`Done with ${letter}. Only the ${scannedIds.length} dog${scannedIds.length === 1 ? '' : 's'} you scanned were updated.`);
+      return;
+    }
     try {
-      const { dog } = await api(`/api/dogs/${animalId}?userId=${state.currentUser.id}`);
-      state.audit.dog = dog;
-      state.audit.location = dog.kennelLocation || state.audit.location || '';
-      const locInput = document.getElementById('auditLocationInput');
-      if (locInput) locInput.value = state.audit.location;
+      const preview = await api('/api/audit/clear-unscanned', { method: 'POST', body: JSON.stringify({ letter, scannedIds, dryRun: true }) });
+      if (preview.cleared.length) {
+        const names = preview.cleared.map((d) => d.name).join(', ');
+        const ok = await appConfirm(
+          `These ${preview.cleared.length} dog${preview.cleared.length === 1 ? ' is' : 's are'} recorded in ${letter} but weren't scanned: ${names}. Clear their location?`,
+          { title: `Clear from ${letter}`, confirmText: 'Clear them', danger: true }
+        );
+        if (!ok) return;
+        await api('/api/audit/clear-unscanned', { method: 'POST', body: JSON.stringify({ letter, scannedIds }) });
+      }
+      auditScannedSet(letter).clear();
+      renderAuditFinish();
+      appAlert(preview.cleared.length
+        ? `Wing ${letter} done. Cleared ${preview.cleared.length} dog${preview.cleared.length === 1 ? '' : 's'} that weren't there.`
+        : `Wing ${letter} done. Every dog on file was scanned.`);
     } catch (err) {
       appAlert(err.message);
-      state.audit.dog = null;
     }
-    state.audit.loading = false;
-    renderAuditResult();
   }
 
-  function wireAuditDirectFind() {
+  function wireAuditScanner() {
     const scanBtn = document.getElementById('auditScanBtn');
     const qrSection = document.getElementById('auditQrSection');
     const cancelBtn = document.getElementById('auditCancelScanBtn');
+    // Names for the recent list without a network round trip per scan.
+    const namesById = new Map();
+    api('/api/dogs?all=true').then((data) => data.dogs.forEach((d) => namesById.set(String(d.id), d.name))).catch(() => {});
+    // The camera reports the same code many times a second while it's in
+    // view, so the same card again within a couple of seconds is ignored.
+    let lastId = null;
+    let lastAt = 0;
+    const onScanned = (decodedText) => {
+      const animalId = parseAnimalIdFromScan(decodedText);
+      const now = Date.now();
+      if (animalId && String(animalId) === lastId && now - lastAt < 2500) return;
+      lastId = animalId ? String(animalId) : null;
+      lastAt = now;
+      if (!animalId) { state.audit.scanError = "Couldn't read a dog ID from that code."; renderAuditRecent(); return; }
+      const letter = state.audit.location;
+      if (!letter) { state.audit.scanError = 'Pick a kennel letter first.'; renderAuditRecent(); return; }
+      const id = String(animalId);
+      const entry = { id, name: namesById.get(id) || `Dog ${id}`, letter, status: 'saving' };
+      upsertAuditRecent(entry);
+      // Not awaited: the next kennel can be scanned while this one saves.
+      api(`/api/dogs/${id}/location`, { method: 'PUT', body: JSON.stringify({ location: letter }) })
+        .then((res) => {
+          entry.status = 'ok';
+          if (res.name) entry.name = res.name;
+          auditScannedSet(letter).add(id);
+          if (navigator.vibrate) navigator.vibrate(40);
+          renderAuditFinish();
+          // Only refresh the markers card if nothing newer was scanned since.
+          if (state.audit.recent[0] && state.audit.recent[0].id === id) loadAuditDog(id, { quiet: true });
+        })
+        .catch((err) => { entry.status = 'error'; entry.error = err.message; })
+        .finally(renderAuditRecent);
+    };
     scanBtn.addEventListener('click', () => {
       qrSection.classList.remove('hidden');
-      startQrScanner('audit-qr-reader', 'auditScanError', (decodedText) => {
-        stopQrScanner();
-        qrSection.classList.add('hidden');
-        const animalId = parseAnimalIdFromScan(decodedText);
-        if (!animalId) { appAlert('Could not read a dog ID from that code.'); return; }
-        loadAuditDog(animalId);
-      });
+      scanBtn.classList.add('hidden');
+      startQrScanner('audit-qr-reader', 'auditScanError', onScanned);
     });
     cancelBtn.addEventListener('click', () => {
       stopQrScanner();
       qrSection.classList.add('hidden');
+      scanBtn.classList.remove('hidden');
     });
+  }
 
+  // Shows a dog below for a markers check. Returns the dog (or null).
+  // quiet: from a scan -- no loading flicker and no pop-up on failure, so
+  // nothing gets in the way of scanning the next kennel.
+  async function loadAuditDog(animalId, { quiet = false } = {}) {
+    if (!quiet) {
+      state.audit.loading = true;
+      renderAuditResult();
+    }
+    try {
+      const { dog } = await api(`/api/dogs/${animalId}?userId=${state.currentUser.id}`);
+      state.audit.dog = dog;
+    } catch (err) {
+      if (!quiet) appAlert(err.message);
+      state.audit.dog = quiet ? state.audit.dog : null;
+    }
+    state.audit.loading = false;
+    renderAuditResult();
+    return state.audit.dog;
+  }
+
+  function wireAuditNameSearch() {
     const input = document.getElementById('auditNameSearch');
     const results = document.getElementById('auditNameSearchResults');
     // Fetched eagerly (not on focus) so the first keystroke always has data
@@ -2991,10 +3071,6 @@
     // someone finishes typing a short name.
     let allDogs = [];
     api('/api/dogs?all=false').then((data) => { allDogs = data.dogs; }).catch(() => {});
-    input.addEventListener('focus', () => {
-      stopQrScanner();
-      qrSection.classList.add('hidden');
-    });
     input.addEventListener('input', () => {
       const q = input.value.trim().toLowerCase();
       if (!q) { results.innerHTML = ''; return; }
@@ -3017,59 +3093,6 @@
     });
   }
 
-  function wireAuditLocationInput() {
-    const input = document.getElementById('auditLocationInput');
-    const backBtn = document.getElementById('auditBackBtn');
-    const forwardBtn = document.getElementById('auditForwardBtn');
-    const commit = () => {
-      const formatted = formatKennelCode(input.value.trim());
-      input.value = formatted;
-      state.audit.location = formatted;
-      loadAuditLocation();
-    };
-    input.addEventListener('input', () => {
-      const start = input.selectionStart;
-      const end = input.selectionEnd;
-      const formatted = formatKennelCode(input.value);
-      if (formatted !== input.value) {
-        input.value = formatted;
-        if (start != null) input.setSelectionRange(start, end);
-      }
-    });
-    input.addEventListener('blur', commit);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
-    backBtn.addEventListener('click', () => {
-      const current = input.value.trim() || state.audit.location;
-      input.value = bumpLocationValue(current, -1);
-      commit();
-    });
-    forwardBtn.addEventListener('click', () => {
-      const current = input.value.trim() || state.audit.location;
-      input.value = bumpLocationValue(current, 1);
-      commit();
-    });
-  }
-
-  async function loadAuditLocation() {
-    state.audit.dog = null;
-    state.audit.loading = true;
-    state.audit.assignSearch = '';
-    renderAuditResult();
-    if (!state.audit.location) {
-      state.audit.loading = false;
-      renderAuditResult();
-      return;
-    }
-    try {
-      const data = await api(`/api/dogs/by-location/${encodeURIComponent(state.audit.location)}?userId=${state.currentUser.id}`);
-      state.audit.dog = data.dog;
-    } catch (err) {
-      state.audit.dog = null;
-    }
-    state.audit.loading = false;
-    renderAuditResult();
-  }
-
   function renderAuditResult() {
     const resultEl = document.getElementById('auditResult');
     if (!resultEl) return;
@@ -3077,23 +3100,9 @@
       resultEl.innerHTML = `<p class="muted small center">Loading…</p>`;
       return;
     }
-    // A dog found by scan/name-search shows regardless of location — it may
-    // not have one on file yet, which is exactly what Save & Confirm
-    // Location is for.
-    if (!state.audit.location && !state.audit.dog) {
-      resultEl.innerHTML = `<p class="empty-state">Enter a starting kennel location above, or scan/search for a dog directly.</p>`;
-      return;
-    }
     const dog = state.audit.dog;
     if (!dog) {
-      resultEl.innerHTML = `
-        <div class="card compact">
-          <p class="muted small">No dog currently recorded at <strong>${esc(state.audit.location)}</strong>.</p>
-          <label for="auditAssignSearch" class="small" style="display:block;margin-top:8px;">Search to assign a dog here</label>
-          <input type="text" id="auditAssignSearch" placeholder="Dog name…" value="${esc(state.audit.assignSearch || '')}" />
-          <div id="auditAssignResults" class="stack tight" style="margin-top:8px;"></div>
-        </div>`;
-      wireAuditAssignSearch();
+      resultEl.innerHTML = `<p class="empty-state">Pick a kennel letter and start scanning, or search for a dog by name.</p>`;
       return;
     }
     resultEl.innerHTML = `
@@ -3102,7 +3111,7 @@
           <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(dog.name)} ${sexIcon(dog.sex)} ${markerBadges(dog)}</p>
-            <p class="dog-meta">${esc(dog.breed || '')} · ${shelterDaysHtml(dog)} · ID ${dog.id}</p>
+            <p class="dog-meta">${esc(dog.breed || '')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · ID ${dog.id}</p>
           </div>
         </div>
       </div>
@@ -3116,11 +3125,10 @@
         <div class="marker-row">
           <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
           <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-          <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, for an injured or fragile dog">PB</button>
-          <button type="button" class="marker-shape pb-early" data-group="pbEarly" title="Potty Break Early - a short walk before the shelter's hold is up">PB-E</button>
+          <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only">PB</button>
         </div>
         <div class="row" style="margin-top:10px;">
-          <button id="auditSaveBtn" class="btn primary">Save &amp; Confirm Location</button>
+          <button id="auditSaveBtn" class="btn primary">${state.audit.location ? `Save markers &amp; location ${esc(state.audit.location)}` : 'Save markers'}</button>
         </div>
         <p id="auditSaveStatus" class="small muted" style="margin:6px 0 0;"></p>
       </div>`;
@@ -3128,60 +3136,23 @@
       blueMarkers: [...(dog.blueMarkers || [])],
       pooStatus: dog.pooStatus || 'none',
       starFlag: !!dog.starFlag,
-      pbFlag: !!dog.pbFlag,
-      pbEarlyFlag: !!dog.pbEarlyFlag
+      pbFlag: !!dog.pbFlag
     };
     wireMarkerPicker(state.audit.pendingMarkers);
     document.getElementById('auditSaveBtn').addEventListener('click', async () => {
       const statusEl = document.getElementById('auditSaveStatus');
-      // A dog found by scan/name-search may not have a location on file yet
-      // (state.audit.location could still be blank) — read the field fresh
-      // rather than trusting that, since it's the actual source of truth.
-      const location = document.getElementById('auditLocationInput').value.trim();
-      if (!location) { statusEl.textContent = 'Enter a kennel location first.'; return; }
+      const letter = state.audit.location;
       statusEl.textContent = 'Saving…';
       try {
         await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.audit.pendingMarkers) });
-        const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
-        state.audit.location = location;
-        statusEl.textContent = `Saved ✓${locRes.bumpedDog ? ` (cleared this spot from ${esc(locRes.bumpedDog.name)})` : ''}`;
+        if (letter) {
+          const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location: letter }) });
+          dog.kennelLocation = locRes.location;
+        }
+        statusEl.textContent = 'Saved ✓';
       } catch (err) {
         statusEl.textContent = `Failed: ${err.message}`;
       }
-    });
-  }
-
-  function wireAuditAssignSearch() {
-    const input = document.getElementById('auditAssignSearch');
-    if (!input) return;
-    input.addEventListener('input', async () => {
-      state.audit.assignSearch = input.value;
-      const term = input.value.trim().toLowerCase();
-      const resultsEl = document.getElementById('auditAssignResults');
-      if (!term) { resultsEl.innerHTML = ''; return; }
-      let matches = [];
-      try {
-        const data = await api('/api/dogs?all=false');
-        matches = data.dogs.filter((d) => d.name.toLowerCase().includes(term)).slice(0, 8);
-      } catch (err) { /* leave results empty */ }
-      resultsEl.innerHTML = matches.length ? matches.map((d) => `
-        <div class="card compact dog-card search-result" data-id="${d.id}">
-          <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
-          <div class="dog-info">
-            <p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>
-            <p class="dog-meta">${esc(d.breed || '')} · <span class="nowrap">🏠 ${esc(d.kennelLocation || '?')}</span></p>
-          </div>
-        </div>`).join('') : '<p class="muted small">No matches.</p>';
-      resultsEl.querySelectorAll('.search-result').forEach((row) => {
-        row.addEventListener('click', async () => {
-          try {
-            await api(`/api/dogs/${row.dataset.id}/location`, { method: 'PUT', body: JSON.stringify({ location: state.audit.location }) });
-            await loadAuditLocation();
-          } catch (err) {
-            appAlert(err.message);
-          }
-        });
-      });
     });
   }
 
@@ -4093,8 +4064,7 @@
         blueMarkers: [...(dog.blueMarkers || [])],
         pooStatus: dog.pooStatus,
         starFlag: dog.starFlag,
-        pbFlag: dog.pbFlag,
-        pbEarlyFlag: dog.pbEarlyFlag
+        pbFlag: dog.pbFlag
       };
       renderWalk();
     } catch (err) {
@@ -4137,7 +4107,6 @@
       <div class="stack tight walk-confirm">
         ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies 6 months or younger can't be walked - no exceptions.</strong></div>` : ''}
         ${!tooYoung && dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
-        ${!tooYoung && dog.pbEarlyFlag && !dog.pbEarlyExpired ? `<div class="pb-warning-banner pb-early-banner">Potty Break Early: short walk, still within the shelter's hold</div>` : ''}
         <div class="card compact" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
             <svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="currentColor" aria-hidden="true">
@@ -4192,16 +4161,10 @@
           <div class="marker-row">
             <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
             <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-            <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, for an injured or fragile dog">PB</button>
-            <button type="button" class="marker-shape pb-early" data-group="pbEarly" title="Potty Break Early - a short walk before the shelter's hold is up">PB-E</button>
+            <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, clears the days-in-shelter wait">PB</button>
           </div>
-          <label for="locationInput" style="display:block;margin-top:14px;">Kennel location</label>
-          <div class="row" style="gap:6px;">
-            <button type="button" id="locationBackBtn" class="btn" style="width:44px;flex:0 0 auto;padding:12px 0;" ${tooYoung ? 'disabled' : ''}>◀</button>
-            <input type="text" id="locationInput" placeholder="e.g. A12" autocapitalize="characters" value="${esc(dog.kennelLocation || '')}" ${tooYoung ? 'disabled' : ''} />
-            <button type="button" id="locationForwardBtn" class="btn" style="width:44px;flex:0 0 auto;padding:12px 0;" ${tooYoung ? 'disabled' : ''}>▶</button>
-          </div>
-          <p id="locationWarning" class="small" style="color:var(--red); display:none; margin:6px 0 0;"></p>
+          <label style="display:block;margin-top:14px;">Kennel location</label>
+          ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung })}
           <div id="saveAllRow" class="row hidden" style="margin-top:10px;align-items:center;gap:10px;">
             <button id="saveAllBtn" class="btn">Save Changes</button>
             <span id="saveAllCheckmark" class="save-checkmark hidden" aria-hidden="true">✓</span>
@@ -4219,14 +4182,13 @@
     function checkDirty() {
       const row = document.getElementById('saveAllRow');
       if (!row) return;
-      const locationInput = document.getElementById('locationInput');
-      const currentLocation = locationInput ? locationInput.value.trim() : initialLocation;
+      const currentLocation = document.getElementById('locationPicker') ? kennelLetterPickerValue('locationPicker') : initialLocation;
       const dirty = JSON.stringify(state.walk.pendingMarkers) !== initialMarkersJson || currentLocation !== initialLocation;
       row.classList.toggle('hidden', !dirty);
     }
     wireMarkerPicker(state.walk.pendingMarkers, checkDirty);
     mountDogNotes(appEl.querySelector('.dog-notes-mount'), dog, state.walk.allWalks);
-    wireKennelLocationInput(checkDirty);
+    wireKennelLetterPicker('locationPicker', checkDirty);
 
     if (state.currentUser.isPrivileged) {
       const gearBtn = document.getElementById('advancedSettingsBtn');
@@ -4268,25 +4230,18 @@
       return api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.walk.pendingMarkers) });
     }
 
-    function bumpedMessage(bumpedDog) {
-      return bumpedDog ? ` (cleared this spot from ${esc(bumpedDog.name)} - looks like they were moved)` : '';
-    }
-
     async function applyMarkerUpdate(updated) {
       dog.blueMarkers = updated.blueMarkers;
       dog.pooStatus = updated.pooStatus;
       dog.starFlag = updated.starFlag;
       dog.pbFlag = updated.pbFlag;
-      dog.pbEarlyFlag = updated.pbEarlyFlag;
-      // Eligibility can depend on several of these at once, plus PB-E's
-      // hold-window cutoff, which only the server tracks -- re-fetch rather
-      // than duplicating that logic here, so this can't drift out of sync
-      // with server.js the way the old PB-only shortcut eventually did.
+      // Eligibility can depend on several of these at once, which only the
+      // server works out -- re-fetch rather than duplicating that logic
+      // here, so this can't drift out of sync with server.js.
       try {
         const fresh = await api(`/api/dogs/${dog.id}?userId=${state.currentUser.id}`);
         dog.eligible = fresh.dog.eligible;
         dog.notEligibleReason = fresh.dog.notEligibleReason;
-        dog.pbEarlyExpired = fresh.dog.pbEarlyExpired;
       } catch (err) { /* best effort -- badges just won't refresh instantly if this fails */ }
     }
 
@@ -4297,7 +4252,7 @@
     document.getElementById('saveAllBtn').addEventListener('click', async () => {
       const statusEl = document.getElementById('saveAllStatus');
       statusEl.textContent = 'Saving…';
-      const location = document.getElementById('locationInput').value.trim();
+      const location = kennelLetterPickerValue('locationPicker');
       try {
         const markerUpdate = await saveMarkers();
         await applyMarkerUpdate(markerUpdate);
@@ -4305,7 +4260,6 @@
         if (location) {
           const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
           dog.kennelLocation = locRes.location;
-          msg += bumpedMessage(locRes.bumpedDog);
         }
         statusEl.textContent = msg;
         renderWalkConfirm();
@@ -4334,7 +4288,7 @@
         );
         if (!proceed) return;
       }
-      const location = document.getElementById('locationInput').value.trim();
+      const location = kennelLetterPickerValue('locationPicker');
       startBtn.disabled = true;
       try {
         await saveMarkers();
@@ -4347,8 +4301,7 @@
         state.walk.startedAt = res.startedAt;
         state.walk.stopsAt = res.stopsAt;
         state.walk.autoStopped = false;
-        state.walk.location = location;
-        state.walk.bumpedDog = res.bumpedDog;
+        state.walk.location = res.location || location;
         state.walk.phase = 'active';
         renderWalk();
       } catch (err) {
@@ -4362,75 +4315,37 @@
     });
   }
 
-  // Kennel codes are a letter A-D (or D + a-e, e.g. "Da12"/"Dd06") followed
-  // by a number 1-40, or a letter E followed by a number 1-60. Not enforced —
-  // shelters do odd things — just auto-formatted live and flagged with a
-  // non-blocking warning if it doesn't look like that shape. Checks the
-  // parsed number against a range rather than matching digit shape, so a
-  // leading zero ("D06") is still recognized.
-  function isPlausibleKennelCode(value) {
-    const m = value.match(/^([A-Za-z])(\d{1,2})$/);
-    if (!m) return false;
-    const num = parseInt(m[2], 10);
-    if (m[1].toUpperCase() === 'E') return num >= 1 && num <= 60;
-    return num >= 1 && num <= 40;
+  // Kennel locations are just the wing letter, picked by tapping it -- the
+  // same chips as the Available list's "Kennel wing" filter. Tapping the
+  // selected letter again clears it, unless the picker is made with
+  // required: true. The current value lives on the picker's data-value.
+  const KENNEL_LETTERS = ['A', 'B', 'C', 'D', 'E'];
+  function kennelLetterPickerHtml(pickerId, selected, { disabled = false } = {}) {
+    const value = KENNEL_LETTERS.includes(selected) ? selected : '';
+    return `<div id="${pickerId}" class="marker-row" style="gap:6px;" data-value="${value}">${KENNEL_LETTERS.map((letter) => `
+      <button type="button" class="btn small-btn filter-chip ${value === letter ? 'active' : ''}" data-letter="${letter}" style="width:auto;flex:0 0 44px;" ${disabled ? 'disabled' : ''}>${letter}</button>`).join('')}</div>`;
   }
-
-  // Any of the A-E kennel letters can be written with a redundant leading
-  // "D" (a shelter kennel-card quirk) — "Da12" and "Dd06" just mean "A12"
-  // and "D06", the leading D carries no meaning of its own and is dropped.
-  function stripRedundantLeadingD(raw) {
-    const m = raw.match(/^[Dd]([A-Ea-e])(\d.*)$/);
-    return m ? m[1] + m[2] : raw;
+  function kennelLetterPickerValue(pickerId) {
+    const picker = document.getElementById(pickerId);
+    return picker ? picker.dataset.value : '';
   }
-
-  // Letter uppercase, digits untouched.
-  function formatKennelCode(raw) {
-    const stripped = stripRedundantLeadingD(raw);
-    const m = stripped.match(/^([A-Za-z])(.*)$/);
-    if (!m) return stripped;
-    const [, first, rest] = m;
-    return first.toUpperCase() + rest;
+  function setKennelLetterPicker(pickerId, letter) {
+    const picker = document.getElementById(pickerId);
+    if (!picker) return;
+    picker.dataset.value = letter || '';
+    picker.querySelectorAll('[data-letter]').forEach((b) => b.classList.toggle('active', b.dataset.letter === letter));
   }
-
-  function bumpLocationValue(value, delta) {
-    const m = value.match(/^([A-Za-z])(\d+)$/);
-    if (!m) return value;
-    const [, prefix, numStr] = m;
-    let num = parseInt(numStr, 10) + delta;
-    if (num < 1) num = 1;
-    if (num > 99) num = 99;
-    return prefix + num;
-  }
-
-  function wireKennelLocationInput(onChange) {
-    const input = document.getElementById('locationInput');
-    const warning = document.getElementById('locationWarning');
-    if (!input) return;
-    const check = () => {
-      const start = input.selectionStart;
-      const end = input.selectionEnd;
-      const formatted = formatKennelCode(input.value);
-      if (formatted !== input.value) {
-        input.value = formatted;
-        if (start != null) input.setSelectionRange(start, end);
-      }
-      const value = input.value.trim();
-      if (value && !isPlausibleKennelCode(value)) {
-        warning.textContent = "⚠ Doesn't look like a typical kennel code (A-D + 1-40, or E + 1-60) - that's fine if it's right, just double-check.";
-        warning.style.display = 'block';
-      } else {
-        warning.style.display = 'none';
-      }
-      if (onChange) onChange();
-    };
-    input.addEventListener('input', check);
-    check();
-
-    const backBtn = document.getElementById('locationBackBtn');
-    const forwardBtn = document.getElementById('locationForwardBtn');
-    if (backBtn) backBtn.addEventListener('click', () => { input.value = bumpLocationValue(input.value.trim(), -1); check(); });
-    if (forwardBtn) forwardBtn.addEventListener('click', () => { input.value = bumpLocationValue(input.value.trim(), 1); check(); });
+  function wireKennelLetterPicker(pickerId, onChange, { required = false } = {}) {
+    const picker = document.getElementById(pickerId);
+    if (!picker) return;
+    picker.querySelectorAll('[data-letter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const letter = btn.dataset.letter;
+        const next = picker.dataset.value === letter ? (required ? letter : '') : letter;
+        setKennelLetterPicker(pickerId, next);
+        if (onChange) onChange(next);
+      });
+    });
   }
 
   // A lettered blue marker or POO priority implies its blank/plain base
@@ -4451,8 +4366,6 @@
     if (starBtn) starBtn.classList.toggle('active', pending.starFlag);
     const pbBtn = document.querySelector('.marker-shape[data-group="pb"]');
     if (pbBtn) pbBtn.classList.toggle('active', pending.pbFlag);
-    const pbEarlyBtn = document.querySelector('.marker-shape[data-group="pbEarly"]');
-    if (pbEarlyBtn) pbEarlyBtn.classList.toggle('active', pending.pbEarlyFlag);
   }
 
   // Wires click-to-toggle behavior directly on the DOM (no re-render), so an
@@ -4463,14 +4376,9 @@
   //   - poo shapes (plain / priority "*"): strict single-select, unlinked —
   //     you can have plain OR priority OR neither, never both.
   //   - star: an independent boolean, distinct from POO priority.
-  //   - pb (Potty Break OK): an independent boolean, for an injured or
-  //     otherwise fragile dog who needs a short walk. Does NOT override the
-  //     days-in-shelter wait any more -- see the eligibility rules in
-  //     server.js.
-  //   - pbEarly (Potty Break Early, "PB-E"): the opposite case -- a dog who
-  //     can't meet the days-in-shelter threshold yet but can have a short
-  //     early walk anyway. Grants eligibility only up to
-  //     PB_EARLY_HOLD_DAYS; past that it's a no-op (server.js again).
+  //   - pb (Potty Break OK): an independent boolean; clears the days-in-
+  //     shelter wait for levels allowed PB dogs, since it authorizes a
+  //     short walk regardless (see the eligibility rules in server.js).
   function wireMarkerPicker(pending, onChange) {
     applyPickerState(pending);
     document.querySelectorAll('.marker-shape').forEach((btn) => {
@@ -4489,8 +4397,6 @@
           pending.starFlag = !pending.starFlag;
         } else if (group === 'pb') {
           pending.pbFlag = !pending.pbFlag;
-        } else if (group === 'pbEarly') {
-          pending.pbEarlyFlag = !pending.pbEarlyFlag;
         }
         applyPickerState(pending);
         if (onChange) onChange();
@@ -4504,7 +4410,6 @@
     appEl.innerHTML = `
       <div class="stack">
         ${w.dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
-        ${w.dog.pbEarlyFlag && !w.dog.pbEarlyExpired ? `<div class="pb-warning-banner pb-early-banner">Potty Break Early: short walk, still within the shelter's hold</div>` : ''}
         <div class="card">
           <div class="timer-display">${fmtClock(w.startedAt)}</div>
           <p class="muted small center" style="margin-top:-8px;">⏰ Check-out time - write this on the kennel</p>
@@ -4517,7 +4422,6 @@
           <span class="small" id="autoStopText"></span>
           <button type="button" id="extendWalkBtn" class="btn small-btn">＋10 min</button>
         </div>
-        ${w.bumpedDog ? `<p class="muted small center">Cleared this spot from ${esc(w.bumpedDog.name)} - looks like they were moved.</p>` : ''}
         <div class="card compact">
           <button type="button" id="walkNotesToggle" class="notes-toggle" aria-expanded="false">
             <span>📝 Tips &amp; notes</span><span class="notes-toggle-chevron">▾</span>

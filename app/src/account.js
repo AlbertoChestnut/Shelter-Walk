@@ -21,14 +21,14 @@ const TOKEN = () => process.env.INTERNAL_API_TOKEN || '';
 
 // Plain http.request (not fetch) because the login app must be addressed with
 // its public Host header even though we talk to it on localhost.
-function deleteLoginAccount(email) {
+function postToLoginApp(path, payload) {
   return new Promise((resolve, reject) => {
     const base = DJANGO_URL();
-    const body = JSON.stringify({ email });
+    const body = JSON.stringify(payload);
     const req = http.request({
       hostname: base.hostname,
       port: base.port,
-      path: '/internal/delete-account/',
+      path,
       method: 'POST',
       timeout: 15000,
       headers: {
@@ -51,6 +51,17 @@ function deleteLoginAccount(email) {
     req.on('error', reject);
     req.end(body);
   });
+}
+
+function deleteLoginAccount(email) {
+  return postToLoginApp('/internal/delete-account/', { email });
+}
+
+// The name from the welcome step (or Settings) is the only name there is --
+// the login app no longer asks for one -- so hand it over for the staff
+// account list. `email` is the X-Auth-Email placeholder, as above.
+function setLoginName(email, name) {
+  return postToLoginApp('/internal/set-name/', { email, name });
 }
 
 function register(app, { db }) {
@@ -146,4 +157,4 @@ function register(app, { db }) {
   });
 }
 
-module.exports = { register };
+module.exports = { register, setLoginName };

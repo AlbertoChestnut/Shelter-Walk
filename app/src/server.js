@@ -10,6 +10,9 @@ const wiki = require('./wiki');
 const impact = require('./impact');
 const notes = require('./notes');
 const account = require('./account');
+// Every walk notice (started, time warning, auto-stopped) shares this tag,
+// so each one replaces the last on the phone rather than piling up.
+const WALK_PUSH_TAG = 'walk';
 const { hashEmail } = require('./emailHash');
 
 const PORT = process.env.PORT || 3000;
@@ -90,13 +93,6 @@ function daysInShelter(dateInShelter, asOf) {
 }
 
 const MAX_PUPPY_AGE_MONTHS = 6;
-// How many days into the shelter's standard hold a PB-E ("Potty Break
-// Early") exception is worth anything for. Matches the established/expert
-// levels' own minDays (see EXPERIENCE_LEVELS below), so the flag's early
-// window and normal eligibility meet up exactly at day 7 -- there's no gap
-// where a dog is briefly ineligible for both reasons at once.
-const PB_EARLY_HOLD_DAYS = 7;
-
 // Shelter age strings look like "3 Years and 8 Months", "9 Months", or "8 Weeks".
 function parseAgeMonths(ageStr) {
   if (!ageStr) return null;
@@ -164,22 +160,22 @@ const getCheckoff = db.prepare(`
   SELECT 1 FROM session_checkoffs WHERE dog_id = ? AND date_key = ?
 `);
 
-// Locations are unique in practice — only one dog can physically be in a
-// given kennel. Whenever a location is set for a dog, if another dog is
-// currently recorded at that same spot, clear it from them (they must have
-// been moved and we don't know where to).
-function setKennelLocation(dogId, location) {
-  const dog = db.prepare('SELECT shelter_buddy_id FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
+// Kennel locations are just the wing letter (A-E) -- many dogs share one,
+// so there's no "one dog per spot" bumping any more. Accepts a full code
+// or the kennel-card "Da12" quirk and keeps only the letter; anything that
+// doesn't come down to A-E is null (caller decides whether that's an error).
+const KENNEL_LETTERS = ['A', 'B', 'C', 'D', 'E'];
+function kennelLetter(raw) {
+  let v = String(raw || '').trim().toUpperCase();
+  if (/^D[A-E]\d/.test(v)) v = v.slice(1);
+  return KENNEL_LETTERS.includes(v[0]) ? v[0] : null;
+}
+
+function setKennelLocation(dogId, letter) {
+  const dog = db.prepare('SELECT shelter_buddy_id, name FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   if (!dog) return null;
-  const bumped = db.prepare(`
-    SELECT shelter_buddy_id AS id, name FROM dogs
-    WHERE kennel_location = ? COLLATE NOCASE AND shelter_buddy_id != ?
-  `).get(location, dogId);
-  if (bumped) {
-    db.prepare('UPDATE dogs SET kennel_location = NULL WHERE shelter_buddy_id = ?').run(bumped.id);
-  }
-  db.prepare('UPDATE dogs SET kennel_location = ? WHERE shelter_buddy_id = ?').run(location, dogId);
-  return { location, bumpedDog: bumped || null };
+  db.prepare('UPDATE dogs SET kennel_location = ? WHERE shelter_buddy_id = ?').run(letter, dogId);
+  return { location: letter, name: dog.name };
 }
 
 function cachedPhotoUrl(dogId, rawUrl) {
@@ -239,7 +235,6 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const hasEvo = blueMarkers.includes('blue_evo');
   const hasAnyBlue = blueMarkers.length > 0;
   const pbFlag = !!row.pb_flag;
-  const pbEarlyFlag = !!row.pb_early_flag;
   const tags = row.tags ? JSON.parse(row.tags) : [];
   const isPendingAdoption = tags.includes(PENDING_ADOPTION_TAG);
   // Alumni (manual, capped 1-15) and previous_days_in_shelter (automatic,
@@ -252,22 +247,8 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 
   // Precedence: too young (hard, no override) > EVO not allowed (hard,
   // not even PB) > any blue marker not allowed (hard) > pending adoption
-  // not allowed (hard, beginners only) > PB / PB-E > day threshold.
-  //
-  // PB ("Potty Break Only") is for an injured or otherwise fragile dog who
-  // needs a short, bathroom-only walk -- it says nothing about whether
-  // they've been here long enough, so it does NOT override the day
-  // threshold; it only adds the level check (still gated to levels the
-  // shelter trusts with a PB walk at all) on top of the normal days rule.
-  //
-  // PB-E ("Potty Break Early") is the opposite kind of exception: a dog who
-  // CAN'T meet the day threshold yet because they're still within the
-  // shelter's hold, but can have a short early walk anyway. It only grants
-  // anything while still inside that hold window (< PB_EARLY_HOLD_DAYS);
-  // past that, it's redundant -- the dog is (or isn't) eligible the normal
-  // way regardless, same as if PB-E were never set. That's also why the
-  // badge greys out client-side at the same cutoff (see markerBadgesRaw).
-  const pbEarlyInHoldWindow = pbEarlyFlag && (effectiveDays == null || effectiveDays < PB_EARLY_HOLD_DAYS);
+  // not allowed (hard, beginners only) > PB (overrides the day threshold
+  // when this level permits PB dogs at all) > day threshold.
   let eligible;
   let notEligibleReason = null;
   if (ageMonthsHard) {
@@ -283,9 +264,6 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     eligible = false;
     notEligibleReason = 'pending_restricted';
   } else if (pbFlag) {
-    eligible = level.allowPb && (effectiveDays != null ? effectiveDays >= level.minDays : null);
-    notEligibleReason = eligible ? null : (level.allowPb ? 'days' : 'pb_restricted');
-  } else if (pbEarlyInHoldWindow) {
     eligible = level.allowPb;
     notEligibleReason = eligible ? null : 'pb_restricted';
   } else {
@@ -331,11 +309,6 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     pooStatus: row.poo_status || 'none',
     starFlag: !!row.star_flag,
     pbFlag,
-    pbEarlyFlag,
-    // Whether the early-walk window has passed -- the UI greys the PB-E
-    // badge out at this point instead of hiding it, since it's still true
-    // information (this dog once needed it), just no longer actionable.
-    pbEarlyExpired: pbEarlyFlag && !pbEarlyInHoldWindow,
     isPendingAdoption,
     kennelLocation: row.kennel_location || null,
     checkedOffToday: todayKey ? !!getCheckoff.get(row.shelter_buddy_id, todayKey) : false,
@@ -487,6 +460,14 @@ app.put('/api/me', (req, res) => {
   const clash = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE AND id != ?').get(name, user.id);
   if (clash) return res.status(409).json({ error: 'A user with that name already exists' });
   db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, user.id);
+  // Best effort: the staff account list in the login app shows this same
+  // name. A failure there shouldn't block saving it here.
+  const placeholder = String(req.headers['x-auth-email'] || '').trim().toLowerCase();
+  if (placeholder) {
+    account.setLoginName(placeholder, name)
+      .then((r) => { if (r.status !== 200) console.warn(`[account] login app did not take the name for user ${user.id}: ${r.status}`); })
+      .catch((err) => console.warn(`[account] could not send name to the login app for user ${user.id}: ${err.message}`));
+  }
   res.json({ ...user, name });
 });
 
@@ -751,17 +732,6 @@ app.get('/api/dogs', (req, res) => {
   res.json({ experienceLevel, dogs });
 });
 
-// Audit Mode: look up whoever is currently recorded at a kennel location,
-// so stepping through codes with </> doesn't require scanning each dog.
-app.get('/api/dogs/by-location/:location', (req, res) => {
-  const experienceLevel = resolveExperienceLevel(req.query.userId);
-  const row = db.prepare(
-    'SELECT * FROM dogs WHERE kennel_location = ? COLLATE NOCASE AND still_listed = 1'
-  ).get(req.params.location);
-  if (!row) return res.json({ dog: null });
-  res.json({ dog: serializeDog(row, experienceLevel, null, req.query.userId) });
-});
-
 app.get('/api/dogs/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const row = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(id);
@@ -865,7 +835,7 @@ const VALID_BLUE_MARKERS = [
 const VALID_POO_STATUSES = ['none', 'poo', 'priority'];
 app.put('/api/dogs/:id/markers', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { blueMarkers, pooStatus, starFlag, pbFlag, pbEarlyFlag } = req.body;
+  const { blueMarkers, pooStatus, starFlag, pbFlag } = req.body;
   if (!Array.isArray(blueMarkers) || blueMarkers.some((m) => !VALID_BLUE_MARKERS.includes(m))) {
     return res.status(400).json({ error: `blueMarkers must be an array of: ${VALID_BLUE_MARKERS.join(', ')}` });
   }
@@ -874,10 +844,10 @@ app.put('/api/dogs/:id/markers', (req, res) => {
   }
   const uniqueBlue = [...new Set(blueMarkers)];
   const info = db.prepare(`
-    UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ?, pb_early_flag = ? WHERE shelter_buddy_id = ?
-  `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, pbEarlyFlag ? 1 : 0, id);
+    UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ? WHERE shelter_buddy_id = ?
+  `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, id);
   if (info.changes === 0) return res.status(404).json({ error: 'Dog not found' });
-  res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag, pbEarlyFlag: !!pbEarlyFlag });
+  res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
 });
 
 // Alumni (returned dog): privileged users only, enforced here server-side
@@ -905,13 +875,35 @@ app.put('/api/dogs/:id/alumni', (req, res) => {
 // noting where they are right now, not walking them).
 app.put('/api/dogs/:id/location', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { location } = req.body;
-  if (!location || !String(location).trim()) {
-    return res.status(400).json({ error: 'location is required' });
+  const letter = kennelLetter(req.body.location);
+  if (!letter) {
+    return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
   }
-  const result = setKennelLocation(id, String(location).trim());
+  const result = setKennelLocation(id, letter);
   if (!result) return res.status(404).json({ error: 'Dog not found' });
   res.json({ id, ...result });
+});
+
+// Audit Mode's "every kennel in this wing was scanned": any dog still
+// recorded in the wing that wasn't scanned can't be there, so its letter is
+// cleared (it's somewhere else, or gone). dryRun lists who that would be
+// without changing anything, so the app can show names before confirming.
+app.post('/api/audit/clear-unscanned', (req, res) => {
+  if (!(req.headers['x-auth-staff'] === '1' || (req.me && (req.me.canAudit || req.me.isPrivileged)))) {
+    return res.status(403).json({ error: 'Audit access is needed for this.' });
+  }
+  const letter = kennelLetter(req.body.letter);
+  if (!letter || String(req.body.letter).trim().length !== 1) return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
+  const scanned = new Set((Array.isArray(req.body.scannedIds) ? req.body.scannedIds : []).map((id) => parseInt(id, 10)).filter(Number.isFinite));
+  if (!scanned.size) return res.status(400).json({ error: 'No dogs were scanned in this wing.' });
+  const unscanned = db.prepare('SELECT shelter_buddy_id AS id, name FROM dogs WHERE kennel_location = ? ORDER BY name')
+    .all(letter).filter((d) => !scanned.has(d.id));
+  if (!req.body.dryRun && unscanned.length) {
+    const clear = db.prepare('UPDATE dogs SET kennel_location = NULL WHERE shelter_buddy_id = ? AND kennel_location = ?');
+    db.transaction(() => unscanned.forEach((d) => clear.run(d.id, letter)))();
+    console.log(`[audit] wing ${letter}: cleared ${unscanned.length} unscanned dog(s) (${scanned.size} scanned)`);
+  }
+  res.json({ letter, cleared: unscanned, dryRun: !!req.body.dryRun });
 });
 
 // ---- Saved filters (per user, Available list Presets tab) ----
@@ -1027,7 +1019,7 @@ app.get('/api/updates', (req, res) => {
   // already sitting in the table from before that change.
   let rows = db.prepare(`
     SELECT e.id, e.kind, e.dog_id, d.name AS dog_name, d.photo_url,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag,
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
@@ -1133,10 +1125,13 @@ app.post('/api/walks/start', (req, res) => {
   }
 
   // Location is optional -- if it's left blank, leave the dog's existing
-  // kennel spot (if any) alone rather than overwriting it with nothing, and
-  // don't run the bump-the-previous-occupant logic for an empty location.
-  const trimmedLocation = location ? String(location).trim() : '';
-  const locationResult = trimmedLocation ? setKennelLocation(dogId, trimmedLocation) : null;
+  // kennel letter (if any) alone rather than overwriting it with nothing.
+  const hasLocation = location != null && String(location).trim() !== '';
+  const trimmedLocation = hasLocation ? kennelLetter(location) : '';
+  if (hasLocation && !trimmedLocation) {
+    return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
+  }
+  if (trimmedLocation) setKennelLocation(dogId, trimmedLocation);
 
   const startedAt = new Date().toISOString();
   const info = db.prepare(`
@@ -1159,7 +1154,8 @@ app.post('/api/walks/start', (req, res) => {
     push.sendPushToUser(userId, {
       title: finalLocation ? `${dog.name} - Return to: ${finalLocation}` : dog.name,
       body: `Started ${startTimeLabel}${finalLocation ? ` · Return to: ${finalLocation}` : ''}`,
-      url: '/'
+      url: '/',
+      tag: WALK_PUSH_TAG
     }).catch(() => {});
   }
 
@@ -1169,8 +1165,7 @@ app.post('/api/walks/start', (req, res) => {
     location: finalLocation,
     startedAt,
     stopsAt: walkStopsAt({ started_at: startedAt, extend_minutes: 0 }),
-    autoStopMinutes: AUTO_STOP_MINUTES,
-    bumpedDog: locationResult ? locationResult.bumpedDog : null
+    autoStopMinutes: AUTO_STOP_MINUTES
   });
 });
 
@@ -1294,7 +1289,7 @@ app.get('/api/walks', (req, res) => {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
     SELECT w.*, d.name AS dog_name, d.photo_url, d.breed,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     ${where} ORDER BY w.started_at DESC LIMIT ?
   `).all(...params, limit);
@@ -1352,7 +1347,7 @@ app.get('/api/stats', (req, res) => {
   const perDog = db.prepare(`
     SELECT d.shelter_buddy_id AS id, d.name, d.photo_url, d.still_listed AS stillListed,
            d.removed_at AS removedAt,
-           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag, d.pb_early_flag,
+           d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
            COUNT(w.id) AS walkCount, MAX(w.started_at) AS lastWalkedAt,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
@@ -1466,7 +1461,8 @@ function enforceWalkLimits() {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: stopped automatically`,
           body: `Walks stop after ${minutes} minutes. If it ran longer, you can fix the time in Stats.`,
-          url: '/'
+          url: '/',
+          tag: WALK_PUSH_TAG
         }).catch(() => {});
       }
     } else if (!w.warned && stopsAt - now <= WARN_MINUTES_BEFORE * 60000) {
@@ -1475,7 +1471,8 @@ function enforceWalkLimits() {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: ${WARN_MINUTES_BEFORE} minutes left`,
           body: 'Open the app to add more time, or the walk will stop on its own.',
-          url: '/'
+          url: '/',
+          tag: WALK_PUSH_TAG
         }).catch(() => {});
       }
     }

@@ -134,6 +134,13 @@ self.addEventListener('push', (event) => {
     badge: '/icons/icon-192.png',
     data: { url: data.url || '/' }
   };
+  // Notifications sharing a tag replace each other instead of stacking --
+  // all walk notices use one, so only the latest walk's is ever showing.
+  // renotify still buzzes for the replacement (a new walk should alert).
+  if (data.tag) {
+    options.tag = data.tag;
+    options.renotify = true;
+  }
   event.waitUntil(self.registration.showNotification(title, options));
 });
 

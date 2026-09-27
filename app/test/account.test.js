@@ -35,7 +35,7 @@ test.before(async () => {
     let data = '';
     req.on('data', (c) => { data += c; });
     req.on('end', () => {
-      stubCalls.push({ auth: req.headers.authorization, host: req.headers.host, body: JSON.parse(data || '{}') });
+      stubCalls.push({ path: req.url, auth: req.headers.authorization, host: req.headers.host, body: JSON.parse(data || '{}') });
       if (stubMode === 'down') { req.socket.destroy(); return; }
       res.setHeader('Content-Type', 'application/json');
       if (stubMode === 'staff') { res.statusCode = 403; res.end('{"error":"staff"}'); return; }
@@ -152,4 +152,24 @@ test('the deleted walker\'s walks show up as nobody\'s in the shared day view', 
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() - 3 * 3600 * 1000));
   const r = await call('GET', `/api/impact/day?date=${day}`, { user: STAYER });
   if (r.status === 200) assert.ok(r.json.walks.every((w) => w.mine === false || w.mine === true) && !r.text.toLowerCase().includes('leaver'));
+});
+
+test('saving your name also hands it to the login app for the staff account list', async () => {
+  const user = 'namer.quokka@example.com';
+  await call('GET', '/api/me', { user });
+  stubCalls.length = 0;
+  const r = await call('PUT', '/api/me', { user, body: { name: 'Nora Namer' } });
+  assert.equal(r.status, 200);
+  for (let i = 0; i < 20 && !stubCalls.length; i += 1) await new Promise((res) => setTimeout(res, 50));
+  assert.equal(stubCalls.length, 1);
+  assert.equal(stubCalls[0].path, '/internal/set-name/');
+  assert.equal(stubCalls[0].auth, 'Bearer test-token');
+  assert.deepEqual(stubCalls[0].body, { email: user, name: 'Nora Namer' });
+
+  // The login app being down never blocks saving the name here.
+  stubMode = 'down';
+  const r2 = await call('PUT', '/api/me', { user, body: { name: 'Nora N' } });
+  assert.equal(r2.status, 200);
+  assert.equal(r2.json.name, 'Nora N');
+  stubMode = 'ok';
 });

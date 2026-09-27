@@ -309,9 +309,6 @@ main#app.evo-caution-bg {
   border-radius: var(--radius);
   border: 2px solid #c9a600;
 }
-/* PB-E's version of the same banner -- blue instead of yellow, matching its
-   marker-dot, so it reads as a different reason at a glance. */
-.pb-early-banner { background: #ffd400; color: #1c1c1c; border-color: #c9a600; }
 
 /* PB (Potty Break OK) — a short bathroom-only walk, no play. Diagonal
    repeating text makes this unmistakable at a glance, distinct from the
@@ -414,12 +411,6 @@ svg.asterisk-icon { display: block; }
 .marker-dot.poo-priority svg.asterisk-icon { width: 8px; height: 8px; }
 .marker-dot.blue.rect { border-radius: 5px; width: auto; padding: 0 4px; font-size: 0.55rem; background: var(--red-fill); border-color: #8a2a20; }
 .marker-dot.pb { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
-/* PB-E ("Potty Break Early") — same yellow as PB, told apart by its "PB-E"
-   text rather than a different color. Greys out once the hold has passed
-   (see pbEarlyExpired in server.js) instead of disappearing -- it's still
-   true information, just no longer actionable. */
-.marker-dot.pb-early { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
-.marker-dot.pb-early.expired { background: var(--muted); border-color: var(--muted); opacity: 0.7; }
 /* Pending adoption ("I'm getting adopted!" on the shelter's own site) —
    purple so it reads as its own distinct category, not confusable with the
    yellow POO/PB markers, the blue behavior markers, or red EVO/hard-block. */
@@ -519,7 +510,6 @@ svg.asterisk-icon { display: block; }
 .marker-shape.blue.rect { border-color: var(--red); color: var(--red); }
 .marker-shape.poo, .marker-shape.poo-priority { background: var(--card-bg); border-color: #c9a600; color: #c9a600; }
 .marker-shape.pb { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.7rem; }
-.marker-shape.pb-early { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.62rem; }
 .marker-shape.pending { background: var(--card-bg); border-color: #8a5fc9; color: #8a5fc9; font-size: 0.62rem; }
 
 /* Drawn as an SVG (see ASTERISK_SVG in app.js), not a "*" glyph -- font
@@ -595,7 +585,6 @@ svg.asterisk-icon { display: block; }
 .marker-shape.active.blue.rect { background: var(--red-fill); border-color: #8a2a20; color: white; }
 .marker-shape.active.poo, .marker-shape.active.poo-priority { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
 .marker-shape.active.pb { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
-.marker-shape.active.pb-early { background: #ffd400; border-color: #c9a600; color: #1c1c1c; }
 .marker-shape.active.pending { background: #8a5fc9; border-color: #6d449e; color: white; }
 /* Star stays background/border-free even when active — just the glyph
    turning gold, never a filled circle. */

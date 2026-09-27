@@ -67,6 +67,8 @@
     showMoreFilters: false,
     filtersTab: 'filters', // 'filters' | 'presets'
     presetMinDaysAtLeast: null, // set by the "Beginner" built-in preset
+    ageMinYears: null, // adopter age range; null = no limit
+    ageMaxYears: null,
     availableSort: 'shelterTime',
     availableSortDir: 'desc',
     availableSearch: '',
@@ -381,7 +383,7 @@
         <h3 style="margin-top:0;">🕘 ${esc(name)}'s walks</h3>
         ${walks.length
     ? `<p class="small muted">${walks.length} walk${walks.length === 1 ? '' : 's'}${mineCount ? `, ${mineCount} with you` : ''}.</p><div class="walk-history-list">${daysHtml}</div>`
-    : `<p class="small muted">${esc(name)} hasn't been walked yet.</p>`}
+    : `<p class="small muted">No walks recorded for ${esc(name)}.</p>`}
       `;
     } catch (err) {
       content.innerHTML = `<h3 style="margin-top:0;">🕘 Walk history</h3><p class="small muted">Couldn't load the walk history: ${esc(err.message)}</p>`;
@@ -1988,7 +1990,7 @@
   // Personal history only: how often *this* user has walked the dog.
   function walksTogetherText(dog) {
     const n = dog.myWalkCount || 0;
-    if (!n) return 'No walks together yet';
+    if (!n) return 'No walks together recorded';
     return `${n}× walk${n === 1 ? '' : 's'} together · last on ${fmtDate(dog.myLastWalkedAt)}`;
   }
 
@@ -2038,7 +2040,7 @@
       const everyone = stats.everyone;
       const happyLine = mine.count > 0
         ? `<p class="small">You've spent <strong>${fmtDuration(mine.totalSeconds)}</strong> making ${esc(dogName)}'s day better! 🐾</p>`
-        : `<p class="small muted">You haven't walked ${esc(dogName)} yet - take them out for a first walk together!</p>`;
+        : `<p class="small muted">No walks together recorded with ${esc(dogName)}.</p>`;
       content.innerHTML = `
         <h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3>
         <div class="stat-grid">
@@ -2585,7 +2587,27 @@
     const pooHide = Object.keys(pooTests).filter((k) => filters[k] === 'hide');
     if (pooOnly.length) result = result.filter((d) => pooOnly.some((k) => pooTests[k](d)));
     if (pooHide.length) result = result.filter((d) => !pooHide.some((k) => pooTests[k](d)));
+    // Adopter filters. Male/female are two values of one field, so they OR
+    // like the POO chips. Breeds OR within each mode like the blue letters,
+    // and a breed also matches dogs with it in their shelter tags (mixes).
+    const sexTests = { male: (d) => d.sex === 'Male', female: (d) => d.sex === 'Female' };
+    const sexOnly = Object.keys(sexTests).filter((k) => filters[k] === 'only');
+    const sexHide = Object.keys(sexTests).filter((k) => filters[k] === 'hide');
+    if (sexOnly.length) result = result.filter((d) => sexOnly.some((k) => sexTests[k](d)));
+    if (sexHide.length) result = result.filter((d) => !sexHide.some((k) => sexTests[k](d)));
+    const breedKeys = Object.keys(filters).filter((k) => k.startsWith('breed:'));
+    const breedOnly = breedKeys.filter((k) => filters[k] === 'only').map((k) => k.slice(6));
+    const breedHide = breedKeys.filter((k) => filters[k] === 'hide').map((k) => k.slice(6));
+    if (breedOnly.length) result = result.filter((d) => breedOnly.some((b) => dogHasBreed(d, b)));
+    if (breedHide.length) result = result.filter((d) => !breedHide.some((b) => dogHasBreed(d, b)));
+    if (state.ageMinYears != null || state.ageMaxYears != null) {
+      // "Up to 3 years" includes 3 years and some months. Unknown ages drop out.
+      const minMonths = state.ageMinYears != null ? state.ageMinYears * 12 : 0;
+      const maxMonths = state.ageMaxYears != null ? (state.ageMaxYears + 1) * 12 : Infinity;
+      result = result.filter((d) => d.ageMonths != null && d.ageMonths >= minMonths && d.ageMonths < maxMonths);
+    }
     const singleTests = {
+      desexed: (d) => d.desexed === 'Yes',
       star: (d) => !!d.starFlag,
       pb: (d) => !!d.pbFlag,
       pendingAdoption: (d) => !!d.isPendingAdoption,
@@ -2605,6 +2627,19 @@
     }
     return result;
   }
+
+  function dogHasBreed(dog, breed) {
+    return dog.breed === breed || (dog.tags || []).includes(breed);
+  }
+  // Every breed among the listed dogs (primary breed field), with how many
+  // dogs match it (tags included), most common first.
+  function breedCounts(dogs) {
+    const names = [...new Set(dogs.map((d) => d.breed).filter(Boolean))];
+    return names.map((name) => ({ name, count: dogs.filter((d) => dogHasBreed(d, name)).length }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+  const AGE_MIN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 10];
+  const AGE_MAX_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10];
 
   // Redraws from already-fetched data — used for search/filter changes so
   // they don't need a network round-trip each time.
@@ -2680,6 +2715,8 @@
     state.markerFilters = { ...(filter.markerFilters || {}) };
     state.locationFilter = new Set(filter.locationFilter || []);
     state.presetMinDaysAtLeast = filter.minDaysAtLeast != null ? filter.minDaysAtLeast : null;
+    state.ageMinYears = filter.ageMinYears != null ? filter.ageMinYears : null;
+    state.ageMaxYears = filter.ageMaxYears != null ? filter.ageMaxYears : null;
     state.showMoreFilters = true;
     state.filtersTab = 'filters';
     redrawAvailableList();
@@ -2689,7 +2726,9 @@
     return {
       markerFilters: { ...state.markerFilters },
       locationFilter: [...state.locationFilter],
-      minDaysAtLeast: state.presetMinDaysAtLeast
+      minDaysAtLeast: state.presetMinDaysAtLeast,
+      ageMinYears: state.ageMinYears,
+      ageMaxYears: state.ageMaxYears
     };
   }
 
@@ -2697,6 +2736,8 @@
     state.markerFilters = {};
     state.locationFilter = new Set();
     state.presetMinDaysAtLeast = null;
+    state.ageMinYears = null;
+    state.ageMaxYears = null;
     state.needsShiftWalkOnly = false;
     state.showFoster = false;
     redrawAvailableList();
@@ -2782,6 +2823,25 @@
       <button type="button" class="marker-shape poo-priority filter-chip ${filterChipClass(state.markerFilters.poo_priority)}" data-filter-key="poo_priority" title="High priority POO dog">${ASTERISK_SVG}</button>
       <button type="button" class="marker-shape pb filter-chip ${filterChipClass(state.markerFilters.pb)}" data-filter-key="pb" title="Potty Break OK">PB</button>
       <button type="button" class="marker-shape rect pending filter-chip ${filterChipClass(state.markerFilters.pendingAdoption)}" data-filter-key="pendingAdoption" title="Someone has started adopting this dog">Adopted</button>`;
+    const textChip = (key, label, title) => `<button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters[key])}" data-filter-key="${esc(key)}" title="${esc(title || label)}" style="width:auto;flex:0 0 auto;">${label}</button>`;
+    const adopterChips = `
+      ${textChip('male', '♂ Male')}
+      ${textChip('female', '♀ Female')}
+      ${textChip('desexed', 'Spayed / neutered', 'Spayed or neutered (hide to see dogs that are not, or unknown)')}`;
+    const ageSelect = (id, options, value, anyLabel, fmt) => `
+      <select id="${id}" class="small" style="flex:1;">
+        <option value="">${anyLabel}</option>
+        ${options.map((y) => `<option value="${y}" ${value === y ? 'selected' : ''}>${fmt(y)}</option>`).join('')}
+      </select>`;
+    const ageRow = `
+      <div class="row" style="align-items:center;gap:6px;">
+        <label class="small muted" style="flex:0 0 auto;margin:0;">Age:</label>
+        ${ageSelect('ageMinSelect', AGE_MIN_OPTIONS, state.ageMinYears, 'Any', (y) => `${y}+ yr${y === 1 ? '' : 's'}`)}
+        <span class="muted small" style="flex:0 0 auto;">to</span>
+        ${ageSelect('ageMaxSelect', AGE_MAX_OPTIONS, state.ageMaxYears, 'Any', (y) => (y === 0 ? 'Under 1 yr' : `${y} yr${y === 1 ? '' : 's'}`))}
+      </div>`;
+    const breedChips = breedCounts(state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster'))
+      .map((b) => textChip(`breed:${b.name}`, `${esc(b.name)} <span class="chip-count">${b.count}</span>`, b.name)).join('');
     const locationChips = KENNEL_LETTERS.map((letter) => `
       <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 44px;">${letter}</button>`).join('');
 
@@ -2793,10 +2853,13 @@
     const allBlueValues = BLUE_MARKERS.map((m) => m.value);
     const blueOnlyActive = allBlueValues.some((v) => state.markerFilters[v] === 'only') ? 1 : 0;
     const blueHideActive = allBlueValues.some((v) => state.markerFilters[v] === 'hide') ? 1 : 0;
-    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe'];
+    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'male', 'female', 'desexed'];
     const otherActiveCount = otherFilterKeys.filter((k) => state.markerFilters[k]).length;
+    const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
+    const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
+    const ageActive = state.ageMinYears != null || state.ageMaxYears != null ? 1 : 0;
     const activeFilterCount = (state.showFoster ? 1 : 0) + (state.needsShiftWalkOnly ? 1 : 0)
-      + blueOnlyActive + blueHideActive + otherActiveCount
+      + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive
       + state.locationFilter.size + (state.presetMinDaysAtLeast != null ? 1 : 0);
 
     // One-time pointer to the Guide for people who were using the app before
@@ -2844,6 +2907,12 @@
         <label class="small muted" style="margin:6px 0 0;">Kennel wing:</label>
         <div class="marker-row" style="gap:6px;">${locationChips}</div>
         <label class="small muted" style="margin:6px 0 0;">Tap once for only, twice to hide, again to clear:</label>
+        <div class="marker-row" style="gap:6px;">${adopterChips}</div>
+        ${ageRow}
+        <details class="breed-filter" ${breedActive ? 'open' : ''}>
+          <summary class="small muted">Breed${breedActive ? ' (filtering)' : ''}</summary>
+          <div class="marker-row" style="gap:6px;margin-top:6px;">${breedChips}</div>
+        </details>
         <div class="marker-row" style="gap:6px;">${starChip}</div>
         <div class="marker-row" style="gap:6px;">${blueChips}</div>
         <div class="marker-row" style="gap:6px;">${otherChips}</div>
@@ -2951,6 +3020,11 @@
         redrawAvailableList();
       });
     });
+    const ageMin = document.getElementById('ageMinSelect');
+    const ageMax = document.getElementById('ageMaxSelect');
+    const readAge = (el) => (el.value === '' ? null : Number(el.value));
+    if (ageMin) ageMin.addEventListener('change', () => { state.ageMinYears = readAge(ageMin); redrawAvailableList(); });
+    if (ageMax) ageMax.addEventListener('change', () => { state.ageMaxYears = readAge(ageMax); redrawAvailableList(); });
     const shiftCb = document.getElementById('needsShiftWalkCheck');
     if (shiftCb) shiftCb.addEventListener('change', () => { state.needsShiftWalkOnly = shiftCb.checked; redrawAvailableList(); });
     document.querySelectorAll('.filter-chip[data-filter-key]').forEach((chip) => {

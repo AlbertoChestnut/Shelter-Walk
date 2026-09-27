@@ -1579,6 +1579,20 @@
 
   // ---------- Settings sheet ----------
   const settingsSheet = document.getElementById('settingsSheet');
+  const WALK_ALERT_INPUTS = ['settingsWalkAlert1', 'settingsWalkAlert2', 'settingsWalkAlert3'];
+  // The walk-length alerts typed in Settings, as whole minutes (empty boxes
+  // skipped), or an error message.
+  function readWalkAlerts() {
+    const minutes = [];
+    for (const inputId of WALK_ALERT_INPUTS) {
+      const raw = document.getElementById(inputId).value.trim();
+      if (!raw) continue;
+      const m = Number(raw);
+      if (!Number.isInteger(m) || m < 1 || m > 179) return { error: 'Walk alerts must be whole minutes from 1 to 179.' };
+      minutes.push(m);
+    }
+    return { minutes };
+  }
   document.getElementById('settingsBtn').addEventListener('click', async () => {
     const levels = await loadExperienceLevels();
     document.getElementById('experienceLevelPicker').innerHTML = levelPickerHtml(levels, state.currentUser.experienceLevel);
@@ -1616,6 +1630,10 @@
       document.getElementById('settingsShowAdopted').checked = prefs.show_adopted !== false;
       document.getElementById('settingsShowReturned').checked = prefs.show_returned !== false;
     } catch (err) { /* leave defaults (checked) if this fails to load */ }
+    try {
+      const { minutes } = await api(`/api/users/${state.currentUser.id}/walk-alerts`);
+      WALK_ALERT_INPUTS.forEach((inputId, i) => { document.getElementById(inputId).value = minutes[i] || ''; });
+    } catch (err) { /* leave them empty if this fails to load */ }
     openSheet(settingsSheet, 'settings');
   });
   document.getElementById('closeSettingsBtn').addEventListener('click', () => closeSheet(settingsSheet));
@@ -1634,6 +1652,8 @@
   document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
     const key = document.getElementById('experienceLevelPicker').dataset.selected;
     if (!key) { toast('Pick an experience level first.', 'error'); return; }
+    const walkAlerts = readWalkAlerts();
+    if (walkAlerts.error) { toast(walkAlerts.error, 'error'); return; }
     const saveBtn = document.getElementById('saveSettingsBtn');
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving…';
@@ -1647,8 +1667,9 @@
       const wantsWalkStarted = document.getElementById('settingsPrefWalkStarted').checked;
       await saveNotificationPref('adopted_walked_dog', wantsAdopted, true);
       await saveNotificationPref('walk_started', wantsWalkStarted, true);
+      await api(`/api/users/${state.currentUser.id}/walk-alerts`, { method: 'PUT', body: JSON.stringify({ minutes: walkAlerts.minutes }) });
       let pushProblem = false;
-      if (wantsAdopted || wantsWalkStarted) pushProblem = !(await ensurePushSubscribed());
+      if (wantsAdopted || wantsWalkStarted || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
       await saveNotificationPref('show_new_dog', document.getElementById('settingsShowNewDog').checked, true);
       await saveNotificationPref('show_adopted', document.getElementById('settingsShowAdopted').checked, true);
       await saveNotificationPref('show_returned', document.getElementById('settingsShowReturned').checked, true);

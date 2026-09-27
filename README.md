@@ -32,6 +32,8 @@ dog listings; no shelter data, photos, or volunteer data are in this repository.
   notes are saved. If the time limit stopped it, the walker gets the same end
   screen (even after reopening the app) and says when it really ended: just
   now, at the limit, or a picked time (never a future one)
+- **Walk length alerts:** up to 3 push notifications per walk at lengths
+  each walker picks in Settings (e.g. 7 and 10 minutes)
 - **Stats:** personal stats, plus **Together**, anonymous shelter-wide totals
 - **Updates feed:** new, returned, and adopted dogs
 - **Guide (wiki):** staff-editable sections with sticker meanings and images

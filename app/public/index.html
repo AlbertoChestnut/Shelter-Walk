@@ -65,6 +65,13 @@
       <input type="checkbox" id="settingsPrefWalkStarted" />
       Notify me when I start a walk (dog + return location)
     </label>
+    <label class="small" style="display:block;margin-top:12px;">Alert me when a walk reaches (minutes)</label>
+    <div class="row walk-alert-inputs" style="gap:6px;margin-top:6px;">
+      <input type="number" id="settingsWalkAlert1" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="First walk alert, in minutes" />
+      <input type="number" id="settingsWalkAlert2" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Second walk alert, in minutes" />
+      <input type="number" id="settingsWalkAlert3" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Third walk alert, in minutes" />
+    </div>
+    <p class="muted small" style="margin-top:4px;">Up to 3, e.g. 7 and 10. Leave a box empty for no alert.</p>
     <p class="muted small" style="margin-top:6px;">On iPhone, this only works if you've added this app to your Home Screen first.</p>
     <hr />
     <label class="small muted" style="display:block;">Updates feed</label>

@@ -10,7 +10,7 @@ const wiki = require('./wiki');
 const impact = require('./impact');
 const notes = require('./notes');
 const account = require('./account');
-// Every walk notice (started, time warning, auto-stopped) shares this tag,
+// Every walk notice (started, length alerts, time warning, auto-stopped) shares this tag,
 // so each one replaces the last on the phone rather than piling up.
 const WALK_PUSH_TAG = 'walk';
 const { hashEmail } = require('./emailHash');
@@ -500,9 +500,10 @@ app.get('/api/me/export', (req, res) => {
   const me = req.me;
   if (!me) return res.status(401).json({ error: 'Not signed in.' });
   const profile = db.prepare(
-    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking FROM users WHERE id = ?'
+    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking, walk_alert_minutes AS walkAlertMinutes FROM users WHERE id = ?'
   ).get(me.id);
   profile.hideNameWhileWalking = !!profile.hideNameWhileWalking;
+  profile.walkAlertMinutes = walkAlertMinutes(profile.walkAlertMinutes);
   // The database itself never holds a reversible copy of your email (see
   // emailHash.js) -- this is the live, trusted value from the request that
   // got you here, the same source account deletion already uses.
@@ -591,6 +592,38 @@ function getUserPrefs(userId) {
   const byKey = Object.fromEntries(rows.map((r) => [r.pref_key, !!r.enabled]));
   return Object.fromEntries(PREF_KEYS.map((k) => [k, k in byKey ? byKey[k] : PREF_DEFAULTS[k]]));
 }
+
+// ---- Walk length alerts ----
+// Up to MAX_WALK_ALERTS walk lengths, in minutes, at which the walker gets a
+// push notification during a walk (sent by the walk-limit sweep below).
+const MAX_WALK_ALERTS = 3;
+function walkAlertMinutes(json) {
+  try {
+    const list = JSON.parse(json || '[]');
+    return Array.isArray(list) ? list.filter((m) => Number.isInteger(m) && m > 0) : [];
+  } catch (err) { return []; }
+}
+
+app.get('/api/users/:id/walk-alerts', (req, res) => {
+  const row = db.prepare('SELECT walk_alert_minutes FROM users WHERE id = ?').get(parseInt(req.params.id, 10));
+  if (!row) return res.status(404).json({ error: 'User not found' });
+  res.json({ minutes: walkAlertMinutes(row.walk_alert_minutes) });
+});
+
+app.put('/api/users/:id/walk-alerts', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { minutes } = req.body;
+  if (!Array.isArray(minutes)) return res.status(400).json({ error: 'minutes must be a list.' });
+  const maxMinutes = MAX_TOTAL_MINUTES - 1;
+  if (!minutes.every((m) => Number.isInteger(m) && m >= 1 && m <= maxMinutes)) {
+    return res.status(400).json({ error: `Each alert must be a whole number of minutes from 1 to ${maxMinutes}.` });
+  }
+  const clean = [...new Set(minutes)].sort((a, b) => a - b);
+  if (clean.length > MAX_WALK_ALERTS) return res.status(400).json({ error: `You can set up to ${MAX_WALK_ALERTS} alerts.` });
+  const info = db.prepare('UPDATE users SET walk_alert_minutes = ? WHERE id = ?').run(JSON.stringify(clean), id);
+  if (info.changes === 0) return res.status(404).json({ error: 'User not found' });
+  res.json({ minutes: clean });
+});
 
 // ---- Web Push ----
 app.get('/api/push/vapid-public-key', (req, res) => {
@@ -1528,14 +1561,38 @@ function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time ca
   return { iso: new Date(Math.min(ms, latestMs)).toISOString() };
 }
 
+// A length alert more than this late (the walker added it partway through
+// the walk, or the server was down) is skipped rather than sent stale.
+const ALERT_GRACE_MS = 2 * 60000;
+
 function enforceWalkLimits() {
   const open = db.prepare(`
-    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, d.name AS dog_name
-    FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE w.ended_at IS NULL
+    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, w.alerted_minutes, w.location,
+           d.name AS dog_name, d.kennel_location, u.walk_alert_minutes
+    FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id LEFT JOIN users u ON u.id = w.user_id
+    WHERE w.ended_at IS NULL
   `).all();
   const now = Date.now();
   for (const w of open) {
     const stopsAt = new Date(walkStopsAt(w)).getTime();
+    const startedMs = new Date(w.started_at).getTime();
+    // The walker's length alerts: only the latest one that's due is sent,
+    // once, and only if it isn't stale.
+    const due = walkAlertMinutes(w.walk_alert_minutes)
+      .filter((m) => m > w.alerted_minutes && startedMs + m * 60000 <= now && now < stopsAt);
+    if (due.length) {
+      const minutes = Math.max(...due);
+      db.prepare('UPDATE walks SET alerted_minutes = ? WHERE id = ?').run(minutes, w.id);
+      if (now - (startedMs + minutes * 60000) <= ALERT_GRACE_MS) {
+        const returnTo = w.location || w.kennel_location;
+        push.sendPushToUser(w.user_id, {
+          title: `${w.dog_name || 'Your walk'}: ${minutes} minutes`,
+          body: `You've been walking for ${minutes} minutes.${returnTo ? ` Return to: ${returnTo}` : ''}`,
+          url: '/',
+          tag: WALK_PUSH_TAG
+        }).catch(() => {});
+      }
+    }
     if (now >= stopsAt) {
       const minutes = walkLimitMinutes(w);
       db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
@@ -1562,7 +1619,8 @@ function enforceWalkLimits() {
     }
   }
 }
-setInterval(() => { try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sweep failed:', err); } }, 30 * 1000);
+// Every 10 seconds, so length alerts arrive close to the minute.
+setInterval(() => { try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sweep failed:', err); } }, 10 * 1000);
 try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sweep failed:', err); }
 
 // Scrape history is only useful for health checks; keep 90 days.

@@ -252,6 +252,37 @@ test('a walk the time limit stopped asks when it really ended', async () => {
   assert.equal((await call('PUT', `/api/walks/${w}`, { user, body: { endedAt: new Date(now + 60 * 60000).toISOString() } })).status, 400);
 });
 
+test('walk length alerts: up to 3, saved per walker, each sent once and never stale', async () => {
+  const user = 'alerts@example.com';
+  const userId = (await call('GET', '/api/me', { user })).json.id;
+  const put = (minutes) => call('PUT', `/api/users/${userId}/walk-alerts`, { user, body: { minutes } });
+  assert.deepEqual((await call('GET', `/api/users/${userId}/walk-alerts`, { user })).json.minutes, [], 'none by default');
+  assert.equal((await put([1, 2, 3, 4])).status, 400, 'no more than 3');
+  assert.equal((await put([0])).status, 400);
+  assert.equal((await put([180])).status, 400, 'shorter than the longest walk');
+  assert.equal((await put([7.5])).status, 400, 'whole minutes');
+  assert.equal((await put('7')).status, 400);
+  assert.deepEqual((await put([10, 7, 10])).json.minutes, [7, 10], 'sorted, duplicates dropped');
+  assert.deepEqual((await call('GET', `/api/users/${userId}/walk-alerts`, { user })).json.minutes, [7, 10]);
+  assert.equal((await call('GET', `/api/users/${userId}/walk-alerts`, { user: 'walker@example.com' })).status, 403, 'not someone else\'s');
+  assert.equal((await call('PUT', `/api/users/${userId}/walk-alerts`, { user: 'walker@example.com', body: { minutes: [1] } })).status, 403);
+
+  const now = Date.now();
+  const c = new Database(dbFile);
+  const insert = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)');
+  const justPast7 = insert.run(userId, new Date(now - (7 * 60 + 20) * 1000).toISOString()).lastInsertRowid;
+  const past10Late = insert.run(userId, new Date(now - 14 * 60000).toISOString()).lastInsertRowid;
+  c.close();
+  await call('GET', '/api/walks/active', { user }); // runs the sweep
+  const read = (id) => { const r = new Database(dbFile, { readonly: true }); const row = r.prepare('SELECT alerted_minutes FROM walks WHERE id = ?').get(id); r.close(); return row.alerted_minutes; };
+  assert.equal(read(justPast7), 7, 'the 7 minute alert went out');
+  assert.equal(read(past10Late), 10, 'only the latest due alert counts; 10 min is 4 minutes stale so it is skipped, not resent');
+  const d = new Database(dbFile);
+  d.prepare('DELETE FROM walks WHERE id IN (?, ?)').run(justPast7, past10Late);
+  d.close();
+  assert.deepEqual((await put([])).json.minutes, [], 'can be cleared');
+});
+
 test('Profile: name is a single field', async () => {
   const user = 'profile.tester@example.com';
   assert.equal((await call('PUT', '/api/me', { user, body: { name: '' } })).status, 400, 'name is required');

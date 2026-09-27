@@ -169,6 +169,11 @@ if (!userColumns.includes('updates_last_seen_at')) {
 if (!userColumns.includes('hide_name_while_walking')) {
   db.exec('ALTER TABLE users ADD COLUMN hide_name_while_walking INTEGER NOT NULL DEFAULT 0');
 }
+// walk_alert_minutes: up to 3 walk lengths (a JSON list of minutes, e.g.
+// [7, 10]) at which the walker wants a push notification. Empty = none.
+if (!userColumns.includes('walk_alert_minutes')) {
+  db.exec("ALTER TABLE users ADD COLUMN walk_alert_minutes TEXT NOT NULL DEFAULT '[]'");
+}
 // Migrations: add columns to dogs table if they don't exist yet (older DBs
 // created before these columns existed).
 // - poo_status: tri-state (none/poo/priority) — priority is the yellow
@@ -430,6 +435,9 @@ if (!walkColumns.includes('warned')) db.exec('ALTER TABLE walks ADD COLUMN warne
 // said yet when it really ended (they get the end screen next time they
 // open the app, as if the walk were still going).
 if (!walkColumns.includes('wrap_up_pending')) db.exec('ALTER TABLE walks ADD COLUMN wrap_up_pending INTEGER NOT NULL DEFAULT 0');
+// alerted_minutes: the latest of the walker's length alerts already sent
+// for this walk, so each one goes out once.
+if (!walkColumns.includes('alerted_minutes')) db.exec('ALTER TABLE walks ADD COLUMN alerted_minutes INTEGER NOT NULL DEFAULT 0');
 
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`

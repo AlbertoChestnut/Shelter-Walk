@@ -1128,6 +1128,9 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .autostop-card .btn { width: auto; flex: 0 0 auto; }
 .autostop-card.warn { border-color: var(--amber); background: rgba(217, 164, 65, 0.15); }
 .autostop-card.warn #autoStopText { font-weight: 700; }
+/* Settings: the three walk-length alert boxes share one row. */
+.walk-alert-inputs input { flex: 1 1 0; min-width: 0; text-align: center; }
+
 /* Walk history popup: one row per walk, yours highlighted. */
 .walk-history-list { max-height: 60vh; overflow-y: auto; }
 .walk-history-day { font-weight: 700; margin: 12px 0 4px; }

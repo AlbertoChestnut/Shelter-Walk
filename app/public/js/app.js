@@ -545,6 +545,30 @@
     matchmaking: { emoji: '💞', label: 'Matchmaking', noun: 'matchmaking session', out: 'Currently at matchmaking with' },
     playgroup: { emoji: '🎾', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' }
   };
+  const usualActivity = () => (ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk');
+  // "Make this my usual" link shown under an activity picker whenever the
+  // picked activity isn't the walker's usual one (same setting as Settings).
+  function syncMakeUsualBtn(btn, activity) {
+    if (!btn) return;
+    const a = activityInfo(activity);
+    btn.dataset.activity = activity;
+    btn.textContent = `Make ${a.emoji} ${a.label} my usual activity`;
+    btn.classList.toggle('hidden', activity === usualActivity());
+  }
+  function wireMakeUsualBtn(btn) {
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const activity = btn.dataset.activity;
+      btn.disabled = true;
+      try {
+        const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ defaultActivity: activity }) });
+        state.currentUser.defaultActivity = updated.defaultActivity;
+        const a = activityInfo(updated.defaultActivity);
+        toast(`${a.emoji} ${a.label} is now your usual activity`);
+        syncMakeUsualBtn(btn, activity);
+      } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
+    });
+  }
   function activityChipsHtml(selected) {
     return Object.entries(ACTIVITIES).map(([key, a]) =>
       `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}">${a.emoji} ${a.label}</button>`).join('');
@@ -1340,14 +1364,14 @@
   }
 
   // ---------- Onboarding (first-run sequence) ----------
-  // name -> experience level -> passkey offer (skippable) -> notification
+  // name -> experience level -> usual activity -> passkey offer (skippable) -> notification
   // prefs -> info -> thank you -> into the app. Gated on onboarding_completed
   // (backfilled to done for every account that existed before this sequence
   // did), not on experienceLevel, since an existing linked account might
   // already have a level but never seen the rest of this. Progress is kept
   // in localStorage (not the server) purely so the passkey step's redirect
   // to login.shelterwalk.com and back doesn't restart the whole sequence.
-  const ONBOARDING_STEPS = ['name', 'level', 'passkey', 'notifications', 'info', 'thanks'];
+  const ONBOARDING_STEPS = ['name', 'level', 'activity', 'passkey', 'notifications', 'info', 'thanks'];
   const ONBOARDING_STEP_KEY = 'dogwalk_onboarding_step';
 
   function getOnboardingStep() {
@@ -1481,9 +1505,45 @@
             body: JSON.stringify({ experienceLevel: selected })
           });
           state.currentUser.experienceLevel = updated.experienceLevel;
-          runOnboardingStep('passkey');
+          runOnboardingStep('activity');
         } catch (err) {
           document.getElementById('onboardingLevelStatus').textContent = err.message;
+          nextBtn.disabled = false;
+        }
+      });
+      return;
+    }
+
+    if (step === 'activity') {
+      let selected = usualActivity();
+      inner.innerHTML = `
+        ${onboardingProgressHtml(step)}
+        <h2>What do you usually do with the dogs?</h2>
+        <p class="muted small">When you scan a kennel, the start button will offer this first. You can still pick something else for any dog, and change your usual one in Settings.</p>
+        <div id="onboardingActivityList" class="marker-row activity-chips">${activityChipsHtml(selected)}</div>
+        <p id="onboardingActivityStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
+        <button type="button" id="onboardingActivityNext" class="btn primary">Continue</button>
+        ${backBtn('level')}`;
+      wireBack('level');
+      const list = document.getElementById('onboardingActivityList');
+      list.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-activity]');
+        if (!chip) return;
+        selected = chip.dataset.activity;
+        list.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+      });
+      document.getElementById('onboardingActivityNext').addEventListener('click', async () => {
+        const nextBtn = document.getElementById('onboardingActivityNext');
+        nextBtn.disabled = true;
+        try {
+          const updated = await api(`/api/users/${state.currentUser.id}/settings`, {
+            method: 'PUT',
+            body: JSON.stringify({ defaultActivity: selected })
+          });
+          state.currentUser.defaultActivity = updated.defaultActivity;
+          runOnboardingStep('passkey');
+        } catch (err) {
+          document.getElementById('onboardingActivityStatus').textContent = err.message;
           nextBtn.disabled = false;
         }
       });
@@ -1499,8 +1559,8 @@
         <p class="muted small">Set up a passkey to sign in with your fingerprint, face, or device PIN instead of waiting for an email code. It only takes a few seconds, and email codes always still work as a backup.</p>
         <button type="button" id="onboardingPasskeySetup" class="btn primary">Set up a passkey</button>
         <button type="button" id="onboardingPasskeySkip" class="btn" style="margin-top:8px;">Skip for now</button>
-        ${backBtn('level')}`;
-      wireBack('level');
+        ${backBtn('activity')}`;
+      wireBack('activity');
       document.getElementById('onboardingPasskeySetup').addEventListener('click', () => {
         localStorage.setItem(ONBOARDING_STEP_KEY, 'notifications');
         const returnUrl = encodeURIComponent(window.location.origin + '/');
@@ -1622,7 +1682,7 @@
   document.getElementById('settingsBtn').addEventListener('click', async () => {
     const levels = await loadExperienceLevels();
     document.getElementById('experienceLevelPicker').innerHTML = levelPickerHtml(levels, state.currentUser.experienceLevel);
-    const usual = ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk';
+    const usual = usualActivity();
     defaultActivityPicker.innerHTML = activityChipsHtml(usual);
     defaultActivityPicker.dataset.selected = usual;
     document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((btn) => {
@@ -4194,7 +4254,7 @@
     const dog = state.walk.dog;
     const eligible = dog.eligible;
     const tooYoung = dog.tooYoung;
-    const startActivity = ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk';
+    const startActivity = usualActivity();
     const isEvo = (dog.blueMarkers || []).includes('blue_evo');
     // EVO (experienced volunteers only) overrides every other background —
     // it's the one caution that must never be missed, even over the hard
@@ -4287,7 +4347,8 @@
           <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
           <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
         </div>
-        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>`}
+        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+        <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>`}
         <button id="backToScanBtn2" class="btn">Scan a different dog</button>
       </div>`;
 
@@ -4411,7 +4472,9 @@
         pickRow.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
         pickRow.classList.add('hidden');
         changeBtn.setAttribute('aria-expanded', 'false');
+        syncMakeUsualBtn(document.getElementById('makeUsualBtn'), chip.dataset.activity);
       });
+      wireMakeUsualBtn(document.getElementById('makeUsualBtn'));
     }
     const startBtn = document.getElementById('startWalkBtn');
     startBtn.addEventListener('click', async () => {
@@ -4560,6 +4623,7 @@
         <div class="card compact">
           <label class="small">Doing something else?</label>
           <div id="activityChoice" class="marker-row activity-chips">${activityChipsHtml(w.activity || 'walk')}</div>
+          <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
         </div>
         <div class="card compact autostop-card" id="autoStopCard">
           <span class="small" id="autoStopText"></span>
@@ -4577,6 +4641,9 @@
       </div>`;
     // Switching activity mid-session keeps the same timer; it just changes
     // what gets recorded.
+    const makeUsualBtn = document.getElementById('makeUsualBtn');
+    wireMakeUsualBtn(makeUsualBtn);
+    syncMakeUsualBtn(makeUsualBtn, w.activity || 'walk');
     document.querySelectorAll('#activityChoice [data-activity]').forEach((chip) => {
       chip.addEventListener('click', async () => {
         const activity = chip.dataset.activity;
@@ -4590,6 +4657,7 @@
           document.getElementById('cancelWalkBtn').textContent = `Cancel ${a.label}`;
           topbarTitle.textContent = `${a.label} in Progress`;
           updateWalkTabLabel();
+          syncMakeUsualBtn(makeUsualBtn, activity);
           toast(`Switched to ${a.emoji} ${a.label}`);
         } catch (err) { toast(err.message, 'error'); }
       });

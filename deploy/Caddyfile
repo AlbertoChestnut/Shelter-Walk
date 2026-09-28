@@ -25,6 +25,10 @@ shelterwalk.com {
 	handle /icons/* {
 		reverse_proxy 127.0.0.1:3000
 	}
+	# Up/down check for outside monitoring. Answers only "ok" or "down".
+	handle /uptime {
+		reverse_proxy 127.0.0.1:3000
+	}
 
 	handle {
 		# Every other request must be authenticated by your own sign-in

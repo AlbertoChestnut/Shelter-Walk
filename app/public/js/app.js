@@ -529,6 +529,8 @@
         return 'Potty-break-only dog - not cleared for your level';
       case 'pending_restricted':
         return "Someone has started adopting this dog - not cleared for Beginners";
+      case 'stray_hold':
+        return 'On stray hold - only walk if marked PB';
       case 'days': {
         const effective = dog.effectiveDaysInShelter != null ? dog.effectiveDaysInShelter : dog.daysInShelter;
         const remaining = dog.minDaysForLevel != null ? dog.minDaysForLevel - effective : null;
@@ -4348,7 +4350,14 @@
       // Hold our own reference: state.qrScanner is nulled above, so reading
       // it again inside the .then() threw and the camera view never got
       // cleared.
-      scanner.stop().then(() => scanner.clear()).catch(() => {});
+      // stop() throws right away (not a rejected promise) if the camera
+      // never started, e.g. no camera or permission denied. That used to
+      // abort switching tabs away from Scan.
+      try {
+        scanner.stop().then(() => scanner.clear()).catch(() => {});
+      } catch (err) {
+        try { scanner.clear(); } catch (e) { /* nothing to clear */ }
+      }
     }
   }
 

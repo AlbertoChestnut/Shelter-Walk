@@ -85,6 +85,13 @@ App (Node 20+):
     DISABLE_SCRAPER=1 npm start        # http://127.0.0.1:3000
     npm test
 
+Browser smoke test (drives the main volunteer flow in headless Chromium):
+
+    npm i --no-save playwright@1 && npx playwright install chromium
+    npm run smoke
+
+GitHub Actions runs both on every push (`.github/workflows/test.yml`).
+
 In production the app receives `X-Auth-Email` and `X-Auth-Staff` headers from
 the proxy. For local experiments, put a tiny proxy in front that injects them.
 Never expose the app port directly: it trusts those headers.

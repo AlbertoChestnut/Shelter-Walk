@@ -164,7 +164,8 @@ function demoSections() {
         '- **Front desk**: (add number)',
         '',
         '## Hours',
-        '- Add walking hours and any closed days here.',
+        '- Dogs can be walked from 7am to 7:15pm. The app stops any walk still going at 7:15pm.',
+        '- Add the shelter\'s closed days here.',
         '',
         '## Emergencies',
         '- Add what to do if a dog is hurt, gets loose, or a volunteer needs help.'

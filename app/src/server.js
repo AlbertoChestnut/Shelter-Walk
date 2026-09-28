@@ -148,6 +148,8 @@ const EXPERIENCE_LEVELS = {
 // Exact flag name/string the shelter's own system (pets.wake.gov) uses in
 // each dog's `tags` list for "someone has already started adopting them".
 const PENDING_ADOPTION_TAG = "I'm getting adopted!";
+// Dogs on stray hold can't be walked unless they're marked PB.
+const STRAY_HOLD_TAG = 'On Stray Hold';
 const DEFAULT_EXPERIENCE_LEVEL = 'beginner';
 
 function resolveExperienceLevel(userId) {
@@ -249,6 +251,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const pbFlag = !!row.pb_flag;
   const tags = row.tags ? JSON.parse(row.tags) : [];
   const isPendingAdoption = tags.includes(PENDING_ADOPTION_TAG);
+  const isStrayHold = tags.includes(STRAY_HOLD_TAG);
   // Alumni (manual, capped 1-15) and previous_days_in_shelter (automatic,
   // uncapped, banked by the scraper on a detected return) both add on top
   // of actual current-stay days -- different mechanisms answering different
@@ -259,7 +262,8 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 
   // Precedence: too young (hard, no override) > EVO not allowed (hard,
   // not even PB) > any blue marker not allowed (hard) > pending adoption
-  // not allowed (hard, beginners only) > PB (overrides the day threshold
+  // not allowed (hard, beginners only) > stray hold (only PB dogs on stray
+  // hold can be walked) > PB (overrides the day threshold
   // when this level permits PB dogs at all) > day threshold.
   let eligible;
   let notEligibleReason = null;
@@ -275,6 +279,9 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   } else if (isPendingAdoption && !level.allowPending) {
     eligible = false;
     notEligibleReason = 'pending_restricted';
+  } else if (isStrayHold && !pbFlag) {
+    eligible = false;
+    notEligibleReason = 'stray_hold';
   } else if (pbFlag) {
     eligible = level.allowPb;
     notEligibleReason = eligible ? null : 'pb_restricted';
@@ -312,7 +319,8 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     eligible,
     // Why `eligible` is false, so the UI can give an accurate reason instead
     // of always assuming "needs more days": 'too_young' | 'evo_restricted' |
-    // 'blue_restricted' | 'pb_restricted' | 'days' | null (when eligible).
+    // 'blue_restricted' | 'pending_restricted' | 'stray_hold' | 'pb_restricted' |
+    // 'days' | null (when eligible).
     notEligibleReason,
     minDaysForLevel: level.minDays,
     // Hard rule, no override: puppies 6 months or younger can never be walked.
@@ -322,6 +330,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     starFlag: !!row.star_flag,
     pbFlag,
     isPendingAdoption,
+    isStrayHold,
     kennelLocation: row.kennel_location || null,
     checkedOffToday: todayKey ? !!getCheckoff.get(row.shelter_buddy_id, todayKey) : false,
     walkCount: walkStats.count,
@@ -1574,6 +1583,27 @@ app.get('/healthz', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Public up/down check for outside monitoring (the homelab Uptime Kuma).
+// Caddy lets /uptime through without signing in, so it says nothing but
+// "ok" or "down": the app and its database answer, and the shelter data
+// refreshed recently. The scraper runs at 6am and hourly noon-7pm, so the
+// longest normal gap is overnight (about 11 hours).
+const UPTIME_MAX_SCRAPE_AGE_HOURS = 13;
+app.get('/uptime', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('text/plain');
+  try {
+    db.prepare('SELECT 1').get();
+    const lastOk = db.prepare('SELECT finished_at AS finishedAt FROM scrape_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1').get();
+    const fresh = process.env.DISABLE_SCRAPER
+      || (lastOk && Date.now() - new Date(lastOk.finishedAt).getTime() < UPTIME_MAX_SCRAPE_AGE_HOURS * 3600000);
+    if (!fresh) return res.status(503).send('down');
+    res.send('ok');
+  } catch (err) {
+    res.status(503).send('down');
   }
 });
 

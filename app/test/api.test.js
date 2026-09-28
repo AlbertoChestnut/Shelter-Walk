@@ -471,3 +471,33 @@ test('the usual activity is saved in Settings and play group is an activity', as
   assert.equal((await call('GET', '/api/walks/active', { user })).json.walk.activity, 'playgroup');
   assert.equal((await call('DELETE', `/api/walks/${s.json.walkId}`, { user })).status, 200);
 });
+
+test('dogs on stray hold can only be walked when marked PB', async () => {
+  const user = 'strayhold@example.com';
+  const me = (await call('GET', '/api/me', { user })).json;
+  await call('PUT', `/api/users/${me.id}/settings`, { user, body: { experienceLevel: 'expert' } });
+  const db = new Database(dbFile);
+  const ts = new Date().toISOString();
+  const ins = db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, tags, pb_flag) VALUES (?, ?, 'Male', '3 Years', '2026-01-01T00:00:00', 1, ?, ?, ?, ?)");
+  ins.run(70, 'Held', ts, ts, JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']), 0);
+  ins.run(71, 'HeldPB', ts, ts, JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']), 1);
+  ins.run(72, 'Free', ts, ts, JSON.stringify(['Dog', 'Shelter']), 0);
+  db.close();
+  const held = (await call('GET', '/api/dogs/70', { user })).json.dog;
+  assert.equal(held.eligible, false);
+  assert.equal(held.notEligibleReason, 'stray_hold');
+  assert.equal(held.isStrayHold, true);
+  const heldPb = (await call('GET', '/api/dogs/71', { user })).json.dog;
+  assert.equal(heldPb.eligible, true, 'PB on stray hold is walkable for a level that allows PB');
+  assert.equal(heldPb.notEligibleReason, null);
+  const free = (await call('GET', '/api/dogs/72', { user })).json.dog;
+  assert.equal(free.eligible, true);
+  assert.equal(free.isStrayHold, false);
+});
+
+test('/uptime answers only ok or down, with no details', async () => {
+  const res = await fetch(`${base}/uptime`); // no sign-in header at all
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(await res.text(), 'ok');
+});

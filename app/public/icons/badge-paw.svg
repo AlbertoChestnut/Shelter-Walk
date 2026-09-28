@@ -1,0 +1,12 @@
+<!-- Notification bar badge: Android draws only the shape (alpha), so this is
+     a solid white paw on a transparent background. badge-96.png is rendered
+     from this file. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <g fill="#fff">
+    <ellipse cx="22" cy="40" rx="9" ry="12" transform="rotate(-20 22 40)"/>
+    <ellipse cx="38" cy="22" rx="9" ry="12.5" transform="rotate(-6 38 22)"/>
+    <ellipse cx="58" cy="22" rx="9" ry="12.5" transform="rotate(6 58 22)"/>
+    <ellipse cx="74" cy="40" rx="9" ry="12" transform="rotate(20 74 40)"/>
+    <path d="M48 44c-9 0-15 8-20 15-5 7-10 12-8 19 2 6 9 8 15 7 5-1 8-3 13-3s8 2 13 3c6 1 13-1 15-7 2-7-3-12-8-19-5-7-11-15-20-15z"/>
+  </g>
+</svg>

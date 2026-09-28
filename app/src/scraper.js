@@ -374,7 +374,9 @@ async function doScrape(runId, finish) {
     sendPushToUser(userId, {
       title: `${dog.name} was adopted! 🎉`,
       body: 'A dog you walked found a home.',
-      url: '/'
+      url: '/',
+      // Shown in the notification (the service worker fetches it).
+      image: fs.existsSync(path.join(IMAGES_DIR, `${dog.id}.jpg`)) ? `/cached-images/${dog.id}.jpg` : undefined
     }).catch(() => {});
   }
 

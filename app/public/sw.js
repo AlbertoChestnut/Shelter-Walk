@@ -2,7 +2,7 @@
 // is often spotty, so the app should still show the last-known data (with
 // the page's own "Offline" banner) instead of going blank on a dropped
 // connection.
-const CACHE_NAME = 'shelter-walk-v3';
+const CACHE_NAME = 'shelter-walk-v4';
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
@@ -11,7 +11,7 @@ const MAX_API_ENTRIES = 150;
 // on every deploy (see ASSET_VERSION in server.js), so pre-caching a bare
 // URL for them would just cache the wrong version. The fetch handler below
 // caches whatever versioned URL actually gets requested instead.
-const STATIC_ASSETS = ['/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+const STATIC_ASSETS = ['/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/badge-96.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -124,16 +124,43 @@ function trimApiCache() {
   }));
 }
 
-self.addEventListener('push', (event) => {
-  let data = {};
-  try { data = event.data.json(); } catch (err) { /* no payload / not JSON */ }
+// A dog photo for a notification, as a data: URL. Photos are behind the
+// sign-in, and the browser may load notification images without the
+// session cookie, so the worker fetches it itself (same origin, with the
+// cookie) and hands over the bytes. Anything unexpected: no photo.
+async function notificationImage(url) {
+  try {
+    const res = await fetch(url, { credentials: 'same-origin' });
+    const type = res.headers.get('content-type') || '';
+    if (!res.ok || !type.startsWith('image/')) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length > 2 * 1024 * 1024) return null;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return `data:${type.split(';')[0]};base64,${btoa(binary)}`;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function showPush(data) {
   const title = data.title || 'Shelter Walk';
   const options = {
     body: data.body || '',
     icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
+    // The small icon in the notification bar: Android draws only its shape,
+    // so it's a white paw on transparent (the app icon showed as a square).
+    badge: '/icons/badge-96.png',
     data: { url: data.url || '/' }
   };
+  // e.g. an adoption: the dog's photo as the big picture and the small icon.
+  if (data.image && data.image.startsWith('/')) {
+    const photo = await notificationImage(data.image);
+    if (photo) {
+      options.image = photo;
+      options.icon = photo;
+    }
+  }
   // Notifications sharing a tag replace each other instead of stacking --
   // all walk notices use one, so only the latest walk's is ever showing.
   // renotify still buzzes for the replacement (a new walk should alert).
@@ -141,7 +168,13 @@ self.addEventListener('push', (event) => {
     options.tag = data.tag;
     options.renotify = true;
   }
-  event.waitUntil(self.registration.showNotification(title, options));
+  return self.registration.showNotification(title, options);
+}
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data.json(); } catch (err) { /* no payload / not JSON */ }
+  event.waitUntil(showPush(data));
 });
 
 self.addEventListener('notificationclick', (event) => {

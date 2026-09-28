@@ -1589,8 +1589,8 @@ app.get('/healthz', (req, res) => {
 // Public up/down check for outside monitoring (the homelab Uptime Kuma).
 // Caddy lets /uptime through without signing in, so it says nothing but
 // "ok" or "down": the app and its database answer, and the shelter data
-// refreshed recently. The scraper runs at 6am and hourly noon-7pm, so the
-// longest normal gap is overnight (about 11 hours).
+// refreshed recently. The scraper runs every 30 minutes 6am-7:30pm, so the
+// longest normal gap is overnight (about 10.5 hours).
 const UPTIME_MAX_SCRAPE_AGE_HOURS = 13;
 app.get('/uptime', (req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -1733,17 +1733,18 @@ app.listen(PORT, process.env.BIND_HOST || '127.0.0.1', () => {
 });
 
 // Run once shortly after startup (catches up after a restart regardless of
-// time of day), then on a fixed daily schedule: once first thing in the
-// morning (6am, catches overnight intakes before the shelter opens), then
-// hourly through adoption hours (noon-7pm) when listings/photos change most
-// often as dogs get adopted or brought in.
+// time of day), then every 30 minutes from 6am (catches overnight intakes
+// before walking starts at 7am) through 7:30pm, covering walking and adoption
+// hours. About 120 requests per run, one at a time, so ~28 runs a day stays
+// gentle on the county's site.
+const SCRAPE_SCHEDULE = '0,30 6-19 * * *';
 if (!process.env.DISABLE_SCRAPER) {
   setTimeout(() => {
     scrapeInFlight = true;
     runScrape().catch((err) => console.error('[scraper] initial run failed:', err)).finally(() => { scrapeInFlight = false; });
   }, 5000);
 
-  cron.schedule('0 6,12-19 * * *', () => {
+  cron.schedule(SCRAPE_SCHEDULE, () => {
     if (scrapeInFlight) {
       console.log('[scraper] skipping scheduled run, one already in flight');
       return;

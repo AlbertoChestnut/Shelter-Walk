@@ -1184,6 +1184,9 @@
   // entry straight back (see the popstate handler). Popups, sheets and the
   // Guide still push a step on top, so Back closes them first.
   const HOME_TAB = 'available';
+  // True while the history step pushed for a scanned dog (see onQrScanned)
+  // is still in place, so Back from it reopens the camera.
+  let onScannedStep = false;
   function historyDepth() {
     return (history.state && history.state.depth) || 0;
   }
@@ -1197,6 +1200,7 @@
   // History for switching to a tab (state.tab is already set).
   function tabHistory(tab) {
     if (syncingFromHistory) return;
+    onScannedStep = false;
     const depth = historyDepth();
     if (tab === HOME_TAB) {
       if (depth === 0) history.replaceState({ tab, sheet: null, depth: 0 }, '');
@@ -1232,7 +1236,12 @@
       tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === hs.tab));
       topbarTitle.textContent = TAB_TITLES[hs.tab];
       render();
+    } else if (onScannedStep && hs.walkStep !== 'scanned' && hs.tab === 'walk' && !activeWalkDogId()) {
+      // Back from a scanned dog (not out walking): scan again.
+      state.walk.phase = 'scanning';
+      renderWalk();
     }
+    if (hs.walkStep !== 'scanned') onScannedStep = false;
     syncingFromHistory = false;
     const waiters = popWaiters;
     popWaiters = [];
@@ -4422,6 +4431,10 @@
       renderWalk();
       return;
     }
+    // A step for the scanned dog, so Back returns to the camera to scan
+    // again (see the popstate handler) instead of leaving the Scan tab.
+    pushHistory({ walkStep: 'scanned' });
+    onScannedStep = true;
     selectDogById(animalId);
   }
 

@@ -46,6 +46,7 @@ async function main() {
     page.on('pageerror', (e) => errors.push(e.message));
     const step = (name) => console.log(`  ✓ ${name}`);
 
+    await page.goto('about:blank');
     await page.goto(base, { waitUntil: 'networkidle' });
     await page.waitForSelector('.avail-card');
     assert.equal(await page.locator('.avail-card').count(), 2);
@@ -89,6 +90,47 @@ async function main() {
     await page.waitForSelector('.edit-times-btn');
     assert.match(await page.textContent('.dog-card .dog-name'), /🎾/);
     step('Stats lists it with the play group emoji');
+
+    // Back button: tabs never stack, Back from any tab goes to Available,
+    // popups and the Guide close first, Back from Available leaves the app.
+    const title = () => page.textContent('#topbarTitle');
+    const back = async () => { await page.evaluate(() => history.back()); await page.waitForTimeout(300); };
+    const tab = async (name) => { await page.click(`.tab-btn[data-tab="${name}"]`); await page.waitForTimeout(150); };
+    for (let i = 0; i < 5; i += 1) await tab('walk');
+    await back();
+    assert.equal(await title(), 'Dogs to Walk', 'five taps on Scan, one Back: Available');
+    for (let i = 0; i < 3; i += 1) await tab('available');
+    await tab('stats'); await tab('updates'); await tab('walk'); await tab('stats');
+    await back();
+    assert.equal(await title(), 'Dogs to Walk', 'hopping between tabs, one Back: Available');
+    await tab('stats');
+    await page.click('#guideBtn');
+    await page.waitForTimeout(300);
+    assert.equal(await title(), 'Guide');
+    await back();
+    assert.equal(await title(), 'Stats', 'Back from the Guide returns to where it was opened');
+    await back();
+    assert.equal(await title(), 'Dogs to Walk');
+    await page.locator('.avail-card .walk-history-btn').first().click();
+    await page.waitForSelector('#markerInfoPopup:not(.hidden)');
+    await back();
+    assert.ok(await page.locator('#markerInfoPopup').evaluate((el) => el.classList.contains('hidden')), 'Back closes a popup');
+    assert.equal(await title(), 'Dogs to Walk', 'and stays on the same tab');
+    await tab('walk'); await tab('guide').catch(() => {}); await tab('updates');
+    await page.click('#guideBtn'); await page.waitForTimeout(200);
+    await tab('available');
+    assert.equal(await page.evaluate(() => history.state && history.state.depth), 0, 'Available from deep inside lands on the first entry');
+    await tab('stats');
+    await back(); await back(); await back();
+    assert.equal(await title(), 'Dogs to Walk', 'Back from Available stays on Available');
+    assert.equal(await page.evaluate(() => history.state && history.state.depth), 0, 'on the base entry');
+    for (let i = 0; i < 4; i += 1) {
+      await page.goBack().catch(() => {});
+      await page.waitForTimeout(300);
+    }
+    assert.notEqual(page.url(), 'about:blank', 'the browser Back button does not leave the app either');
+    assert.equal(await title(), 'Dogs to Walk');
+    step('Back button: no stacked tabs, popups and Guide close first, never leaves Available');
 
     assert.deepEqual(errors, [], 'no JavaScript errors on the page');
     console.log('Smoke test passed.');

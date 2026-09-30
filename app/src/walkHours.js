@@ -3,8 +3,9 @@
 // a walk's times are all held to this window, and a walk still running at
 // closing time stops by itself then.
 //
-// WALK_HOURS ("HH:MM-HH:MM") overrides the window; the API tests set it to
-// the whole day so they don't fail depending on when they're run.
+// WALK_HOURS ("HH:MM-HH:MM") overrides the window. "00:00-24:00" means no
+// walking-hours limit at all (the API tests use it so they pass at any time,
+// including walks that run past midnight).
 const SHELTER_TZ = 'America/New_York';
 
 function parseHours(spec) {
@@ -15,6 +16,7 @@ function parseHours(spec) {
   return open < close && close <= 24 * 60 ? { open, close } : null;
 }
 const { open: OPEN_MINUTES, close: CLOSE_MINUTES } = parseHours(process.env.WALK_HOURS) || parseHours('07:00-19:15');
+const NO_LIMIT = OPEN_MINUTES === 0 && CLOSE_MINUTES === 24 * 60;
 
 const partsFmt = new Intl.DateTimeFormat('en-US', {
   timeZone: SHELTER_TZ, hourCycle: 'h23',
@@ -38,6 +40,7 @@ function shelterTimeToDate(y, m, d, minutes) {
 
 // Opening and closing instants for the shelter day that `date` falls on.
 function walkWindow(date) {
+  if (NO_LIMIT) return { opensAt: new Date(0), closesAt: new Date(8.64e15) };
   const c = shelterClock(date);
   return { opensAt: shelterTimeToDate(c.y, c.m, c.d, OPEN_MINUTES), closesAt: shelterTimeToDate(c.y, c.m, c.d, CLOSE_MINUTES) };
 }

@@ -1176,15 +1176,45 @@
     return null;
   }
 
+  // Each entry records how many steps it sits above the app's first entry
+  // (depth 0, the Available tab). Tabs don't stack: switching between them
+  // replaces the current step, so Back from any tab goes to Available, like a
+  // phone app's bottom tab bar. Back from Available never leaves the app:
+  // under depth 0 sits a guard entry, and landing on it puts the Available
+  // entry straight back (see the popstate handler). Popups, sheets and the
+  // Guide still push a step on top, so Back closes them first.
+  const HOME_TAB = 'available';
+  function historyDepth() {
+    return (history.state && history.state.depth) || 0;
+  }
+
   function pushHistory(overrides) {
     if (syncingFromHistory) return;
-    const entry = { tab: state.tab, sheet: currentSheetName(), ...overrides };
+    const entry = { tab: state.tab, sheet: currentSheetName(), ...overrides, depth: historyDepth() + 1 };
     history.pushState(entry, '');
+  }
+
+  // History for switching to a tab (state.tab is already set).
+  function tabHistory(tab) {
+    if (syncingFromHistory) return;
+    const depth = historyDepth();
+    if (tab === HOME_TAB) {
+      if (depth === 0) history.replaceState({ tab, sheet: null, depth: 0 }, '');
+      else history.go(-depth); // straight back to the first entry, whatever is above it
+      return;
+    }
+    if (depth === 0) pushHistory({ sheet: null });
+    else history.replaceState({ tab, sheet: null, depth }, '');
   }
 
   window.addEventListener('popstate', (event) => {
     syncingFromHistory = true;
-    const hs = event.state || { tab: 'available', sheet: null };
+    let hs = event.state || { tab: HOME_TAB, sheet: null };
+    // Back past Available: stay in the app, on the Available tab.
+    if (hs.guard) {
+      hs = { tab: HOME_TAB, sheet: null, depth: 0 };
+      history.pushState(hs, '');
+    }
     const overlayId = hs.overlay || null;
     // Back pressed while a dialog was up: that's a cancel.
     if (dialogCancel && overlayId !== 'appDialog') dialogCancel();
@@ -1263,7 +1293,7 @@
     state.tab = tab;
     tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
     topbarTitle.textContent = TAB_TITLES[tab];
-    pushHistory();
+    tabHistory(tab);
     render();
     // Re-check for anything new since last time whenever landing anywhere
     // except Updates itself -- that tab zeroes the badge on its own once
@@ -1276,7 +1306,7 @@
     state.tab = 'walk';
     tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'walk'));
     topbarTitle.textContent = TAB_TITLES.walk;
-    pushHistory();
+    tabHistory('walk');
   }
 
   // Jumps to the Walk tab's confirm/edit screen for a known dog (from the
@@ -2125,10 +2155,13 @@
     state.guide.editing = null;
     state.guide.query = '';
     state.guide.hint = hint || null;
+    // Already in the Guide (e.g. a link to another section): don't stack it.
+    const alreadyInGuide = state.tab === 'guide';
     state.tab = 'guide';
     tabButtons.forEach((b) => b.classList.remove('active'));
     topbarTitle.textContent = TAB_TITLES.guide;
-    pushHistory();
+    if (alreadyInGuide) history.replaceState({ ...(history.state || {}), tab: 'guide' }, '');
+    else pushHistory();
     render();
   }
 
@@ -5164,7 +5197,8 @@
   window.addEventListener('offline', updateOfflineBanner);
 
   async function init() {
-    history.replaceState({ tab: state.tab, sheet: null }, '');
+    history.replaceState({ guard: true }, '');
+    history.pushState({ tab: state.tab, sheet: null, depth: 0 }, '');
     updateOfflineBanner();
 
     if ('serviceWorker' in navigator) {

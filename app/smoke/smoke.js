@@ -38,6 +38,7 @@ async function main() {
     ins.run(101, 'Biscuit', 'Male', 'Labrador', '55 lbs', 'Yes', now, now, JSON.stringify(['Dog', 'Shelter', 'Labrador']));
     ins.run(102, 'Pepper', 'Female', 'Beagle', '22 lbs', 'No', now, now, JSON.stringify(['Dog', 'Shelter', 'Beagle', 'Best in Home without Cats']));
     db.prepare("UPDATE users SET name = 'Smoke Test', experience_level = 'expert', onboarding_completed = 1 WHERE id = ?").run(me.id);
+    db.prepare("INSERT INTO shelter_events (kind, dog_id, title, occurred_at) VALUES ('new_dog', 102, 'Pepper arrived', ?)").run(now);
     db.close();
 
     browser = await chromium.launch();
@@ -116,6 +117,18 @@ async function main() {
     await back();
     assert.ok(await page.locator('#markerInfoPopup').evaluate((el) => el.classList.contains('hidden')), 'Back closes a popup');
     assert.equal(await title(), 'Dogs to Walk', 'and stays on the same tab');
+    // A dog opened from another tab: Back returns to that tab, and the Scan
+    // tab afterwards opens on the camera, not on that dog.
+    await tab('updates');
+    await page.locator('.walk-edit-btn').first().click();
+    await page.waitForTimeout(400);
+    assert.equal(await title(), 'Scan a Dog', 'the dog opens on the Scan tab');
+    await back();
+    assert.equal(await title(), 'Updates', 'Back from a dog opened in Updates returns to Updates');
+    await tab('walk');
+    assert.equal(await page.locator('.walk-edit-btn, #startWalkBtn').count(), 0, 'Scan opens on the camera again, not on that dog');
+    await back();
+    assert.equal(await title(), 'Dogs to Walk');
     await tab('walk'); await tab('guide').catch(() => {}); await tab('updates');
     await page.click('#guideBtn'); await page.waitForTimeout(200);
     await tab('available');
@@ -130,7 +143,7 @@ async function main() {
     }
     assert.notEqual(page.url(), 'about:blank', 'the browser Back button does not leave the app either');
     assert.equal(await title(), 'Dogs to Walk');
-    step('Back button: no stacked tabs, popups and Guide close first, never leaves Available');
+    step('Back button: no stacked tabs, popups and Guide close first, a dog returns to the tab it was opened from, never leaves Available');
 
     assert.deepEqual(errors, [], 'no JavaScript errors on the page');
     console.log('Smoke test passed.');

@@ -1187,6 +1187,9 @@
   // True while the history step pushed for a scanned dog (see onQrScanned)
   // is still in place, so Back from it reopens the camera.
   let onScannedStep = false;
+  // Same for a dog opened from another tab (see activateWalkTab): Back from
+  // it returns to that tab.
+  let onOpenedDogStep = false;
   function historyDepth() {
     return (history.state && history.state.depth) || 0;
   }
@@ -1201,6 +1204,7 @@
   function tabHistory(tab) {
     if (syncingFromHistory) return;
     onScannedStep = false;
+    onOpenedDogStep = false;
     const depth = historyDepth();
     if (tab === HOME_TAB) {
       if (depth === 0) history.replaceState({ tab, sheet: null, depth: 0 }, '');
@@ -1230,6 +1234,12 @@
     if (hs.sheet !== 'settings') closeSheetOnly(settingsSheet);
     if (hs.sheet !== 'profile') closeSheetOnly(profileSheet);
     if (hs.sheet !== 'account') closeSheetOnly(document.getElementById('accountSheet'));
+    // Back from a dog opened on another tab: drop it (unless out walking it),
+    // so the Scan tab opens on the camera next time, not on this dog.
+    if (onOpenedDogStep && hs.walkStep !== 'opened') {
+      onOpenedDogStep = false;
+      if (!activeWalkDogId()) state.walk.phase = 'idle';
+    }
     if (hs.tab && hs.tab !== state.tab) {
       if ((state.tab === 'walk' || state.tab === 'audit') && hs.tab !== state.tab) stopQrScanner();
       state.tab = hs.tab;
@@ -1310,12 +1320,21 @@
     if (tab !== 'updates') refreshUpdatesBadge();
   }
 
+  // Opening a dog from another tab (its photo or Walk / Edit) is a step on
+  // top of that tab, not a tab switch: Back returns to where it was opened
+  // (Updates, Stats...), not to Available.
   function activateWalkTab() {
+    const fromOtherTab = state.tab !== 'walk';
     if (state.tab === 'walk' || state.tab === 'audit') stopQrScanner();
     state.tab = 'walk';
     tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'walk'));
     topbarTitle.textContent = TAB_TITLES.walk;
-    tabHistory('walk');
+    if (fromOtherTab && !syncingFromHistory) {
+      pushHistory({ sheet: null, walkStep: 'opened' });
+      onOpenedDogStep = true;
+    } else {
+      tabHistory('walk');
+    }
   }
 
   // Jumps to the Walk tab's confirm/edit screen for a known dog (from the

@@ -82,3 +82,23 @@ test('a walk still going at closing time stops then, and "just now" can\'t go pa
   assert.equal(edit.status, 400, 'Stats edits can\'t push the end past closing');
   assert.ok(edit.json.error.includes(CLOSE_LABEL));
 });
+
+test('a daycation is not stopped at closing time, and can be logged past it', { skip }, async () => {
+  const me = (await call('GET', '/api/me')).json;
+  const startedAt = new Date(closesAt.getTime() - 10 * 60000).toISOString(); // 10 minutes before closing
+  const db = new Database(dbFile);
+  db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ?').run(me.id);
+  const id = db.prepare("INSERT INTO walks (dog_id, user_id, started_at, activity) VALUES (1, ?, ?, 'daycation')").run(me.id, startedAt).lastInsertRowid;
+  db.close();
+  const active = await call('GET', '/api/walks/active');
+  assert.equal(active.json.walk && active.json.walk.id, id, 'still going after closing');
+  assert.equal(active.json.walk.closesAt, null);
+  assert.equal(new Date(active.json.walk.stopsAt).getTime() - new Date(startedAt).getTime(), 12 * 3600000);
+  assert.equal((await call('DELETE', `/api/walks/${id}`)).status, 200);
+
+  const s = opensAt.getTime() + 60000;
+  const manual = await call('POST', '/api/walks/manual', { dogId: 1, userId: me.id, activity: 'daycation', startedAt: new Date(s).toISOString(), endedAt: new Date(Date.now() - 60000).toISOString() });
+  assert.equal(manual.status, 200, 'a daycation can end after closing');
+  const walkPast = await call('POST', '/api/walks/manual', { dogId: 1, userId: me.id, activity: 'walk', startedAt: new Date(s).toISOString(), endedAt: new Date(Date.now() - 60000).toISOString() });
+  assert.equal(walkPast.status, 400, 'a walk still can\'t');
+});

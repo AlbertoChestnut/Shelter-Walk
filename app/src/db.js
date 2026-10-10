@@ -232,6 +232,13 @@ if (!dogColumns.includes('blue_markers')) {
 if (!dogColumns.includes('kennel_location')) {
   db.exec('ALTER TABLE dogs ADD COLUMN kennel_location TEXT');
 }
+// A kennel card scanned before the shelter's listing has the dog: a stand-in
+// row (still_listed = 0, so it's in no list) keyed by the card's Animal ID,
+// so a walk can start and be filed under that ID. The scraper fills in the
+// real details when the listing arrives and clears this (see scraper.js).
+if (!dogColumns.includes('awaiting_listing')) {
+  db.exec('ALTER TABLE dogs ADD COLUMN awaiting_listing INTEGER NOT NULL DEFAULT 0');
+}
 // Kennel locations went from exact spots ("B17") to just the wing letter
 // ("B"). Folds any older full code down to its letter, including the
 // kennel-card "Da12" quirk (a redundant leading D); anything that isn't

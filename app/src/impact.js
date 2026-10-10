@@ -67,9 +67,10 @@ function buildImpact(rows, allTime, now = new Date()) {
 
 function register(app, { db, cachedPhotoUrl }) {
   app.get('/api/impact', (req, res) => {
-    const span = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 120);
+    // ?days=all: every day since tracking began (the app groups them by month).
+    const span = req.query.days === 'all' ? Infinity : Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 120);
     // Pad the window by a day so a UTC/local boundary never clips a day.
-    const since = new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
+    const since = span === Infinity ? '' : new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
     const rows = db.prepare(
       'SELECT dog_id, started_at, duration_seconds FROM walks WHERE ended_at IS NOT NULL AND started_at >= ?'
     ).all(since);
@@ -78,7 +79,7 @@ function register(app, { db, cachedPhotoUrl }) {
     ).get();
     const impact = buildImpact(rows, { walks: totals.walks, dogs: totals.dogs, seconds: totals.seconds, since: totals.since });
     // Trim to the requested number of days after bucketing in local time.
-    impact.days = impact.days.slice(0, span);
+    if (span !== Infinity) impact.days = impact.days.slice(0, span);
     res.json(impact);
   });
 }

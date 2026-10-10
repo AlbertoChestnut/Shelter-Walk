@@ -297,10 +297,30 @@ main#app.evo-caution-bg {
   color: white;
   text-align: center;
 }
+/* On the scan screen the see-through card rule (.walk-confirm .card) used to
+   win, leaving white text on a pale card. The page behind is already solid
+   red, so the banner goes a deeper red to stand out from it. */
+.walk-confirm .card.hard-block-banner,
+html[data-theme="dark"] .walk-confirm .card.hard-block-banner {
+  background: #7f1d14;
+  border-color: #5c140e;
+  backdrop-filter: none;
+}
 
 /* Sits on top of the active-walk timer screen as a standing reminder for
    the whole walk, not just at start -- easy to forget once you're a few
    minutes in and the dog wants to keep going. */
+.timing-hint {
+  background: var(--card-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--amber);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 0.9em;
+}
+.timing-hint .link-btn { font-size: inherit; padding: 0; min-height: 0; text-decoration: underline; }
+
 .pb-warning-banner {
   background: #ffd400;
   color: #1c1c1c;
@@ -1076,6 +1096,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 }
 .guide-card-icon { font-size: 1.6rem; width: 36px; text-align: center; flex: 0 0 36px; }
 .guide-card-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.guide-tutorial-link { text-decoration: none; border-left: 4px solid var(--green, #2f6f4f); }
 .guide-card-text .small { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .guide-article h2 { margin: 0 0 10px; font-size: 1.25rem; }
 .guide-body { line-height: 1.5; }
@@ -1112,8 +1133,6 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .checkoff-check { width: 22px; height: 22px; }
 .walk-action-btn { width: auto !important; flex: 0 0 auto !important; min-width: 44px; min-height: 44px; padding: 6px 12px !important; }
 
-.notice-card { border-left: 4px solid var(--green); margin-bottom: 8px; }
-.notice-card .row { gap: 8px; }
 
 /* Stats: My stats | Together switch */
 .seg { display: flex; gap: 0; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card-bg); }
@@ -1185,6 +1204,15 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .tip-bullet { color: var(--green-num); flex: 0 0 auto; line-height: 1.35; }
 .tip-text { flex: 1; overflow-wrap: anywhere; }
 .tip-item-walk .tip-text { opacity: 0.85; }
+.tip-date { font-size: 0.75rem; opacity: 0.6; white-space: nowrap; }
+
+/* All-notes view (Stats → Notes) */
+.all-notes-search { width: 100%; box-sizing: border-box; padding: 9px 12px; margin-bottom: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 0.95rem; }
+.all-notes-dog { display: block; }
+.seg.seg-small .seg-btn { padding: 7px 8px; min-height: 36px; font-size: 0.9rem; }
+.all-notes-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.all-notes-head .dog-name { margin: 0; }
+.all-notes-dog .tip-list { margin-top: 6px; }
 .tip-item-actions { display: flex; gap: 2px; flex: 0 0 auto; }
 /* Deliberately its own class, not .icon-btn -- that one is the 40x40px
    white-on-dark topbar button style, wrong shape and color for a small
@@ -1238,3 +1266,16 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 #userBtnName { display: inline-block; max-width: 24vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 
 .danger-link { color: var(--red); }
+
+/* Scan screen for a kennel card the shelter's listing doesn't have yet. */
+.walk-confirm .card.unlisted-card { border-left: 4px solid var(--green); }
+.unlisted-note { margin: 0 0 6px; color: var(--muted, #5f655f); }
+.unlisted-photo { float: right; width: 72px; height: 72px; margin: 0 0 8px 10px; }
+
+/* Lifetime stats: Shelter Visits grouped by month */
+.visit-month-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; list-style: none; margin-bottom: 0; }
+.visit-month-head::-webkit-details-marker { display: none; }
+.visit-month-chevron { transition: transform 0.15s; transform: rotate(-90deg); }
+.visit-month[open] .visit-month-chevron { transform: none; }
+.visit-month[open] > .stack { margin: 8px 0 4px; gap: 8px; }
+.visit-month > .stack > .card { margin-bottom: 0; }

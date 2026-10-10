@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>How to use Shelter Walk</title>
+<meta name="theme-color" content="#2f6f4f" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="/icons/icon-192.png" />
+<!-- Built from docs/TUTORIAL.md; screenshots from app/smoke/tutorial-shots.js. -->
+<style>
+  :root { --green: #2f6f4f; --bg: #f5f5f3; --card: #fff; --text: #1d1d1b; --muted: #5f655f; --line: #e2e2de; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141614; --card: #1e211e; --text: #ecefeb; --muted: #a3aaa3; --line: #333833; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.5 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 1; background: var(--green); color: #fff; padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); display: flex; align-items: center; gap: 12px; }
+  header a { color: #fff; text-decoration: none; font-weight: 600; white-space: nowrap; }
+  header span { font-weight: 700; }
+  main { max-width: 760px; margin: 0 auto; padding: 8px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 18px 0 8px; }
+  h2 { font-size: 1.3rem; margin: 32px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.1rem; margin: 24px 0 6px; }
+  #scanning-a-dog-for-a-walk { color: var(--green); }
+  a { color: var(--green); }
+  @media (prefers-color-scheme: dark) { a, #scanning-a-dog-for-a-walk { color: #7fc79f; } }
+  li { margin: 4px 0; }
+  code { background: var(--line); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+  img { max-width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); margin: 6px 6px 6px 0; vertical-align: top; }
+  p:has(> img) { display: flex; flex-wrap: wrap; gap: 8px; }
+  p:has(> img) img { margin: 0; flex: 1 1 200px; max-width: 300px; }
+  .table { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .95rem; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+  th { background: var(--green); color: #fff; }
+</style>
+</head>
+<body>
+<header><a href="/">‹ Back to the app</a><span>Tutorial</span></header>
+<main>
+<h1 id="how-to-use-shelter-walk">How to use Shelter Walk</h1>
+<p>Shelter Walk shows which dogs need a walk, lets you check a dog out by scanning the QR code or barcode on their kennel card, and times the walk. The most important part is <a href="#scanning-a-dog-for-a-walk">scanning a dog for a walk</a>.</p>
+<h2 id="getting-started">Getting started</h2>
+<ol><li><strong>Sign in</strong> with the invite link from the volunteer coordinator.</li><li><strong>Add it to your Home Screen.</strong> On iPhone, use Safari's Share button, then Add to Home Screen. On Android, use Chrome's menu, then Install app. Walk alerts on iPhone only work from the Home Screen app.</li><li><strong>Enter your name.</strong> Other volunteers see it only while you are out with a dog.</li><li><strong>Pick your experience level.</strong> It decides which dogs show as ready for you. If you're not sure, choose Beginner. You can change it later in Settings.</li></ol>
+<p>
+<img loading="lazy" src="tutorial/01-welcome-name.jpg" width="260" alt="Welcome screen asking for your name">
+<img loading="lazy" src="tutorial/02-welcome-experience.jpg" width="260" alt="Experience level picker">
+</p>
+<div class="table"><table><thead><tr><th>Level</th><th>Who</th><th>Dogs you're cleared for</th></tr></thead><tbody><tr><td>Beginner</td><td>Under 20 hours volunteering</td><td>15+ days in the shelter, no blue behavior markers, no Potty Break Only dogs, no dogs mid-adoption</td></tr><tr><td>Established</td><td>20+ hours</td><td>7+ days in the shelter, blue markers and PB dogs allowed</td></tr><tr><td>Experienced Volunteer</td><td>1 year and 100+ hours</td><td>Everything Established can walk, plus EVO (Experienced Volunteers Only) dogs</td></tr></tbody></table></div>
+<p>Puppies under 6 months old can't be walked by anyone.</p>
+<h2 id="scanning-a-dog-for-a-walk">Scanning a dog for a walk</h2>
+<p>Tap <strong>Scan</strong>, point your phone at the QR code or barcode on the kennel card, check the dog's screen, then tap <strong>Start Walk</strong>. The app reads the code by itself, so there's nothing to press.</p>
+<h3 id="1-open-the-camera">1. Open the camera</h3>
+<p>Tap <strong>📷 Scan</strong> in the bottom bar. The camera opens right away. The first time, your phone asks for camera access, so tap <strong>Allow</strong>.</p>
+<h3 id="2-scan-the-qr-code-or-the-barcode-on-the-kennel-card">2. Scan the QR code or the barcode on the kennel card</h3>
+<p>Every kennel card has <strong>two codes, and either one works.</strong> Both hold the dog's Animal ID, so they open the same dog. Use whichever is easier to reach or less scuffed.</p>
+<ul><li>The <strong>QR code</strong> is the small square near the top right, next to the dog's photo.</li><li>The <strong>barcode</strong> is the set of vertical lines under the breed and colors.</li></ul>
+<img loading="lazy" src="tutorial/05-kennel-card.jpg" width="420" alt="Axel Rose's kennel card with the QR code and barcode outlined">
+<p>Fit the code inside the green corners and hold still for a second. The app reads it by itself. Move closer if the code looks small, and tilt the phone if the plastic sleeve shows glare. For the barcode, fit every line inside the corners, edge to edge.</p>
+<p>
+<img loading="lazy" src="tutorial/06-scan-camera-qr.jpg" width="260" alt="Scanning Axel Rose's QR code">
+<img loading="lazy" src="tutorial/07-scan-camera-barcode.jpg" width="260" alt="Scanning Axel Rose's barcode">
+</p>
+<h3 id="3-check-it-s-the-right-dog">3. Check it's the right dog</h3>
+<p>Match the name and ID number to the kennel card. Axel Rose's card says <strong>Animal ID: 262826</strong>, and so does the app. Then read the badge under the name:</p>
+<ul><li>Green <strong>Eligible to walk ✓</strong>: you're cleared for this dog.</li><li><strong>⚠ Warning</strong> on a striped background: you're not cleared for this dog at</li></ul>
+<p>  your level. The badge says why, such as "Experienced Volunteers Only" or   "Needs 4 more days in shelter". Pick a different dog.</p>
+<ul><li>Solid red with <strong>🚫 Too young to walk</strong>: puppies can't go out. The button is locked.</li><li>Yellow <strong>Potty Break Only</strong> banner: a short, potty-focused walk only.</li></ul>
+<p>
+<img loading="lazy" src="tutorial/08-scan-dog-found.jpg" width="260" alt="Axel Rose found after scanning, eligible to walk">
+<img loading="lazy" src="tutorial/15-scan-not-cleared.jpg" width="260" alt="Dog you're not cleared for, with caution stripes">
+<img loading="lazy" src="tutorial/16-scan-too-young.jpg" width="260" alt="Puppy too young to walk">
+</p>
+<h3 id="4-read-the-tips">4. Read the tips</h3>
+<p>Shared tips from other walkers and your own private notes are right under the dog. Tap a sticker to see what it means.</p>
+<h3 id="5-fix-anything-that-s-changed-then-start">5. Fix anything that's changed, then start</h3>
+<p>If the kennel card's stickers or kennel letter differ from the app, tap them to match. <strong>Save Changes</strong> appears only when something changed, and Start Walk saves it too.</p>
+<p>Tap <strong>Start Walk</strong>. If you're cuddling, at matchmaking, at play group, or taking the dog on a 🚗 daycation instead, tap <strong>⇄ Change</strong> first and pick that. A daycation can last up to 12 hours, so it doesn't stop after 30 minutes the way a walk does.</p>
+<p>
+<img loading="lazy" src="tutorial/09-scan-start-walk.jpg" width="260" alt="Markers, kennel location and Start Walk button">
+<img loading="lazy" src="tutorial/10-scan-change-activity.jpg" width="260" alt="Choosing walk, cuddle, matchmaking or play group">
+</p>
+<h3 id="6-write-the-check-out-time-on-the-kennel">6. Write the check-out time on the kennel</h3>
+<p>The big time at the top is your check-out time. The screen also shows <strong>Return to:</strong> with the kennel letter and a running timer.</p>
+<p>A walk stops by itself after 30 minutes. Tap <strong>＋10 min</strong> to extend it, up to 3 hours. If the limit stops a walk, the app asks when it really ended next time you open it.</p>
+<img loading="lazy" src="tutorial/11-walk-in-progress.jpg" width="300" alt="Walk in progress with check-out time and timer">
+<h3 id="7-end-the-walk">7. End the walk</h3>
+<p>Bring the dog back and tap <strong>End Walk</strong>. The walk ends when you tap it, not when you save. Add an optional note for other walkers (shared without your name) and a private note, then tap <strong>Save &amp; Finish</strong>. <strong>Scan Next Dog</strong> takes you straight back to the camera.</p>
+<p>
+<img loading="lazy" src="tutorial/12-walk-end-notes.jpg" width="260" alt="Notes after ending a walk">
+<img loading="lazy" src="tutorial/13-walk-complete.jpg" width="260" alt="Walk complete screen">
+</p>
+<h3 id="if-the-code-won-t-scan">If the code won't scan</h3>
+<p>Type the dog's name in <strong>Search by name instead</strong> under the camera. Tap the dog, and you land on the same screen as a scan.</p>
+<img loading="lazy" src="tutorial/14-scan-search-by-name.jpg" width="300" alt="Searching for a dog by name">
+<p><strong>Scanned the wrong dog?</strong> Tap <strong>Scan a different dog</strong>, or your phone's Back button, to return to the camera. Nothing starts until you tap Start Walk.</p>
+<h2 id="the-other-screens">The other screens</h2>
+<p>Four tabs run along the bottom: Available, Scan, Stats and Updates. Three buttons sit at the top right: 👤 your account, 📖 the Guide, and ⚙ Settings.</p>
+<h3 id="available">🐾 Available</h3>
+<p>Lists every dog, with stickers, days in the shelter, kennel letter, walks this week and an Eligible badge. Tap <strong>▶ Walk / Edit</strong> to open a dog the same way a scan does, <strong>View Info</strong> for their profile, or 🕘 for walk history. Tick <strong>Out</strong> if a dog was already walked today outside the app.</p>
+<p>Tap <strong>Filters</strong> to narrow the list by kennel wing, sex, age, breed, stickers, "Dogs I've walked before", or dogs still needing a walk this shift. Save a combination under <strong>Presets</strong>.</p>
+<p>
+<img loading="lazy" src="tutorial/03-available.jpg" width="260" alt="Available dogs list">
+<img loading="lazy" src="tutorial/04-available-filters.jpg" width="260" alt="Available filters">
+<img loading="lazy" src="tutorial/17-dog-info.jpg" width="260" alt="Dog profile">
+</p>
+<h3 id="stats">📊 Stats</h3>
+<p><strong>My stats</strong> shows your walks today and over your lifetime. Tap ✎ to fix a walk's times or 🗑 to delete it. <strong>Together</strong> shows anonymous totals for the whole shelter, with no names and no rankings.</p>
+<p>
+<img loading="lazy" src="tutorial/18-stats.jpg" width="260" alt="My stats">
+<img loading="lazy" src="tutorial/19-stats-together.jpg" width="260" alt="Together stats">
+</p>
+<h3 id="updates-guide-settings-my-account">📣 Updates, 📖 Guide, ⚙ Settings, 👤 My Account</h3>
+<ul><li><strong>Updates:</strong> dogs that arrived, came back, or were adopted. Choose which</li></ul>
+<p>  kinds show in Settings.</p>
+<ul><li><strong>Guide:</strong> what every sticker means, tips for new volunteers, experience</li></ul>
+<p>  levels, and shelter contacts.</p>
+<ul><li><strong>Settings:</strong> experience level, usual activity, light or dark theme,</li></ul>
+<p>  notifications, and walk-length alerts (up to 3, e.g. 7 and 10 minutes).</p>
+<ul><li><strong>My Account:</strong> change your name, hide your name while walking, download or</li></ul>
+<p>  delete your data, and sign out.</p>
+<p>
+<img loading="lazy" src="tutorial/20-updates.jpg" width="200" alt="Updates feed">
+<img loading="lazy" src="tutorial/21-guide.jpg" width="200" alt="Guide">
+<img loading="lazy" src="tutorial/22-settings.jpg" width="200" alt="Settings">
+<img loading="lazy" src="tutorial/23-account.jpg" width="200" alt="My Account">
+</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table"><table><thead><tr><th>Problem</th><th>Fix</th></tr></thead><tbody><tr><td>"Camera access is blocked"</td><td><strong>Android:</strong> open Chrome, then Menu, Settings, Site settings, and search "shelterwalk.com". Set Camera to Allow, then reopen the app. <strong>iPhone:</strong> open the Settings app, then Safari, then Camera. Set it to Ask or Allow, then reopen the app. Until then, use Search by name.</td></tr><tr><td>The camera shows the code but nothing happens</td><td>Hold the phone 6–12 inches away, keep the whole code inside the green corners, and avoid glare. If one code is damaged, scan the other one: QR code or barcode. If both are, search by name.</td></tr><tr><td>"Could not read a dog ID from that code"</td><td>You scanned something other than a kennel tag. Scan the dog's kennel card, or search by name.</td></tr><tr><td>"New kennel card · We don't have this dog's details yet"</td><td>The shelter printed the card before adding the dog to its online listing. Pick the kennel letter and tap <strong>Start Walk</strong> as usual, after checking the card's age and stickers yourself. The walk is kept under the card's Animal ID and added to the dog's record once the listing has them (it's checked every 30 minutes).</td></tr><tr><td>The dog's screen shows the wrong dog</td><td>Tap <strong>Scan a different dog</strong> and scan again. Tell staff if a kennel card has the wrong dog's code.</td></tr><tr><td>You forgot to end a walk</td><td>It stops by itself at the time limit. Next time you open the app, choose when it really ended: Just now, At the limit, or Pick a time.</td></tr><tr><td>A finished walk has the wrong times</td><td>Go to <strong>Stats</strong>, find the walk, tap ✎ and fix it.</td></tr><tr><td>No walk alerts on iPhone</td><td>Add the app to your Home Screen, open it from there, and turn alerts on in Settings.</td></tr></tbody></table></div>
+</main>
+</body>
+</html>

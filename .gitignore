@@ -14,3 +14,7 @@ staticfiles/
 *.pem
 *.key
 id_*
+# Tutorial screenshots show a real kennel card and listing; they live on the
+# server only (regenerate with app/smoke/tutorial-shots.js).
+app/public/tutorial/
+docs/tutorial/

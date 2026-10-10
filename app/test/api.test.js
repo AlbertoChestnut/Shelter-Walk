@@ -435,6 +435,13 @@ test('cuddle and matchmaking are timed like walks, switchable mid-session, and e
   // Editing afterwards can change it back.
   assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } })).json.activity, 'walk');
 
+  // Notes on a finished walk can be added, changed, and cleared from the walk list.
+  const noted = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk', notes: '  pulls toward squirrels  ' } });
+  assert.equal(noted.json.notes, 'pulls toward squirrels');
+  assert.equal(noted.json.edited, false, 'a notes change is not a time edit');
+  assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } })).json.notes, 'pulls toward squirrels', 'left alone when not sent');
+  assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { notes: '' } })).json.notes, null);
+
   // Hand-logged sessions take an activity too, defaulting to a walk.
   const now = Date.now();
   const manual = await call('POST', '/api/walks/manual', { user, body: { dogId: 60, userId: 1, activity: 'cuddle', startedAt: new Date(now - 3600000).toISOString(), endedAt: new Date(now - 3000000).toISOString() } });
@@ -443,6 +450,49 @@ test('cuddle and matchmaking are timed like walks, switchable mid-session, and e
   const all = (await call('GET', '/api/walks', { user })).json.walks;
   assert.equal(all.find((w) => w.id === manual.json.id).activity, 'cuddle');
   assert.equal(all.find((w) => w.id === plain.json.id).activity, 'walk');
+});
+
+test('a daycation runs up to 12 hours: no +10 min, no 30 minute stop', async () => {
+  const user = 'daycation@example.com';
+  const me = (await call('GET', '/api/me', { user })).json;
+  const seed = new Database(dbFile);
+  const ts = new Date().toISOString();
+  seed.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (62, 'Roadtrip', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
+  seed.close();
+  const read = (id) => { const c = new Database(dbFile, { readonly: true }); const r = c.prepare('SELECT * FROM walks WHERE id = ?').get(id); c.close(); return r; };
+  const backdate = (id, minutesAgo) => { const c = new Database(dbFile); c.prepare('UPDATE walks SET started_at = ? WHERE id = ?').run(new Date(Date.now() - minutesAgo * 60000).toISOString(), id); c.close(); };
+
+  const s = await call('POST', '/api/walks/start', { user, body: { dogId: 62, userId: me.id, activity: 'daycation' } });
+  assert.equal(s.status, 200);
+  assert.equal(new Date(s.json.stopsAt) - new Date(s.json.startedAt), 12 * 3600000);
+  assert.equal(s.json.autoStopMinutes, 720);
+  const id = s.json.walkId;
+  assert.equal((await call('POST', `/api/walks/${id}/extend`, { user })).status, 409, 'nothing to extend');
+
+  // Five hours in, it's still going.
+  backdate(id, 300);
+  const active = await call('GET', '/api/walks/active', { user });
+  assert.equal(active.json.walk && active.json.walk.id, id);
+  assert.equal(read(id).ended_at, null);
+  // Too late to turn it into a walk now; switching while young is fine.
+  assert.equal((await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } })).status, 409);
+  backdate(id, 5);
+  const toWalk = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } });
+  assert.equal(toWalk.status, 200);
+  assert.equal(new Date(toWalk.json.stopsAt) - new Date(read(id).started_at), 30 * 60000, 'a walk gets the 30 minute limit back');
+  const back = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'daycation' } });
+  assert.equal(new Date(back.json.stopsAt) - new Date(read(id).started_at), 12 * 3600000);
+
+  // Past 12 hours it stops by itself, and the real end can be up to 12 hours.
+  backdate(id, 13 * 60);
+  const after = await call('GET', '/api/walks/active', { user });
+  assert.equal(after.json.walk, null);
+  assert.equal(after.json.wrapUp.id, id);
+  assert.equal(read(id).duration_seconds, 12 * 3600);
+  assert.equal((await call('PUT', `/api/walks/${id}/end`, { user, body: { endedAt: new Date().toISOString() } })).status, 400, 'no longer than 12 hours');
+  const fine = await call('PUT', `/api/walks/${id}/end`, { user, body: { endedAt: new Date(Date.now() - 90 * 60000).toISOString() } });
+  assert.equal(fine.status, 200);
+  assert.equal(Math.round(fine.json.durationSeconds / 60), 11.5 * 60);
 });
 
 test('the usual activity is saved in Settings and play group is an activity', async () => {
@@ -500,4 +550,44 @@ test('/uptime answers only ok or down, with no details', async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(await res.text(), 'ok');
+});
+
+test('a kennel card the listing does not have yet can still be walked, filed under its Animal ID', async () => {
+  const user = 'unlisted@example.com';
+  const me = (await call('GET', '/api/me', { user })).json;
+  const missing = await call('GET', '/api/dogs/262999', { user });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.json.notListedYet, true);
+  assert.equal(missing.json.id, 262999);
+  assert.equal((await call('GET', '/api/dogs/12', { user })).json.notListedYet, false, 'too short to be an Animal ID');
+  assert.equal((await call('POST', '/api/walks/start', { user, body: { dogId: 262999, userId: me.id } })).status, 404, 'only when asked for');
+  assert.equal((await call('POST', '/api/walks/start', { user, body: { dogId: 12, userId: me.id, unlisted: true } })).status, 404, 'not an Animal ID');
+  const start = await call('POST', '/api/walks/start', { user, body: { dogId: 262999, userId: me.id, location: 'C', unlisted: true } });
+  assert.equal(start.status, 200, JSON.stringify(start.json));
+  const dog = (await call('GET', '/api/dogs/262999', { user })).json.dog;
+  assert.equal(dog.awaitingListing, true);
+  assert.equal(dog.name, 'Dog #262999');
+  assert.equal(dog.kennelLocation, 'C');
+  for (const q of ['', '?all=true']) {
+    const list = (await call('GET', `/api/dogs${q}`, { user })).json.dogs;
+    assert.ok(!list.some((d) => d.id === 262999), `stand-in kept out of /api/dogs${q}`);
+  }
+  const end = await call('PUT', `/api/walks/${start.json.walkId}/end`, { user, body: { notes: '' } });
+  assert.equal(end.status, 200, JSON.stringify(end.json));
+  // A second card scan (or volunteer) gets the stand-in back, still awaiting.
+  assert.equal((await call('GET', '/api/dogs/262999', { user })).json.dog.awaitingListing, true);
+});
+
+test('a dog with no photo gets its own drawn silhouette, the same every time', async () => {
+  const dog = (await call('GET', '/api/dogs/1')).json.dog;
+  assert.equal(dog.photoUrl, '/dog-silhouettes/1.svg?v=1');
+  const a = await fetch(`${base}/dog-silhouettes/262999.svg?v=1`);
+  assert.equal(a.status, 200);
+  assert.match(a.headers.get('content-type'), /image\/svg\+xml/);
+  const svgA = await a.text();
+  assert.match(svgA, /^<svg /);
+  assert.equal(await (await fetch(`${base}/dog-silhouettes/262999.svg`)).text(), svgA, 'same ID, same drawing');
+  assert.notEqual(await (await fetch(`${base}/dog-silhouettes/262998.svg`)).text(), svgA, 'next ID, different drawing');
+  assert.equal((await fetch(`${base}/dog-silhouettes/abc.svg`)).status, 404);
+  assert.equal((await fetch(`${base}/dog-silhouettes/1.png`)).status, 404);
 });

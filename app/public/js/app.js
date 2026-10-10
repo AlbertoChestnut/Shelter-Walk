@@ -11,7 +11,23 @@
   // Track it continuously and restore it after every redraw instead.
   appEl.addEventListener('scroll', () => {
     if (state.tab === 'available') state.availableScrollTop = appEl.scrollTop;
+    if (state.tab === 'updates') state.updatesScrollTop = appEl.scrollTop;
   }, { passive: true });
+
+  // Puts a list back at its remembered spot. Swiping Back while the screen
+  // being left was still coasting from a flick can carry that momentum over
+  // onto the restored list, scrolling it away from the spot just set (and
+  // the listener above then remembers the wrong spot). Turning scrolling off
+  // for a frame stops any coasting, then the spot is set again.
+  function restoreScroll(top) {
+    const tab = state.tab;
+    appEl.style.overflowY = 'hidden';
+    appEl.scrollTop = top;
+    requestAnimationFrame(() => {
+      appEl.style.overflowY = '';
+      if (state.tab === tab) appEl.scrollTop = top;
+    });
+  }
 
   // ---------- Theme (light/dark/system) ----------
   const THEME_KEY = 'sw_theme';
@@ -77,12 +93,18 @@
     availableDogsRaw: [],
     availableExperienceLevel: null,
     availableScrollTop: 0,
+    updatesScrollTop: 0,
+    updatesHtml: null, // last rendered Updates feed, redrawn as-is on Back from a dog
     savedFilters: [],
     statsView: 'summary',
     statsPresentOnly: true,
+    statsOpenMonths: null, // 'YYYY-MM' keys expanded under Shelter Visits (null = just the newest)
+    togetherOpenMonths: null, // same, for Together's past days
     selectedDateKey: null,
     selectedShiftIndex: null, // which of the 4 shift tiles is drilled into on the Stats day view, if any
-    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous)
+    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes)
+    notesQuery: '', // search text on the all-notes view
+    notesMine: false, // all-notes view narrowed to my private + my walk notes
     togetherDay: null, // dateKey of the Together day being viewed, if any
     statsRange: 'today', // 'today' | 'lifetime' -- which Stats tiles are shown
     audit: { location: '', dog: null, loading: false, pendingMarkers: null, recent: [], scanned: {}, scanError: '' }
@@ -323,12 +345,17 @@
     e.stopPropagation();
     showImageLightbox(trigger.src, trigger.alt);
   });
-  // Tapping a dog's photo (Scan/confirm screen, adopted entries in Updates)
-  // opens their full bio; the big photo at the top of the bio then opens the
+  // Tapping a dog's photo or name (Scan/confirm screen, adopted entries in
+  // Updates) opens their full bio; the big photo at the top of the bio then opens the
   // uncropped full-screen view.
+  // A dog's name holds its own tappable bits (marker badges, the returned-dog
+  // and QR buttons); a tap on one of those is theirs, not the name's.
+  function tapOnNameControl(e) {
+    return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge');
+  }
   document.addEventListener('click', async (e) => {
     const trigger = e.target.closest('.photo-bio-trigger');
-    if (!trigger || !trigger.dataset.dogId) return;
+    if (!trigger || !trigger.dataset.dogId || tapOnNameControl(e)) return;
     e.stopPropagation();
     try {
       const { dog, walks } = await api(`/api/dogs/${trigger.dataset.dogId}?userId=${state.currentUser.id}`);
@@ -474,6 +501,22 @@
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
+  // Short date for a note: "Oct 9", with the year only when it isn't this year.
+  function fmtNoteDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const opts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  // "Oct 9" plus "edited Oct 12" when it was changed on a later day.
+  function noteDateHtml(createdAt, updatedAt) {
+    const made = fmtNoteDate(createdAt);
+    const edited = updatedAt && dateKey(updatedAt) !== dateKey(createdAt) ? ` · edited ${fmtNoteDate(updatedAt)}` : '';
+    return `<span class="tip-date">${made}${edited}</span>`;
+  }
+
   // Balloons + confetti floating up for a second when a newly-detected
   // adoption first appears — purely celebratory, no user action needed.
   function playCelebration() {
@@ -544,13 +587,19 @@
   }
 
   // What a volunteer can do with a dog. All of them are timed and count
-  // exactly like a walk; they only look different.
+  // exactly like a walk; they only look different -- except a daycation (the
+  // dog out for the day), which runs up to 12 hours with no +10 min, no
+  // length alerts and no closing-time stop (server.js walkLimitMinutes).
   const ACTIVITIES = {
     walk: { emoji: '🚶', label: 'Walk', noun: 'walk', out: 'Currently being walked by' },
     cuddle: { emoji: '🤗', label: 'Cuddle', noun: 'cuddle', out: 'Currently cuddling with' },
     matchmaking: { emoji: '💞', label: 'Matchmaking', noun: 'matchmaking session', out: 'Currently at matchmaking with' },
-    playgroup: { emoji: '🎾', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' }
+    playgroup: { emoji: '🎾', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' },
+    daycation: { emoji: '🚗', label: 'Daycation', noun: 'daycation', out: 'Currently on a daycation with' }
   };
+  const DAYCATION_HOURS = 12;
+  // Longest an activity can be recorded as, in hours, when saying when it ended.
+  const maxActivityHours = (activity) => (activity === 'daycation' ? DAYCATION_HOURS : 3);
   const usualActivity = () => (ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk');
   // "Make this my usual" link shown under an activity picker whenever the
   // picked activity isn't the walker's usual one (same setting as Settings).
@@ -652,6 +701,21 @@
         goToConfirmForDog(card.dataset.id);
       });
     });
+    // The dog's name opens their profile (which has its own Edit button),
+    // the same as tapping a dog on screens without these buttons.
+    (scope || document).querySelectorAll('.dog-name').forEach((name) => {
+      const card = name.closest('[data-id]');
+      if (!card || !card.querySelector('.view-profile-btn')) return;
+      name.style.cursor = 'pointer';
+      name.addEventListener('click', async (e) => {
+        if (tapOnNameControl(e)) return;
+        e.stopPropagation();
+        try {
+          const { dog, walks } = await api(`/api/dogs/${card.dataset.id}?userId=${state.currentUser.id}`);
+          showProfileSheet(dog, walks);
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
     (scope || document).querySelectorAll('.view-profile-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -691,6 +755,10 @@
   });
   window.addEventListener('unhandledrejection', (e) => {
     const r = e.reason;
+    // The camera library's own video.play(), cut short because the scanner
+    // was closed while it was starting (e.g. tapping the name search right
+    // away). Harmless, and nothing of ours to fix: not worth a report.
+    if (r && r.name === 'AbortError' && /play\(\) request was interrupted/.test(r.message || '')) { e.preventDefault(); return; }
     reportClientError(r && r.message ? r.message : String(r), 'unhandledrejection', r && r.stack);
   });
 
@@ -1217,6 +1285,7 @@
 
   window.addEventListener('popstate', (event) => {
     syncingFromHistory = true;
+    dogLookupSeq++;
     let hs = event.state || { tab: HOME_TAB, sheet: null };
     // Back past Available: stay in the app, on the Available tab.
     if (hs.guard) {
@@ -1236,8 +1305,10 @@
     if (hs.sheet !== 'account') closeSheetOnly(document.getElementById('accountSheet'));
     // Back from a dog opened on another tab: drop it (unless out walking it),
     // so the Scan tab opens on the camera next time, not on this dog.
+    let backFromDog = false;
     if (onOpenedDogStep && hs.walkStep !== 'opened') {
       onOpenedDogStep = false;
+      backFromDog = true;
       if (!activeWalkDogId()) state.walk.phase = 'idle';
     }
     if (hs.tab && hs.tab !== state.tab) {
@@ -1245,7 +1316,8 @@
       state.tab = hs.tab;
       tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === hs.tab));
       topbarTitle.textContent = TAB_TITLES[hs.tab];
-      render();
+      if (backFromDog && hs.tab === 'updates') restoreUpdates();
+      else render();
     } else if (onScannedStep && hs.walkStep !== 'scanned' && hs.tab === 'walk' && !activeWalkDogId()) {
       // Back from a scanned dog (not out walking): scan again.
       state.walk.phase = 'scanning';
@@ -1697,25 +1769,35 @@
       inner.innerHTML = `
         <h2>Thank you! 🐾</h2>
         <p>Thanks for volunteering and making a dog's day better.</p>
+        <p>New here? The short tutorial shows how everything works, starting with how to scan a kennel card for a walk. It takes about 2 minutes.</p>
         <p id="onboardingFinishStatus" class="small" style="color:var(--red);min-height:1.2em;"></p>
-        <button type="button" id="onboardingFinishBtn" class="btn primary">Let's go</button>`;
-      document.getElementById('onboardingFinishBtn').addEventListener('click', async () => {
-        const btn = document.getElementById('onboardingFinishBtn');
-        btn.disabled = true;
+        <button type="button" id="onboardingTutorialBtn" class="btn primary">📘 Show me how it works</button>
+        <button type="button" id="onboardingFinishBtn" class="btn" style="margin-top:8px;">Skip, go to the dogs</button>`;
+      // Either button finishes setup; the main one then opens the tutorial,
+      // which links back to the app when they're done.
+      const finish = async (toTutorial) => {
+        const buttons = [document.getElementById('onboardingTutorialBtn'), document.getElementById('onboardingFinishBtn')];
+        buttons.forEach((b) => { b.disabled = true; });
         try {
           await api(`/api/users/${state.currentUser.id}/onboarding-complete`, { method: 'POST' });
         } catch (err) {
           // Not saving this means they'd be walked through setup again next
           // time, so don't pretend it worked.
           document.getElementById('onboardingFinishStatus').textContent = `Couldn't finish setup: ${err.message}`;
-          btn.disabled = false;
+          buttons.forEach((b) => { b.disabled = false; });
           return;
         }
         state.currentUser.onboardingCompleted = true;
         localStorage.removeItem(ONBOARDING_STEP_KEY);
+        if (toTutorial) {
+          window.location.href = '/tutorial.html';
+          return;
+        }
         document.getElementById('onboardingPicker').classList.add('hidden');
         await completeInit();
-      });
+      };
+      document.getElementById('onboardingTutorialBtn').addEventListener('click', () => finish(true));
+      document.getElementById('onboardingFinishBtn').addEventListener('click', () => finish(false));
       return;
     }
   }
@@ -1892,13 +1974,13 @@
     }
     const reload = () => mountDogNotes(container, dog, walks);
     const items = [
-      ...data.sharedTips.map((t) => ({ kind: 'tip', id: t.id, body: t.body, when: t.createdAt })),
+      ...data.sharedTips.map((t) => ({ kind: 'tip', id: t.id, body: t.body, when: t.createdAt, updatedAt: t.updatedAt })),
       ...(walks || []).filter((w) => w.notes).map((w) => ({ kind: 'walk', body: w.notes, when: w.started_at }))
     ].sort((a, b) => (a.when < b.when ? 1 : -1));
     const tipRows = items.map((n) => n.kind === 'tip'
       ? `<li class="tip-item" data-tip="${n.id}">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${esc(n.body)}</span>
+           <span class="tip-text">${esc(n.body)} ${noteDateHtml(n.when, n.updatedAt)}</span>
            <span class="tip-item-actions">
              <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
              <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
@@ -1906,7 +1988,7 @@
          </li>`
       : `<li class="tip-item tip-item-walk">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${esc(n.body)} <span class="muted">(from a walk)</span></span>
+           <span class="tip-text">${esc(n.body)} <span class="tip-date">from a walk · ${fmtNoteDate(n.when)}</span></span>
          </li>`).join('');
     container.innerHTML = `
       <label class="small muted" style="display:block;margin-top:12px;">Tips <span class="badge neutral">Anyone can edit or delete</span></label>
@@ -1922,7 +2004,7 @@
       <ul class="tip-list">
         ${data.privateNote ? `<li class="tip-item" data-private="1">
              <span class="tip-bullet">•</span>
-             <span class="tip-text">${esc(data.privateNote.body)}</span>
+             <span class="tip-text">${esc(data.privateNote.body)} <span class="tip-date">updated ${fmtNoteDate(data.privateNote.updatedAt)}</span></span>
              <span class="tip-item-actions">
                <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit your private note">✎</button>
                <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete your private note">✕</button>
@@ -2046,7 +2128,34 @@
     }
     const statsBtn = document.getElementById('profileStatsBtn');
     if (statsBtn) statsBtn.addEventListener('click', () => showDogStatsPopup(dog.id, dog.name));
+    const editBtn = document.getElementById('profileEditBtn');
+    if (editBtn) {
+      editBtn.addEventListener('click', async () => {
+        await closeSheetAwait(profileSheet);
+        // Opened from this dog's own Walk/Edit screen: just go back to it,
+        // keeping any markers already toggled there.
+        if (onConfirmScreenFor(dog.id)) return;
+        goToConfirmForDog(dog.id);
+      });
+    }
     mountDogNotes(profileSheetInner.querySelector('.dog-notes-mount'), dog, walks);
+  }
+
+  function onConfirmScreenFor(dogId) {
+    return state.tab === 'walk' && state.walk.phase === 'confirm' && state.walk.dog && String(state.walk.dog.id) === String(dogId);
+  }
+
+  // Every way into a dog's profile (tapping its photo or name on any screen)
+  // ends with the same Edit button, so editing a dog is always one tap away.
+  // Same label rules as the cards' own Walk / Edit button.
+  function profileEditButtonHtml(dog) {
+    const activeId = activeWalkDogId();
+    let label = dog.tooYoung || dog.eligible === false ? '✎ Edit' : '▶ Walk / Edit';
+    let disabled = '';
+    if (activeId === String(dog.id)) label = '↩ Back to your walk';
+    else if (activeId) disabled = ' disabled title="Finish or cancel your current walk first"';
+    else if (onConfirmScreenFor(dog.id)) label = '✎ Edit';
+    return `<button type="button" id="profileEditBtn" class="btn primary" style="margin:6px 0 10px;"${disabled}>${label}</button>`;
   }
 
   // Personal history only: how often *this* user has walked the dog.
@@ -2067,6 +2176,7 @@
       </h2>
       <div id="profileMarkerBreakdown" class="marker-breakdown hidden">${markerBreakdownHtml(dog)}</div>
       <p class="muted small nowrap" style="margin-top:-6px;">ID ${dog.id}</p>
+      ${profileEditButtonHtml(dog)}
       ${currentWalkBadge(dog)}
       ${dog.stillListed === false ? `<span class="badge neutral">Adopted/Removed${dog.removedAt ? ' on ' + fmtDate(dog.removedAt) : ''}</span>` : ''}
       <span class="badge neutral">${walksTogetherText(dog)}</span>
@@ -2086,6 +2196,23 @@
       <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
       <p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>
     `;
+  }
+
+  // A dog's shared tips and your private note, opened from a past walk so
+  // they can be updated while looking back, without leaving the walk list.
+  async function showDogNotesPopup(dogId) {
+    const popup = document.getElementById('markerInfoPopup');
+    const content = document.getElementById('markerInfoPopupContent');
+    if (!popup || !content) return;
+    content.innerHTML = `<h3 style="margin-top:0;">📝 Dog notes</h3><p class="muted small center">Loading…</p>`;
+    openOverlay(popup);
+    try {
+      const { dog, walks } = await api(`/api/dogs/${dogId}?userId=${state.currentUser.id}`);
+      content.innerHTML = `<h3 style="margin-top:0;">📝 ${esc(dog.name)}'s notes</h3><div class="dog-notes-mount">${dogNotesShellHtml()}</div>`;
+      mountDogNotes(content.querySelector('.dog-notes-mount'), dog, walks);
+    } catch (err) {
+      content.innerHTML = `<h3 style="margin-top:0;">📝 Dog notes</h3><p class="small muted">Couldn't load the notes: ${esc(err.message)}</p>`;
+    }
   }
 
   // Reuses the same generic info popup as the marker-meaning breakdown --
@@ -2177,7 +2304,6 @@
   state.guide = { sections: [], canEdit: false, sectionId: null, editing: null, query: '', hint: null };
 
   function openGuide(hint) {
-    try { localStorage.setItem('sw_guide_notice_dismissed', '1'); } catch (e) { /* ignore */ }
     if (state.tab === 'walk' || state.tab === 'audit') stopQrScanner();
     state.guide.sectionId = null;
     state.guide.editing = null;
@@ -2306,6 +2432,14 @@
         ${guideBackButton('Back', 'guideExit')}
         <input type="search" id="guideSearch" placeholder="Search the Guide…" value="${esc(g.query)}" autocomplete="off" />
         ${g.canEdit ? `<button type="button" id="guideNew" class="btn primary">＋ New section</button>` : ''}
+        <a href="/tutorial.html" class="card compact guide-card guide-tutorial-link">
+          <span class="guide-card-icon" aria-hidden="true">📘</span>
+          <span class="guide-card-text">
+            <strong>How to use Shelter Walk</strong>
+            <span class="small muted">Step-by-step with screenshots, starting with how to scan a dog for a walk.</span>
+          </span>
+          <span class="muted" aria-hidden="true">›</span>
+        </a>
         <div id="guideList" class="stack tight"></div>
         ${g.canEdit ? `<p class="small muted center">You can edit the Guide because you're staff. Open any section to edit, reorder, or delete it.</p>` : ''}
       </div>`;
@@ -2535,6 +2669,7 @@
   // ---------- Render dispatcher ----------
   async function render() {
     appEl.classList.remove('caution-stripes', 'age-block', 'pb-only-bg', 'evo-caution-bg');
+    if (state.tab !== 'walk') lastWalkPhase = null; // back on Scan later: start at the top again
     if (state.tab === 'available') return renderAvailable();
     if (state.tab === 'walk') return renderWalk();
     if (state.tab === 'stats') return renderStats();
@@ -2889,7 +3024,7 @@
     const allDogs = state.availableDogsRaw || [];
     if (!allDogs.length) {
       appEl.innerHTML = `<p class="empty-state">No dogs currently listed. Try refreshing shelter data from Settings.</p>`;
-      appEl.scrollTop = state.availableScrollTop;
+      restoreScroll(state.availableScrollTop);
       return;
     }
     const fosterCount = allDogs.filter((d) => d.location === 'In Foster').length;
@@ -2997,19 +3132,7 @@
       + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive + advancedActive
       + state.locationFilter.size + (state.presetMinDaysAtLeast != null ? 1 : 0);
 
-    // One-time pointer to the Guide for people who were using the app before
-    // it existed (new volunteers are told about it during onboarding).
-    let guideSeen = true;
-    try { guideSeen = !!localStorage.getItem('sw_guide_notice_dismissed'); } catch (e) { /* storage blocked: skip the notice */ }
-    const guideNotice = guideSeen ? '' : `
-      <div class="card compact notice-card" id="guideNotice">
-        <span class="notice-text">📖 <strong>New:</strong> tap the book icon in the top bar for the Guide. It explains every sticker and has tips for walking.</span>
-        <div class="row" style="margin-top:8px;">
-          <button type="button" id="guideNoticeOpen" class="btn primary small-btn">Open the Guide</button>
-          <button type="button" id="guideNoticeDismiss" class="btn small-btn">Dismiss</button>
-        </div>
-      </div>`;
-    const lastUpdatedLine = guideNotice + (state.lastScrapeAt
+    const lastUpdatedLine = (state.lastScrapeAt
       ? `<p class="muted small" style="margin:0 0 6px;">Last updated ${fmtDate(state.lastScrapeAt)} · ${fmtClock(state.lastScrapeAt)}</p>`
       : '');
     const filterRow = `
@@ -3059,7 +3182,7 @@
 
     if (!visibleDogs.length) {
       appEl.innerHTML = lastUpdatedLine + filterRow + `<p class="empty-state">No dogs match this filter.</p>`;
-      appEl.scrollTop = state.availableScrollTop;
+      restoreScroll(state.availableScrollTop);
       wireAvailableFilters();
       return;
     }
@@ -3090,7 +3213,7 @@
         </div>`;
     }).join('');
     appEl.innerHTML = lastUpdatedLine + filterRow + `<div class="stack tight">${cards}</div>`;
-    appEl.scrollTop = state.availableScrollTop;
+    restoreScroll(state.availableScrollTop);
     wireAvailableFilters();
     wireDogActionButtons(appEl);
     appEl.querySelectorAll('.checkoff-check').forEach((cb) => {
@@ -3115,15 +3238,6 @@
   }
 
   function wireAvailableFilters() {
-    const dismissGuideNotice = () => {
-      try { localStorage.setItem('sw_guide_notice_dismissed', '1'); } catch (e) { /* ignore */ }
-      const n = document.getElementById('guideNotice');
-      if (n) n.remove();
-    };
-    const noticeOpen = document.getElementById('guideNoticeOpen');
-    if (noticeOpen) noticeOpen.addEventListener('click', () => { dismissGuideNotice(); openGuide(); });
-    const noticeDismiss = document.getElementById('guideNoticeDismiss');
-    if (noticeDismiss) noticeDismiss.addEventListener('click', dismissGuideNotice);
     // Wired here (not just in the has-results branch) so search still works
     // once it narrows down to zero matches — otherwise the input above it
     // never gets its listener and typing/backspacing does nothing.
@@ -3538,6 +3652,36 @@
   }
 
   // ---------- Stats tab ----------
+  // A newest-first list of days as collapsible month rows (Lifetime stats'
+  // Shelter Visits, and Together's past days). Only the newest month starts
+  // open; which ones are open is kept in state[openKey] so it survives
+  // stepping into a day and back.
+  function visitMonthsHtml(days, keyOf, rowHtml, summary, openKey) {
+    const months = [];
+    for (const day of days) {
+      const key = keyOf(day).slice(0, 7);
+      if (!months.length || months[months.length - 1].key !== key) months.push({ key, days: [] });
+      months[months.length - 1].days.push(day);
+    }
+    if (!state[openKey]) state[openKey] = new Set(months.length ? [months[0].key] : []);
+    const monthLabel = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }); };
+    return months.map((mo) => `
+      <details class="visit-month" data-month="${mo.key}"${state[openKey].has(mo.key) ? ' open' : ''}>
+        <summary class="card compact visit-month-head">
+          <span><strong>${monthLabel(mo.key)}</strong>
+          <span class="muted small"> · ${summary(mo.days)}</span></span>
+          <span class="visit-month-chevron muted">▾</span>
+        </summary>
+        <div class="stack">${mo.days.map(rowHtml).join('')}</div>
+      </details>`).join('');
+  }
+  function wireVisitMonths(openKey) {
+    appEl.querySelectorAll('.visit-month').forEach((el) => el.addEventListener('toggle', () => {
+      if (el.open) state[openKey].add(el.dataset.month);
+      else state[openKey].delete(el.dataset.month);
+    }));
+  }
+
   // Always refetches, even when returning to a previously-opened day view —
   // otherwise switching tabs away and back would keep showing stale data.
   // Two views live under the Stats tab: your own numbers, and "Together" --
@@ -3547,10 +3691,11 @@
       <div class="seg" role="tablist" aria-label="Stats view">
         <button type="button" class="seg-btn ${state.statsScope === 'mine' ? 'on' : ''}" data-scope="mine" role="tab" aria-selected="${state.statsScope === 'mine'}">My stats</button>
         <button type="button" class="seg-btn ${state.statsScope === 'together' ? 'on' : ''}" data-scope="together" role="tab" aria-selected="${state.statsScope === 'together'}">Together</button>
+        <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
       </div>`;
   }
   function wireStatsScopeSwitch() {
-    appEl.querySelectorAll('.seg-btn').forEach((b) => b.addEventListener('click', () => {
+    appEl.querySelectorAll('.seg-btn[data-scope]').forEach((b) => b.addEventListener('click', () => {
       if (b.dataset.scope === state.statsScope) return;
       state.statsScope = b.dataset.scope;
       state.togetherDay = null;
@@ -3563,7 +3708,7 @@
     const myTab = state.tab;
     let data;
     try {
-      data = await api('/api/impact?days=30');
+      data = await api('/api/impact?days=all');
     } catch (err) {
       if (state.tab === myTab) showLoadError('the shared stats', err, renderStats);
       return;
@@ -3583,25 +3728,30 @@
       ? `<div class="stat-grid three">${tile(t.walks, 'Walks today', dogsNote(t.walks, t.dogs))}${tile(hours(t.seconds) + ' h', 'Collective walk time')}${tile(avg(t), 'Average walk')}</div>
          ${t.sessions.length ? `<div class="stat-grid" style="margin-top:10px;">${t.sessions.map((s) => tile(s.walks, `${esc(s.label)} walks`, `avg ${avg(s)}`)).join('')}</div>` : ''}`
       : `<div class="card compact center"><p class="muted" style="margin:0;">Today's combined walks show up here as the day goes on. 🐾</p></div>`;
-    const dayRows = data.days.filter((d) => d.dateKey !== (t && t.dateKey)).map((d) => `
+    const dayRow = (d) => `
       <div class="card compact together-day" data-date="${esc(d.dateKey)}" role="button" tabindex="0">
         <div class="together-day-head">
           <strong>${fmtDayHeading(d.dateKey)}</strong>
           <span class="muted small">${d.walks} walks${d.dogs !== d.walks ? ` (${d.dogs} dogs)` : ''} · ${hours(d.seconds)} h · avg ${avg(d)} · tap for details ›</span>
         </div>
         ${d.sessions.length ? `<div class="together-sessions">${d.sessions.map((s) => `<span class="badge neutral">${esc(s.label)}: ${s.walks} walks</span>`).join(' ')}</div>` : ''}
-      </div>`).join('');
+      </div>`;
+    // Past days grouped by month, newest open, same as Lifetime stats.
+    const dayRows = visitMonthsHtml(data.days.filter((d) => d.dateKey !== (t && t.dateKey)), (d) => d.dateKey, dayRow,
+      (days) => { const walks = days.reduce((n, d) => n + d.walks, 0); return `${days.length} day${days.length === 1 ? '' : 's'} · ${walks} walks · ${hours(days.reduce((n, d) => n + d.seconds, 0))} h`; },
+      'togetherOpenMonths');
     const a = data.allTime;
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
       <h2 class="section-heading" style="margin-top:0;">Together today</h2>
       ${todayHtml}
       ${t ? `<button type="button" class="btn together-open" data-date="${esc(t.dateKey)}" style="margin-top:10px;">See today's walks in order ›</button>` : ''}
-      ${dayRows ? `<h2 class="section-heading">Recent days</h2><div class="stack tight">${dayRows}</div>` : ''}
+      ${dayRows ? `<h2 class="section-heading">Past days</h2><div class="stack tight">${dayRows}</div>` : ''}
       <h2 class="section-heading">Since we started tracking</h2>
       <div class="stat-grid three">${tile(a.walks, 'Walks', dogsNote(a.walks, a.dogs))}${tile(hours(a.seconds) + ' h', 'Collective walk time')}${tile(avg(a), 'Average walk')}</div>
       <p class="small muted center" style="margin-top:14px;">Everyone's walks, combined. No names or individual numbers are shown or stored here, ever. Days and sessions with fewer than ${data.minCell} walks are left out of the lists (they still count in the totals).</p>`;
     wireStatsScopeSwitch();
+    wireVisitMonths('togetherOpenMonths');
     appEl.querySelectorAll('[data-date]').forEach((el) => {
       const open = () => { state.togetherDay = el.dataset.date; renderTogetherDay(); };
       el.addEventListener('click', open);
@@ -3658,7 +3808,95 @@
     }));
   }
 
+  // Every dog's notes in one list (dogs still at the shelter): shared tips,
+  // notes from walks, and your own private notes, newest first. Tapping a dog
+  // opens its profile, where the tips and your note can be edited; the list
+  // refreshes when that closes.
+  async function renderAllNotes() {
+    const myTab = state.tab;
+    let data;
+    try {
+      data = await api(`/api/notes${state.notesMine ? '?scope=mine' : ''}`);
+    } catch (err) {
+      if (state.tab === myTab) showLoadError('the notes', err, renderStats);
+      return;
+    }
+    if (state.tab !== myTab || state.statsScope !== 'notes') return;
+    const kindLabel = { tip: 'Tip', walk: state.notesMine ? 'From your walk' : 'From a walk', private: 'Private · only you' };
+    const groupHtml = (g) => `
+      <div class="card compact all-notes-dog" data-dogid="${g.dog.id}">
+        <div class="all-notes-head" role="button" tabindex="0">
+          <img loading="lazy" decoding="async" class="dog-photo small" src="${g.dog.photoUrl ? esc(g.dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
+          <div class="dog-info">
+            <p class="dog-name">${esc(g.dog.name)}</p>
+            <p class="dog-meta">${g.notes.length} note${g.notes.length === 1 ? '' : 's'}${g.dog.kennelLocation ? ` · 🏠 ${esc(g.dog.kennelLocation)}` : ''} · tap to open ›</p>
+          </div>
+        </div>
+        <ul class="tip-list">
+          ${g.notes.map((n) => `<li class="tip-item${n.kind === 'walk' ? ' tip-item-walk' : ''}">
+            <span class="tip-bullet">•</span>
+            <span class="tip-text">${esc(n.body)} <span class="tip-date">${kindLabel[n.kind]} · ${fmtNoteDate(n.at)}</span></span>
+          </li>`).join('')}
+        </ul>
+      </div>`;
+    const matches = (g, q) => !q || g.dog.name.toLowerCase().includes(q) || g.notes.some((n) => n.body.toLowerCase().includes(q));
+    appEl.innerHTML = `
+      ${statsScopeSwitchHtml()}
+      <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : 'All dog notes'}</h2>
+      <div class="seg seg-small" role="tablist" aria-label="Whose notes">
+        <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? '' : 'on'}" data-mine="0" role="tab" aria-selected="${!state.notesMine}">All notes</button>
+        <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? 'on' : ''}" data-mine="1" role="tab" aria-selected="${state.notesMine}">My notes</button>
+      </div>
+      ${data.dogs.length ? `<input type="search" id="allNotesSearch" class="all-notes-search" placeholder="Search by dog or word…" value="${esc(state.notesQuery)}" />` : ''}
+      <div class="stack tight" id="allNotesList"></div>
+      <p class="small muted center" style="margin-top:14px;">${state.notesMine
+    ? 'Dogs still at the shelter. Your private notes and the notes from your walks. Shared tips have no owner, so they\'re only under All notes.'
+    : 'Dogs still at the shelter. Tips and walk notes never show who wrote them; private notes are yours alone.'}</p>`;
+    wireStatsScopeSwitch();
+    appEl.querySelectorAll('.notes-scope-btn').forEach((b) => b.addEventListener('click', () => {
+      const mine = b.dataset.mine === '1';
+      if (mine === state.notesMine) return;
+      state.notesMine = mine;
+      renderAllNotes();
+    }));
+    const list = document.getElementById('allNotesList');
+    const draw = () => {
+      const q = state.notesQuery.trim().toLowerCase();
+      const shown = data.dogs.filter((g) => matches(g, q));
+      list.innerHTML = shown.length
+        ? shown.map(groupHtml).join('')
+        : `<div class="card compact center"><p class="muted" style="margin:0;">${data.dogs.length ? 'No notes match that search.'
+          : state.notesMine ? 'No notes of yours yet. Private notes and notes you leave at the end of a walk show up here. 🐾'
+          : 'No notes yet. Tips and walk notes for any dog will show up here. 🐾'}</p></div>`;
+      list.querySelectorAll('.all-notes-head').forEach((head) => {
+        const open = async () => {
+          try {
+            const { dog, walks } = await api(`/api/dogs/${head.parentElement.dataset.dogid}?userId=${state.currentUser.id}`);
+            showProfileSheet(dog, walks);
+            const watch = new MutationObserver(() => {
+              if (!profileSheet.classList.contains('hidden')) return;
+              watch.disconnect();
+              if (state.tab !== myTab || state.statsScope !== 'notes') return;
+              const top = appEl.scrollTop;
+              renderAllNotes().then(() => { appEl.scrollTop = top; });
+            });
+            watch.observe(profileSheet, { attributes: true, attributeFilter: ['class'] });
+          } catch (err) { toast(err.message, 'error'); }
+        };
+        head.addEventListener('click', open);
+        head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+      });
+    };
+    draw();
+    const search = document.getElementById('allNotesSearch');
+    if (search) search.addEventListener('input', () => { state.notesQuery = search.value; draw(); });
+  }
+
   async function renderStats() {
+    if (state.statsScope === 'notes') {
+      appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+      return renderAllNotes();
+    }
     if (state.statsScope === 'together') {
       if (state.togetherDay) return renderTogetherDay();
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
@@ -3704,7 +3942,7 @@
       return;
     }
 
-    const dayRows = state.statsDays.map((day) => `
+    const dayRow = (day) => `
       <div class="card dog-card" data-daykey="${esc(day.key)}">
         <div class="dog-info">
           <p class="dog-name">${fmtDayHeading(day.key)}</p>
@@ -3712,7 +3950,12 @@
           <p class="dog-meta">${fmtClock(day.firstStart)} – ${fmtClock(day.lastEnd)}</p>
         </div>
         <span class="muted">›</span>
-      </div>`).join('');
+      </div>`;
+    // Visits grouped by month, collapsed except the newest, so a long history
+    // doesn't push By Dog far down the page.
+    const dayRows = visitMonthsHtml(state.statsDays, (day) => day.key, dayRow,
+      (days) => { const walks = days.reduce((n, d) => n + d.walkCount, 0); return `${days.length} visit${days.length === 1 ? '' : 's'} · ${walks} walk${walks === 1 ? '' : 's'}`; },
+      'statsOpenMonths');
 
     state.statsPerDogRaw = data.perDog;
     const presentCount = data.perDog.filter((d) => d.stillListed).length;
@@ -3724,11 +3967,12 @@
     const byDogRows = renderByDogRows(data.perDog);
 
     appEl.innerHTML = heading + rangeToggle + tiles +
-      `<h2 class="section-heading">Shelter Visits</h2><div class="stack">${dayRows}</div>` +
+      `<h2 class="section-heading">Shelter Visits</h2><div class="stack tight">${dayRows}</div>` +
       `<h2 class="section-heading">By Dog</h2>${byDogFilterRow}<div class="stack" id="byDogList">${byDogRows}</div>`;
 
     wireStatsRangeToggle();
     wireByDogList();
+    wireVisitMonths('statsOpenMonths');
     document.getElementById('statsPresentOnlyCheck').addEventListener('change', (e) => {
       state.statsPresentOnly = e.target.checked;
       document.getElementById('byDogList').innerHTML = renderByDogRows(state.statsPerDogRaw);
@@ -3754,9 +3998,10 @@
     });
   }
 
-  // One completed walk as an editable card (times, delete, original-times
-  // badge). Shared by the Today view and the per-day view so editing works
-  // the same from either -- no need to detour through lifetime stats.
+  // One completed walk as an editable card (times, activity, delete,
+  // original-times badge, and a shortcut to the dog's tips/private note).
+  // Shared by the Today view and the per-day view so editing works the same
+  // from either -- no need to detour through lifetime stats.
   function statsWalkCardHtml(w, prefix) {
     return `
       <div class="card dog-card" data-dogid="${w.dog_id}">
@@ -3774,7 +4019,8 @@
           <p class="dog-meta nowrap">🏠 ${esc(w.location || '-')}</p>
           <p class="small">${w.notes ? esc(w.notes) : '<span class="muted">No notes</span>'}</p>
           <div class="row" style="margin-top:6px;align-items:center;justify-content:flex-end;">
-            <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit times" aria-label="Edit times">✎</button>
+            <button class="btn small-btn walk-action-btn dog-notes-btn" data-dog-id="${w.dog_id}" title="${esc(w.dog_name)}'s tips and your private note" aria-label="${esc(w.dog_name)}'s notes">📝 Dog notes</button>
+            <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit walk (times, activity)" aria-label="Edit walk">✎</button>
             <button class="btn danger walk-action-btn delete-walk-btn" data-id="${w.id}" data-name="${esc(w.dog_name)}" title="Delete walk" aria-label="Delete walk">🗑</button>
           </div>
         </div>
@@ -3790,7 +4036,7 @@
         } catch (err) { toast(err.message, 'error'); }
       };
       card.querySelector('.dog-photo').addEventListener('click', openProfile);
-      card.querySelector('.dog-name').addEventListener('click', openProfile);
+      card.querySelector('.dog-name').addEventListener('click', (e) => { if (!tapOnNameControl(e)) openProfile(); });
     });
     document.querySelectorAll('.delete-walk-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
@@ -3818,6 +4064,12 @@
         document.querySelector(`.edit-times-row[data-id="${btn.dataset.id}"]`).classList.remove('hidden');
       });
     });
+    document.querySelectorAll('.dog-notes-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showDogNotesPopup(btn.dataset.dogId);
+      });
+    });
     document.querySelectorAll('.save-times-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -3835,14 +4087,12 @@
           if (endTime && endTime <= startTime) { appAlert('The end time has to be after the start time.'); return; }
         }
         try {
-          await api(`/api/walks/${btn.dataset.id}`, {
-            method: 'PUT',
-            body: JSON.stringify(timesTouched ? {
-              startedAt: localTimeToIso(dayKey, startTime),
-              endedAt: endTime ? localTimeToIso(dayKey, endTime) : null,
-              activity
-            } : { activity })
-          });
+          const body = timesTouched ? {
+            startedAt: localTimeToIso(dayKey, startTime),
+            endedAt: endTime ? localTimeToIso(dayKey, endTime) : null,
+            activity
+          } : { activity };
+          await api(`/api/walks/${btn.dataset.id}`, { method: 'PUT', body: JSON.stringify(body) });
           await refresh();
         } catch (err) { appAlert(err.message); }
       });
@@ -4017,7 +4267,7 @@
             ? `<img loading="lazy" decoding="async" class="dog-photo small${r.kind === 'adopted' ? ' photo-bio-trigger' : ''}"${r.kind === 'adopted' ? ` data-dog-id="${r.dog_id}"` : ''} src="${r.photo_url ? esc(r.photo_url) : '/icons/icon-192.png'}" alt="" />`
             : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind, r.detail)}</div>`}
           <div class="dog-info">
-            <p class="dog-name">${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
+            <p class="dog-name${r.dog_id && r.kind === 'adopted' ? ' photo-bio-trigger" style="cursor:pointer;" data-dog-id="' + r.dog_id : ''}">${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
             ${r.personalHighlight ? '<span class="badge eligible">You walked this dog</span>' : ''}
             <p class="dog-meta">${fmtDate(r.occurred_at)}</p>
           </div>
@@ -4039,6 +4289,7 @@
     appEl.innerHTML = unreadRows.length && readRows.length
       ? `<div class="stack">${unreadHtml}</div><h2 class="section-heading" style="margin-top:18px;">Previous updates</h2><div class="stack">${readHtml}</div>`
       : `<div class="stack">${unreadHtml}${readHtml}</div>`;
+    state.updatesHtml = appEl.innerHTML;
     wireDogActionButtons(appEl);
     // Mark as seen only after actually rendering the list (not just on
     // fetch) -- the rows just shown keep their already-computed `unread`
@@ -4048,6 +4299,20 @@
     } catch (err) { /* non-critical; badge will just re-show next refresh */ }
     state.unreadUpdatesCount = 0;
     updateUpdatesBadge();
+  }
+
+  // Back from a dog opened off the Updates feed: put back exactly the list
+  // that was left, at the same scroll spot, instead of refetching. A fresh
+  // fetch would start at the top, and the cards marked unread on that visit
+  // would have lost their green border and "Previous updates" split, so the
+  // list wouldn't line up with where the person was anyway.
+  function restoreUpdates() {
+    if (!state.updatesHtml) return render();
+    appEl.classList.remove('caution-stripes', 'age-block', 'pb-only-bg', 'evo-caution-bg');
+    lastWalkPhase = null;
+    appEl.innerHTML = state.updatesHtml;
+    wireDogActionButtons(appEl);
+    restoreScroll(state.updatesScrollTop);
   }
 
   function updateUpdatesBadge() {
@@ -4251,6 +4516,7 @@
     btn.innerHTML = inWalk ? `${activityInfo(state.walk.activity).emoji}<span class="tab-label">Walk</span>` : '📷<span class="tab-label">Scan</span>';
   }
 
+  let lastWalkPhase = null;
   function renderWalk() {
     appEl.classList.remove('caution-stripes', 'age-block', 'pb-only-bg', 'evo-caution-bg');
     updateWalkTabLabel();
@@ -4262,9 +4528,17 @@
       topbarTitle.textContent = w.phase === 'active' || w.phase === 'ending' ? `${label} in Progress`
         : w.phase === 'summary' ? `${label} Complete` : TAB_TITLES.walk;
     }
+    // A new step (a dog just scanned, a walk just started...) opens at the
+    // top, where the dog and the check-out time are -- not wherever the last
+    // screen was scrolled to. Re-rendering the same step keeps its place.
+    if (w.phase !== lastWalkPhase) {
+      lastWalkPhase = w.phase;
+      appEl.scrollTop = 0;
+    }
     if (w.phase === 'idle') return renderWalkIdle();
     if (w.phase === 'scanning') return renderWalkScanning();
     if (w.phase === 'confirm') return renderWalkConfirm();
+    if (w.phase === 'unlisted') return renderWalkUnlisted();
     if (w.phase === 'active') return renderWalkActive();
     if (w.phase === 'ending') return renderWalkEnding();
     if (w.phase === 'summary') return renderWalkSummary();
@@ -4457,10 +4731,24 @@
     selectDogById(animalId);
   }
 
+  // Bumped by every Back, so a lookup still loading when Back is pressed
+  // doesn't then paint its dog over the list that was just gone back to
+  // (and drag that list's remembered scroll spot to the top with it).
+  let dogLookupSeq = 0;
   async function selectDogById(animalId) {
     appEl.innerHTML = `<p class="muted small center">Looking up dog…</p>`;
+    const lookup = ++dogLookupSeq;
+    const stale = () => lookup !== dogLookupSeq || state.tab !== 'walk';
     try {
       const { dog, walks } = await api(`/api/dogs/${animalId}?userId=${state.currentUser.id}`);
+      if (stale()) return;
+      if (dog.awaitingListing) { // walked before from this card, still not listed
+        state.walk.phase = 'unlisted';
+        state.walk.unlistedId = dog.id;
+        state.walk.dog = dog;
+        renderWalk();
+        return;
+      }
       state.walk.phase = 'confirm';
       state.walk.dog = dog;
       state.walk.allWalks = walks;
@@ -4473,6 +4761,14 @@
       };
       renderWalk();
     } catch (err) {
+      if (stale()) return;
+      if (err.status === 404 && err.body && err.body.notListedYet) {
+        state.walk.phase = 'unlisted';
+        state.walk.unlistedId = err.body.id;
+        state.walk.dog = null;
+        renderWalk();
+        return;
+      }
       appEl.innerHTML = `
         <div class="card center">
           <p>${esc(err.message)}</p>
@@ -4483,6 +4779,120 @@
         renderWalk();
       });
     }
+  }
+
+  // A kennel card whose dog isn't in the shelter's online listing yet (the
+  // card gets printed first, now and then). The walk still starts, filed
+  // under the card's Animal ID; when the listing catches up (the scraper
+  // runs every 30 minutes) the real details land on that same ID, walk and all.
+  function renderWalkUnlisted() {
+    const id = state.walk.unlistedId;
+    const known = state.walk.dog; // a stand-in from an earlier walk on this card, if any
+    const startActivity = usualActivity();
+    appEl.innerHTML = `
+      <div class="stack tight walk-confirm">
+        <div class="card unlisted-card">
+          <img class="dog-photo unlisted-photo" src="/dog-silhouettes/${encodeURIComponent(String(id))}.svg?v=1" alt="" />
+          <p class="dog-name" style="margin:0 0 6px;">📋 New kennel card · ID ${esc(String(id))}</p>
+          <p style="margin:0 0 8px;">We don't have this dog's details yet. The shelter printed their kennel card before adding them to the online listing, which Shelter Walk checks every 30 minutes.</p>
+          <p style="margin:0;"><strong>You can still walk them.</strong> We'll keep this walk under ID ${esc(String(id))} and add it to the dog's record as soon as their details come in.</p>
+        </div>
+        <div class="card compact">
+          <label class="small">Check the kennel card yourself first</label>
+          <ul class="small" style="margin:6px 0 10px;padding-left:20px;">
+            <li><strong>Age:</strong> puppies under 6 months old can't be walked.</li>
+            <li><strong>Stickers:</strong> make sure your level is cleared for any behavior or EVO stickers on the card.</li>
+          </ul>
+          <label style="display:block;">Kennel location</label>
+          ${kennelLetterPickerHtml('locationPicker', (known && known.kennelLocation) || '')}
+        </div>
+        <div class="row start-row">
+          <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
+          <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
+        </div>
+        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+        <button id="backToScanBtn2" class="btn">Scan a different dog</button>
+      </div>`;
+    wireKennelLetterPicker('locationPicker');
+    const changeBtn = document.getElementById('changeActivityBtn');
+    const pickRow = document.getElementById('activityPickRow');
+    const startBtn = document.getElementById('startWalkBtn');
+    changeBtn.addEventListener('click', () => {
+      const open = pickRow.classList.toggle('hidden') === false;
+      changeBtn.setAttribute('aria-expanded', String(open));
+    });
+    pickRow.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-activity]');
+      if (!chip) return;
+      startBtn.dataset.activity = chip.dataset.activity;
+      startBtn.textContent = startActivityLabel(chip.dataset.activity);
+      pickRow.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+      pickRow.classList.add('hidden');
+      changeBtn.setAttribute('aria-expanded', 'false');
+    });
+    startBtn.addEventListener('click', async () => {
+      const activity = startBtn.dataset.activity || 'walk';
+      const location = kennelLetterPickerValue('locationPicker');
+      startBtn.disabled = true;
+      try {
+        const res = await api('/api/walks/start', {
+          method: 'POST',
+          body: JSON.stringify({ dogId: id, location, userId: state.currentUser.id, activity, unlisted: true })
+        });
+        const { dog, walks } = await api(`/api/dogs/${id}?userId=${state.currentUser.id}`);
+        dog.kennelLocation = res.location;
+        Object.assign(state.walk, {
+          dog,
+          allWalks: walks,
+          walkId: res.walkId,
+          startedAt: res.startedAt,
+          stopsAt: res.stopsAt,
+          closesAt: res.closesAt,
+          autoStopped: false,
+          activity,
+          location: res.location || location,
+          phase: 'active'
+        });
+        renderWalk();
+      } catch (err) {
+        appAlert(err.message);
+        startBtn.disabled = false;
+      }
+    });
+    document.getElementById('backToScanBtn2').addEventListener('click', () => {
+      state.walk.phase = 'scanning';
+      renderWalk();
+    });
+  }
+
+  // Soft timing tip from the shelter's "Which dogs should I walk?" sign:
+  // first walks in the morning, non-POO second walks mid-day, POO dogs'
+  // last walks after 4pm (POO asterisk close to 7pm). Only ever a nudge
+  // about a dog's 2nd walk; never blocks anything.
+  function walkTimingHint(dog, walks) {
+    const today = todayKey();
+    const walksToday = (walks || []).filter((w) => w.started_at && dateKey(w.started_at) === today).length;
+    if (walksToday !== 1) return '';
+    const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' })
+      .formatToParts(new Date());
+    const hour = Number(parts.find((p) => p.type === 'hour').value) + Number(parts.find((p) => p.type === 'minute').value) / 60;
+    const poo = dog.pooStatus === 'poo' || dog.pooStatus === 'priority';
+    const star = dog.pooStatus === 'priority';
+    if (hour < 11) {
+      if (star) return '';
+      return poo
+        ? 'This dog already had a walk today. Mornings are for first walks, and POO dogs\' second walk is best after 4pm, so they go out late.'
+        : 'This dog already had a walk today. Mornings are for first walks; non-POO second walks are best mid-day (11am to 4pm).';
+    }
+    if (hour < 16) {
+      if (!poo) return '';
+      return star
+        ? 'Consider waiting: a POO asterisk dog\'s last walk is best close to 7pm. A quick potty break now is fine.'
+        : 'Consider waiting: POO dogs\' last walk is best after 4pm. A quick potty break now is fine.';
+    }
+    if (!poo) return 'Evenings are for POO dogs\' last walks. If any POO dogs still need theirs, consider walking them first.';
+    if (star && hour < 18) return 'A POO asterisk dog\'s last walk is best close to 7pm. POO dogs with only 1 walk come first.';
+    return '';
   }
 
   const startActivityLabel = (key) => `${activityInfo(key).emoji} Start ${activityInfo(key).label}`;
@@ -4511,10 +4921,13 @@
       eligibilityBadge = `<span class="badge caution">⚠ ${esc(notEligibleReasonText(dog))}</span>`;
     }
 
+    const timingHint = walkTimingHint(dog, state.walk.allWalks);
+
     appEl.innerHTML = `
       <div class="stack tight walk-confirm">
-        ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies 6 months or younger can't be walked - no exceptions.</strong></div>` : ''}
+        ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies under 6 months old can't be walked - no exceptions.</strong></div>` : ''}
         ${!tooYoung && dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
+        ${!tooYoung && timingHint ? `<div class="timing-hint" role="note">ℹ️ ${esc(timingHint)} <button type="button" class="link-btn" id="timingHintGuideBtn">Which dogs should I walk?</button></div>` : ''}
         <div class="card compact" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
             <svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="currentColor" aria-hidden="true">
@@ -4524,9 +4937,9 @@
           <div class="dog-card">
             <img loading="lazy" decoding="async" class="dog-photo photo-bio-trigger" data-dog-id="${dog.id}" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
-              <p class="dog-name">${esc(dog.name)} ${markerBadges(dog)}</p>
+              <p class="dog-name photo-bio-trigger" data-dog-id="${dog.id}" style="cursor:pointer;">${esc(dog.name)} ${markerBadges(dog)}</p>
               <p class="dog-meta">${esc(dog.breed || '')} · ${esc(dog.sex || '')} · ${esc(dog.age || '')} · ID ${dog.id}</p>
-              <p class="dog-meta">${shelterDaysHtml(dog)} days in shelter</p>
+              <p class="dog-meta">${shelterDaysHtml(dog)} in shelter</p>
               ${dog.currentWalk && dog.currentWalk.userId !== state.currentUser.id ? currentWalkBadge(dog) : ''}
               ${eligibilityBadge}
             </div>
@@ -4602,6 +5015,8 @@
     }
     wireMarkerPicker(state.walk.pendingMarkers, checkDirty);
     mountDogNotes(appEl.querySelector('.dog-notes-mount'), dog, state.walk.allWalks);
+    const timingGuideBtn = document.getElementById('timingHintGuideBtn');
+    if (timingGuideBtn) timingGuideBtn.addEventListener('click', () => openGuide('which dogs'));
     wireKennelLetterPicker('locationPicker', checkDirty);
 
     if (state.currentUser.isPrivileged) {
@@ -4855,6 +5270,7 @@
           <p class="muted small center" style="margin-top:-8px;">⏰ Check-out time - write this on the kennel</p>
           <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
           <p class="muted small center" style="margin-top:-6px;">ID ${w.dog.id}</p>
+          ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This walk will be added to their record once the shelter lists them.</p>` : ''}
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
           <div class="timer-display" id="timerDisplay">00:00</div>
         </div>
@@ -4887,8 +5303,11 @@
         const activity = chip.dataset.activity;
         if (activity === (w.activity || 'walk')) return;
         try {
-          await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ activity }) });
+          const res = await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ activity }) });
           state.walk.activity = activity;
+          // A daycation has its own time limit, so switching moves the stop.
+          if (res.stopsAt) state.walk.stopsAt = res.stopsAt;
+          state.walk.closesAt = res.closesAt || null;
           const a = activityInfo(activity);
           document.querySelectorAll('#activityChoice [data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
           document.getElementById('endWalkBtn').textContent = `End ${a.label}`;
@@ -4959,8 +5378,15 @@
       const left = (stopsMs() - Date.now()) / 1000;
       const text = document.getElementById('autoStopText');
       const card = document.getElementById('autoStopCard');
-      if (text) text.textContent = `Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())} (${fmtElapsed(Math.max(0, left))} left)`;
+      const daycation = state.walk.activity === 'daycation';
+      if (text) {
+        text.textContent = daycation
+          ? `🚗 Daycations can last up to ${DAYCATION_HOURS} hours. Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())}.`
+          : `Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())} (${fmtElapsed(Math.max(0, left))} left)`;
+      }
       if (card) card.classList.toggle('warn', left <= 180);
+      const extendBtn = document.getElementById('extendWalkBtn');
+      if (extendBtn) extendBtn.classList.toggle('hidden', daycation);
       if (left <= 0) { clearInterval(timerInterval); handleAutoStopped(); }
     };
     tick();
@@ -5010,7 +5436,8 @@
     const startedMs = new Date(w.startedAt).getTime();
     // Walks end by closing time (7:15pm), so nothing later can be picked.
     const closesMs = w.closesAt ? new Date(w.closesAt).getTime() : Infinity;
-    const latestMs = () => Math.min(Date.now(), startedMs + 3 * 3600000, closesMs);
+    const maxHours = maxActivityHours(w.activity);
+    const latestMs = () => Math.min(Date.now(), startedMs + maxHours * 3600000, closesMs);
     const stoppedAtClosing = wrapUp && new Date(w.wrapUpEndedAt).getTime() >= closesMs;
     appEl.innerHTML = `
       <div class="stack">
@@ -5019,8 +5446,8 @@
           ${wrapUp ? `
           <p class="small autostop-note">⏱ ${stoppedAtClosing
     ? `Walks end at ${fmtClock(w.closesAt)}, so this one stopped automatically then.`
-    : `This walk reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.`}</p>
-          <label>When did the walk end?</label>
+    : `This ${activityInfo(w.activity).noun} reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.`}</p>
+          <label>When did the ${activityInfo(w.activity).noun} end?</label>
           <div id="endTimeChoice" class="marker-row" style="gap:6px;">
             ${stoppedAtClosing ? '' : '<button type="button" class="btn small-btn filter-chip active" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>'}
             <button type="button" class="btn small-btn filter-chip ${stoppedAtClosing ? 'active' : ''}" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(w.wrapUpEndedAt)}</button>
@@ -5079,7 +5506,7 @@
       if (endedAt && choice === 'pick') {
         const ms = new Date(endedAt).getTime();
         if (ms > Date.now()) { appAlert("The end time can't be in the future."); return; }
-        if (ms > startedMs + 3 * 3600000) { appAlert("Walks can't be longer than 3 hours."); return; }
+        if (ms > startedMs + maxHours * 3600000) { appAlert(`${w.activity === 'daycation' ? 'Daycations' : 'Walks'} can't be longer than ${maxHours} hours.`); return; }
         if (ms > closesMs) { appAlert(`Walks end by ${fmtClock(w.closesAt)}, so the end time can't be later than that.`); return; }
       }
       const body = wrapUp ? { notes, ...(endedAt ? { endedAt } : {}) } : { notes, endTappedAt: tappedAt };
@@ -5152,6 +5579,37 @@
     });
   }
 
+  // "End walk" on a walk alert (sw.js): the same as tapping End Walk, at the
+  // moment the button was tapped. Anything odd about that time (clock skew,
+  // before the walk began): now instead. Only for the walk still running here.
+  function notificationEndTime(at, startedAt) {
+    const ms = new Date(at).getTime();
+    if (!Number.isFinite(ms) || ms > Date.now() || ms < new Date(startedAt).getTime()) return new Date().toISOString();
+    return new Date(ms).toISOString();
+  }
+  function endWalkFromNotification(walkId, at) {
+    if (state.walk.phase !== 'active' || String(state.walk.walkId) !== String(walkId)) return;
+    clearInterval(timerInterval);
+    state.walk.endTappedAt = notificationEndTime(at, state.walk.startedAt);
+    state.walk.phase = 'ending';
+    if (state.tab === 'walk') renderWalk();
+    else switchTab('walk');
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const msg = event.data || {};
+      if (msg.type === 'end-walk') endWalkFromNotification(msg.walkId, msg.at);
+      if (msg.type === 'walk-extended' && state.walk.phase === 'active' && String(state.walk.walkId) === String(msg.walkId)) {
+        state.walk.stopsAt = msg.stopsAt;
+      }
+    });
+  }
+  // Opened by "End walk" with the app closed: /?endWalk=<id>&at=<time>.
+  // Read once, before the URL is tidied away.
+  const launchParams = new URLSearchParams(window.location.search);
+  const pendingEnd = launchParams.get('endWalk') ? { walkId: launchParams.get('endWalk'), at: launchParams.get('at') } : null;
+  if (window.location.search) history.replaceState(history.state, '', window.location.pathname);
+
   // ---------- Init ----------
   // Runs once a user is known (either restored from localStorage or just
   // picked) — resumes an in-progress walk of THEIRS if any, else honors the
@@ -5174,6 +5632,10 @@
           activity: walk.activity,
           location: walk.location
         };
+        if (pendingEnd && String(pendingEnd.walkId) === String(walk.id)) {
+          state.walk.endTappedAt = notificationEndTime(pendingEnd.at, walk.started_at);
+          state.walk.phase = 'ending';
+        }
         switchTab('walk');
         return;
       }

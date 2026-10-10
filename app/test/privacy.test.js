@@ -63,6 +63,11 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
     for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['dogs', 'label', 'seconds', 'walks']);
   }
   assert.equal(r.json.allTime.walks, 5, 'everyone\'s walks are combined');
+  // The whole history (grouped by month in the app) has the same shape.
+  const all = await call('GET', '/api/impact?days=all');
+  assert.equal(all.status, 200);
+  assert.deepEqual(Object.keys(all.json).sort(), ['allTime', 'days', 'minCell', 'today']);
+  assert.equal(all.text.toLowerCase().includes('alice'), false);
 });
 
 test('quiet days and sessions are not listed, so nobody can be singled out', async () => {
@@ -145,6 +150,30 @@ test('shared tips carry no author, private notes are visible only to their write
   // Alice sees her own.
   const asAlice = await call('GET', '/api/dogs/1/notes', { user: ALICE });
   assert.equal(asAlice.json.privateNote.body, SECRET);
+
+  // The all-notes list follows the same rules: tips for everyone, no authors,
+  // and a private note only for the one who wrote it.
+  const allBob = await call('GET', '/api/notes', { user: BOB });
+  assert.equal(allBob.status, 200);
+  const bobDog1 = allBob.json.dogs.find((g) => g.dog.id === 1);
+  assert.ok(bobDog1.notes.some((n) => n.kind === 'tip' && n.body === TIP && n.at));
+  assert.ok(!allBob.text.includes(SECRET), "Bob can't see Alice's private note");
+  for (const g of allBob.json.dogs) for (const n of g.notes) assert.deepEqual(Object.keys(n).filter((k) => !['kind', 'id', 'body', 'at'].includes(k)), [], 'no author fields on any note');
+  const allStaff = await call('GET', '/api/notes', { user: STAFF, staff: true });
+  assert.ok(!allStaff.text.includes(SECRET), 'staff cannot read private notes in the list either');
+  const allAlice = await call('GET', '/api/notes', { user: ALICE });
+  assert.ok(allAlice.json.dogs.find((g) => g.dog.id === 1).notes.some((n) => n.kind === 'private' && n.body === SECRET));
+
+  // "My notes": only the asker's private notes and their own walks' notes;
+  // shared tips never, not even for whoever wrote them.
+  const kinds = (r) => r.json.dogs.flatMap((g) => g.notes);
+  const myAlice = kinds(await call('GET', '/api/notes?scope=mine', { user: ALICE }));
+  assert.ok(myAlice.some((n) => n.kind === 'private' && n.body === SECRET));
+  assert.ok(myAlice.some((n) => n.kind === 'walk' && n.body === 'alice private note'), 'her own walk notes');
+  assert.ok(!myAlice.some((n) => n.kind === 'tip'), 'no tips, even the one she wrote');
+  const myBob = await call('GET', '/api/notes?scope=mine', { user: BOB });
+  assert.ok(!myBob.text.includes(SECRET) && !myBob.text.includes('alice private note'), 'nothing of Alice\'s in Bob\'s');
+  assert.ok(kinds(myBob).every((n) => n.kind !== 'tip'));
 });
 
 test('tips are a whiteboard: anyone can edit or delete any tip; input is validated', async () => {

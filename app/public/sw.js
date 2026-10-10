@@ -2,7 +2,7 @@
 // is often spotty, so the app should still show the last-known data (with
 // the page's own "Offline" banner) instead of going blank on a dropped
 // connection.
-const CACHE_NAME = 'shelter-walk-v4';
+const CACHE_NAME = 'shelter-walk-v5';
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
@@ -151,8 +151,13 @@ async function showPush(data) {
     // The small icon in the notification bar: Android draws only its shape,
     // so it's a white paw on transparent (the app icon showed as a square).
     badge: '/icons/badge-96.png',
-    data: { url: data.url || '/' }
+    data: { url: data.url || '/', walkId: data.walkId || null, dogName: data.dogName || null }
   };
+  // Buttons (walk alerts: +10 min / End walk). Android shows them; iPhone
+  // ignores them and a tap just opens the app, which can do the same things.
+  if (Array.isArray(data.actions) && data.actions.length) {
+    options.actions = data.actions.slice(0, 2).map((a) => ({ action: a.action, title: a.title }));
+  }
   // e.g. an adoption: the dog's photo as the big picture and the small icon.
   if (data.image && data.image.startsWith('/')) {
     const photo = await notificationImage(data.image);
@@ -177,8 +182,72 @@ self.addEventListener('push', (event) => {
   event.waitUntil(showPush(data));
 });
 
+// Bring the app forward if it's already open (telling it what to do), or
+// open it at `url` (which says the same thing in its query string).
+async function openApp(url, message) {
+  const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const open = windows.find((c) => new URL(c.url).origin === self.location.origin);
+  if (open) {
+    if (message) open.postMessage(message);
+    // Allowed from a notification tap; refused (harmlessly) anywhere else.
+    try { await open.focus(); } catch (err) { /* not from a user tap */ }
+    return open;
+  }
+  return clients.openWindow(url);
+}
+
+const clockLabel = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+// "+10 min" on a walk alert: extend the walk without opening the app, then
+// replace the alert with the new stop time (or say why it couldn't).
+async function extendFromNotification(data) {
+  const name = data.dogName || 'Your walk';
+  let res;
+  try {
+    res = await fetch(`/api/walks/${data.walkId}/extend`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (err) {
+    // Offline, or an expired sign-in redirecting to the login site: the app
+    // can sort either out.
+    return openApp('/');
+  }
+  let body = {};
+  try { body = await res.json(); } catch (err) { return openApp('/'); }
+  if (res.ok) {
+    const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    windows.forEach((c) => c.postMessage({ type: 'walk-extended', walkId: data.walkId, stopsAt: body.stopsAt }));
+    return self.registration.showNotification(`${name}: added ${body.addedMinutes} minutes`, {
+      body: `Now stops automatically at ${clockLabel(body.stopsAt)}.`,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/badge-96.png',
+      tag: 'walk',
+      silent: true,
+      data: { url: '/', walkId: data.walkId, dogName: data.dogName },
+      actions: [{ action: 'extend', title: '+10 min' }, { action: 'end', title: 'End walk' }]
+    });
+  }
+  return self.registration.showNotification(`${name}: couldn't add time`, {
+    body: body.error || 'Open the app to check on this walk.',
+    icon: '/icons/icon-192.png',
+    badge: '/icons/badge-96.png',
+    tag: 'walk',
+    data: { url: '/' }
+  });
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || '/';
-  event.waitUntil(clients.openWindow(url));
+  const data = event.notification.data || {};
+  const url = data.url || '/';
+  if (event.action === 'extend' && data.walkId) {
+    event.waitUntil(extendFromNotification(data));
+  } else if (event.action === 'end' && data.walkId) {
+    // The walk ended when the button was tapped, not when the app finishes opening.
+    const at = new Date().toISOString();
+    event.waitUntil(openApp(`/?endWalk=${encodeURIComponent(data.walkId)}&at=${encodeURIComponent(at)}`,
+      { type: 'end-walk', walkId: data.walkId, at }));
+  } else {
+    event.waitUntil(openApp(url));
+  }
 });

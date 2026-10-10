@@ -145,8 +145,47 @@ test('a dog that was actually adopted, then reappears, is labeled differently th
   assert.match(row.title, /returned to the shelter after being adopted/);
 });
 
+test('a kennel card walked before the listing had the dog: the listing fills it in, walk kept, counted as new', async () => {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO dogs (shelter_buddy_id, name, still_listed, awaiting_listing, first_seen_at, last_seen_at, kennel_location, blue_markers)
+    VALUES (262999, 'Dog #262999', 0, 1, ?, ?, 'B', '["blue","blue_j"]')`).run(now, now);
+  db.prepare("INSERT INTO walks (dog_id, location, started_at, ended_at, duration_seconds) VALUES (262999, 'B', ?, ?, 600)").run(now, now);
+  listing = [...dogs(28), { shelterBuddyId: 1052, name: 'Rocky', sex: 'Male', age: '4 Years', dateInShelter: now },
+    { shelterBuddyId: 262999, name: 'Biscuit', sex: 'Male', age: '2 Years', dateInShelter: now }];
+  const r = await runScrape();
+  assert.equal(r.ok, true);
+  const dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = 262999').get();
+  assert.equal(dog.name, 'Biscuit');
+  assert.equal(dog.still_listed, 1);
+  assert.equal(dog.awaiting_listing, 0);
+  assert.equal(dog.previous_days_in_shelter, 0, 'not treated as a returning dog');
+  assert.equal(dog.kennel_location, 'B', 'the kennel letter the walker set is kept');
+  assert.equal(dog.blue_markers, '["blue","blue_j"]', 'stickers the walker set are kept');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM walks WHERE dog_id = 262999').get().c, 1, "today's walk is on the real dog");
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM shelter_events WHERE dog_id = 262999 AND kind = 'new_dog'").get().c, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM shelter_events WHERE dog_id = 262999 AND kind = 'returned'").get().c, 0);
+});
+
 test('scrape runs are recorded for the health check', () => {
   const last = db.prepare('SELECT ok FROM scrape_runs ORDER BY id DESC LIMIT 1').get();
   assert.equal(last.ok, 1);
   assert.ok(db.prepare('SELECT COUNT(*) c FROM scrape_runs WHERE ok = 0').get().c >= 2);
+});
+
+test('a new listing without a name yet is skipped, not a crash, and added once it has one', async () => {
+  const before = listed();
+  const newDogs = events('new_dog');
+  listing = [...listing, { shelterBuddyId: 5000, name: null, sex: 'Male', age: '1 Years', dateInShelter: '2026-10-01T00:00:00' }];
+  const r = await runScrape();
+  assert.equal(r.ok, true, 'the rest of the dogs still refresh');
+  assert.equal(listed(), before);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM dogs WHERE shelter_buddy_id = 5000').get().c, 0);
+  const run = db.prepare('SELECT note FROM scrape_runs ORDER BY id DESC LIMIT 1').get();
+  assert.match(run.note, /without a name yet/);
+
+  listing = listing.map((d) => (d.shelterBuddyId === 5000 ? { ...d, name: 'Newbie' } : d));
+  assert.equal((await runScrape()).ok, true);
+  assert.equal(listed(), before + 1);
+  assert.equal(events('new_dog'), newDogs + 1);
+  assert.equal(db.prepare('SELECT name FROM dogs WHERE shelter_buddy_id = 5000').get().name, 'Newbie');
 });

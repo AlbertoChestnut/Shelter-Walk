@@ -24,6 +24,9 @@ dog listings; no shelter data, photos, or volunteer data are in this repository.
 
 ## Features
 
+New volunteers: see the illustrated [tutorial](docs/TUTORIAL.md).
+
+
 - **Available list** with filters, experience levels, and time-slot awareness
 - **Scan a kennel QR code**, start a timed walk, add notes at the end
 - **Walk limits:** walks stop automatically after 30 minutes (extendable to 3

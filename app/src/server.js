@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const QRCode = require('qrcode');
 const db = require('./db');
 const { runScrape, IMAGES_DIR } = require('./scraper');
+const { dogSilhouetteSvg, silhouetteUrl } = require('./silhouette');
 const push = require('./push');
 const wiki = require('./wiki');
 const impact = require('./impact');
@@ -76,6 +77,13 @@ function sendIndex(req, res) {
 }
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
+// Drawn from the ID alone and versioned in its URL, so it can be cached for good.
+app.get('/dog-silhouettes/:file', (req, res) => {
+  const m = /^(\d{1,9})\.svg$/.exec(req.params.file);
+  if (!m) return res.status(404).end();
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.type('image/svg+xml').send(dogSilhouetteSvg(Number(m[1])));
+});
 // Cached dog photos — survive a dog's listing disappearing after adoption.
 app.use('/cached-images', express.static(IMAGES_DIR, { maxAge: '30d' }));
 app.get('/', sendIndex);
@@ -93,7 +101,7 @@ function daysInShelter(dateInShelter, asOf) {
   return Math.floor((now - then) / (1000 * 60 * 60 * 24));
 }
 
-const MAX_PUPPY_AGE_MONTHS = 6;
+const MIN_WALK_AGE_MONTHS = 6;
 // Shelter age strings look like "3 Years and 8 Months", "9 Months", or "8 Weeks".
 function parseAgeMonths(ageStr) {
   if (!ageStr) return null;
@@ -181,10 +189,12 @@ function setKennelLocation(dogId, letter) {
   return { location: letter, name: dog.name };
 }
 
+// No photo yet (not listed, or listed without one): the dog's own drawn
+// silhouette (silhouette.js), so several such dogs still look different.
 function cachedPhotoUrl(dogId, rawUrl) {
   const cachedPath = path.join(IMAGES_DIR, `${dogId}.jpg`);
   if (fs.existsSync(cachedPath)) return `/cached-images/${dogId}.jpg`;
-  return rawUrl || null;
+  return rawUrl || silhouetteUrl(dogId);
 }
 
 function resolvePhotoUrl(row) {
@@ -197,8 +207,10 @@ function resolvePhotoUrl(row) {
 // the ONLY thing that setting affects -- see the near-identical
 // substitution in the walk-start "already out" check below, the other
 // place a name could otherwise leak while a walk is in progress.
-// Walk, cuddle, matchmaking or play group: all timed and counted the same way.
-const ACTIVITIES = ['walk', 'cuddle', 'matchmaking', 'playgroup'];
+// Walk, cuddle, matchmaking, play group or daycation: all timed and counted
+// the same way. A daycation (the dog out for the day) has its own time limit,
+// see walkLimitMinutes below.
+const ACTIVITIES = ['walk', 'cuddle', 'matchmaking', 'playgroup', 'daycation'];
 // The activity sent in a request, 'walk' when none was sent, or null if it
 // isn't one we know.
 function activityFrom(value) {
@@ -244,7 +256,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const walkedByMe = myStats.count > 0;
 
   const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
-  const ageMonthsHard = ageMonths != null && ageMonths <= MAX_PUPPY_AGE_MONTHS;
+  const ageMonthsHard = ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS;
   const blueMarkers = row.blue_markers ? JSON.parse(row.blue_markers) : [];
   const hasEvo = blueMarkers.includes('blue_evo');
   const hasAnyBlue = blueMarkers.length > 0;
@@ -306,6 +318,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     tags,
     photoUrl: resolvePhotoUrl(row),
     stillListed: !!row.still_listed,
+    awaitingListing: !!row.awaiting_listing,
     removedAt: row.removed_at || null,
     // Alumni (returned dog, privileged-only): bonus days count toward
     // eligibility on top of actual time in shelter, without changing the
@@ -323,7 +336,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     // 'days' | null (when eligible).
     notEligibleReason,
     minDaysForLevel: level.minDays,
-    // Hard rule, no override: puppies 6 months or younger can never be walked.
+    // Hard rule, no override: puppies under 6 months old can never be walked.
     tooYoung: ageMonthsHard,
     blueMarkers,
     pooStatus: row.poo_status || 'none',
@@ -459,7 +472,7 @@ function walkAccessDenied(req, res, walk) {
 wiki.register(app, { db, resolveAuthedUser });
 impact.register(app, { db });
 impact.registerDay(app, { db, cachedPhotoUrl });
-const notesApi = notes.register(app, { db, isStaffOrPrivileged });
+const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
 account.register(app, { db });
 
 app.get('/api/me', (req, res) => {
@@ -789,12 +802,16 @@ function validDateKey(v) {
 }
 
 // ---- Dogs ----
+// The shelter's Animal IDs (kennel card QR/barcode) are 4-9 digit numbers.
+const looksLikeAnimalId = (id) => Number.isInteger(id) && id >= 1000 && id <= 999999999;
+
 app.get('/api/dogs', (req, res) => {
   const experienceLevel = resolveExperienceLevel(req.query.userId);
   const onlyEligible = req.query.eligible === 'true';
   const onlyListed = req.query.all !== 'true';
   const todayKey = validDateKey(req.query.dateKey);
-  let rows = db.prepare('SELECT * FROM dogs' + (onlyListed ? ' WHERE still_listed = 1' : '')).all();
+  // Stand-ins for not-yet-listed kennel cards aren't real dogs yet: no list shows them.
+  let rows = db.prepare('SELECT * FROM dogs WHERE awaiting_listing = 0' + (onlyListed ? ' AND still_listed = 1' : '')).all();
   let dogs = rows.map((r) => serializeDog(r, experienceLevel, todayKey, req.query.userId));
   if (onlyEligible) {
     dogs = dogs.filter((d) => d.eligible);
@@ -806,7 +823,11 @@ app.get('/api/dogs', (req, res) => {
 app.get('/api/dogs/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const row = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(id);
-  if (!row) return res.status(404).json({ error: 'Dog not found in local database. Try refreshing the shelter data.' });
+  if (!row) {
+    // A kennel card can be printed before the shelter's listing has the dog.
+    // notListedYet: the app offers to walk them anyway on this ID.
+    return res.status(404).json({ error: "We don't have this dog's details yet.", notListedYet: looksLikeAnimalId(id), id });
+  }
   const experienceLevel = resolveExperienceLevel(req.query.userId);
   const todayKey = validDateKey(req.query.dateKey);
   const dog = serializeDog(row, experienceLevel, todayKey, req.query.userId);
@@ -1175,7 +1196,7 @@ app.get('/api/walks/active', (req, res) => {
   if (row) {
     row.photo_url = cachedPhotoUrl(row.dog_id, row.photo_url);
     row.stopsAt = walkStopsAt(row);
-    row.closesAt = walkHours.walkWindow(row.started_at).closesAt.toISOString();
+    row.closesAt = closesAtFor(row);
   }
   // No walk going, but the time limit stopped one recently and the walker
   // hasn't said when it really ended: the app shows its end screen again.
@@ -1184,7 +1205,7 @@ app.get('/api/walks/active', (req, res) => {
     WHERE user_id = ? AND wrap_up_pending = 1 AND auto_stopped = 1 AND ended_at > ?
     ORDER BY started_at DESC LIMIT 1
   `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
-  if (wrapUp) wrapUp.closesAt = walkHours.walkWindow(wrapUp.started_at).closesAt.toISOString();
+  if (wrapUp) wrapUp.closesAt = closesAtFor(wrapUp);
   res.json({ walk: row || null, wrapUp: wrapUp || null });
 });
 
@@ -1199,15 +1220,23 @@ app.post('/api/walks/start', (req, res) => {
   if (hoursError) return res.status(409).json({ error: hoursError });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
-  const dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
+  let dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
+  // A kennel card the shelter's listing doesn't have yet: walk them on the
+  // card's Animal ID through a stand-in row (see awaiting_listing in db.js).
+  if (!dog && req.body.unlisted === true && looksLikeAnimalId(Number(dogId))) {
+    const nowIso = new Date().toISOString();
+    db.prepare(`INSERT INTO dogs (shelter_buddy_id, name, still_listed, awaiting_listing, first_seen_at, last_seen_at)
+      VALUES (?, ?, 0, 1, ?, ?)`).run(Number(dogId), `Dog #${Number(dogId)}`, nowIso, nowIso);
+    dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
+  }
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
-  if (!dog.still_listed) {
+  if (!dog.still_listed && !dog.awaiting_listing) {
     return res.status(409).json({ error: `${dog.name} is no longer listed at the shelter, so a walk can't be started.` });
   }
 
   const ageMonths = parseAgeMonths(dog.age);
-  if (ageMonths != null && ageMonths <= MAX_PUPPY_AGE_MONTHS) {
-    return res.status(403).json({ error: `${dog.name} is too young to walk (${dog.age}). Puppies 6 months or younger can't be walked, no exceptions.` });
+  if (ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS) {
+    return res.status(403).json({ error: `${dog.name} is too young to walk (${dog.age}). Puppies under 6 months old can't be walked, no exceptions.` });
   }
 
   // Per-user, not global — two different people can each have their own
@@ -1269,9 +1298,9 @@ app.post('/api/walks/start', (req, res) => {
     dogId,
     location: finalLocation,
     startedAt,
-    stopsAt: walkStopsAt({ started_at: startedAt, extend_minutes: 0 }),
-    closesAt: walkHours.walkWindow(startedAt).closesAt.toISOString(),
-    autoStopMinutes: AUTO_STOP_MINUTES
+    stopsAt: walkStopsAt({ started_at: startedAt, extend_minutes: 0, activity }),
+    closesAt: closesAtFor({ started_at: startedAt, activity }),
+    autoStopMinutes: walkLimitMinutes({ extend_minutes: 0, activity })
   });
 });
 
@@ -1284,6 +1313,9 @@ app.post('/api/walks/:id/extend', (req, res) => {
   if (walkAccessDenied(req, res, walk)) return;
   if (walk.ended_at) {
     return res.status(409).json({ error: walk.auto_stopped ? 'This walk already stopped automatically. You can fix its time in Stats.' : 'This walk has already ended.', autoStopped: !!walk.auto_stopped });
+  }
+  if (walk.activity === 'daycation') {
+    return res.status(409).json({ error: `Daycations already run up to ${DAYCATION_MINUTES / 60} hours, so there's no time to add.` });
   }
   if (walkStopsAt(walk) === walkHours.walkWindow(walk.started_at).closesAt.toISOString()) {
     return res.status(409).json({ error: `Walks end at ${walkHours.CLOSE_LABEL}, so this one can't go any longer.` });
@@ -1332,14 +1364,16 @@ app.put('/api/walks/:id/end', (req, res) => {
     endedAt = tapped ? tapped.iso : new Date(handEndLimit).toISOString();
     recordedEnd = endedAt;
   } else {
-    const closesMs = walkHours.walkWindow(walk.started_at).closesAt.getTime();
-    const latest = Math.min(now, new Date(walk.started_at).getTime() + MAX_TOTAL_MINUTES * 60000, closesMs);
+    const daycation = walk.activity === 'daycation';
+    const closesMs = daycation ? Infinity : walkHours.walkWindow(walk.started_at).closesAt.getTime();
+    const maxMinutes = daycation ? DAYCATION_MINUTES : MAX_TOTAL_MINUTES;
+    const latest = Math.min(now, new Date(walk.started_at).getTime() + maxMinutes * 60000, closesMs);
     // A walk can't run past closing, so "just now" (or any time) after it
     // means it ended at closing.
     const sentMs = req.body.endedAt ? new Date(req.body.endedAt).getTime() : NaN;
     const sent = Number.isFinite(sentMs) && sentMs > closesMs && closesMs <= now ? new Date(closesMs).toISOString() : req.body.endedAt;
     const picked = sent
-      ? walkEndTime(sent, walk.started_at, latest, `Walks can't be longer than ${MAX_TOTAL_MINUTES / 60} hours.`)
+      ? walkEndTime(sent, walk.started_at, latest, `${daycation ? 'Daycations' : 'Walks'} can't be longer than ${maxMinutes / 60} hours.`)
       : { iso: walk.ended_at };
     if (picked.error) return res.status(400).json({ error: picked.error });
     endedAt = picked.iso;
@@ -1377,8 +1411,13 @@ app.put('/api/walks/:id', (req, res) => {
     const checked = walkEndTime(endedAt, startedAt, Date.now());
     if (checked.error) return res.status(400).json({ error: checked.error });
   }
-  if (startedAt !== walk.started_at || endedAt !== walk.ended_at) {
-    const hoursError = walkHours.walkHoursError(startedAt, endedAt);
+  // Switching what an open walk is mid-way: a daycation's 12 hours can't
+  // turn into a walk that's already past a walk's limit.
+  if (!walk.ended_at && activity !== walk.activity && Date.now() >= new Date(walkStopsAt({ ...walk, activity })).getTime()) {
+    return res.status(409).json({ error: `This has already gone past the time limit for a ${activity}. End it instead, then fix it in Stats if needed.` });
+  }
+  if (startedAt !== walk.started_at || endedAt !== walk.ended_at || activity !== walk.activity) {
+    const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
     if (hoursError) return res.status(400).json({ error: hoursError });
   }
   const durationSeconds = endedAt
@@ -1398,7 +1437,13 @@ app.put('/api/walks/:id', (req, res) => {
            original_started_at = ?, original_ended_at = ?
     WHERE id = ?
   `).run(startedAt, endedAt, location, notes, durationSeconds, activity, timesChanged ? 1 : 0, originalStartedAt, originalEndedAt, id);
-  res.json({ id, startedAt, endedAt, location, notes, durationSeconds, activity, edited: timesChanged || !!walk.edited });
+  // Still going: the time limit depends on the activity, so send it back.
+  const running = endedAt ? null : { ...walk, started_at: startedAt, activity };
+  res.json({
+    id, startedAt, endedAt, location, notes, durationSeconds, activity, edited: timesChanged || !!walk.edited,
+    stopsAt: running ? walkStopsAt(running) : undefined,
+    closesAt: running ? closesAtFor(running) : undefined
+  });
 });
 
 // Log a walk that already happened but was never entered live (forgot to
@@ -1416,10 +1461,10 @@ app.post('/api/walks/manual', (req, res) => {
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const checked = walkEndTime(endedAt, startedAt, Date.now());
   if (checked.error) return res.status(400).json({ error: checked.error });
-  const hoursError = walkHours.walkHoursError(startedAt, endedAt);
-  if (hoursError) return res.status(400).json({ error: hoursError });
   const activity = activityFrom(req.body.activity);
   if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
+  const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
+  if (hoursError) return res.status(400).json({ error: hoursError });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
   const cleanLocation = location && String(location).trim() ? String(location).trim() : null;
   const info = db.prepare(`
@@ -1629,12 +1674,23 @@ const WARN_MINUTES_BEFORE = 3;
 // How long a stopped walk keeps asking for its real end time when the app is
 // next opened. After that it keeps the time-limit end (fixable in Stats).
 const WRAP_UP_HOURS = 12;
-const walkLimitMinutes = (w) => AUTO_STOP_MINUTES + (w.extend_minutes || 0);
+// A daycation (the dog out with the volunteer for the day) is different:
+// it runs up to DAYCATION_MINUTES with no extending, no length alerts, and
+// isn't stopped at closing time (it still has to start during walking hours).
+const DAYCATION_MINUTES = 12 * 60;
+const walkLimitMinutes = (w) => (w.activity === 'daycation' ? DAYCATION_MINUTES : AUTO_STOP_MINUTES + (w.extend_minutes || 0));
 // Whichever comes first: the time limit, or closing time for walks (7:15pm).
-const walkStopsAt = (w) => new Date(Math.min(
-  new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000,
-  walkHours.walkWindow(w.started_at).closesAt.getTime()
-)).toISOString();
+const walkStopsAt = (w) => {
+  const limitMs = new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000;
+  if (w.activity === 'daycation') return new Date(limitMs).toISOString();
+  return new Date(Math.min(limitMs, walkHours.walkWindow(w.started_at).closesAt.getTime())).toISOString();
+};
+// Closing time for the walk's day, or null for a daycation (not held to it).
+const closesAtFor = (w) => (w.activity === 'daycation' ? null : walkHours.walkWindow(w.started_at).closesAt.toISOString());
+// Walking-hours check for a start/end pair; a daycation only has to start
+// during walking hours.
+const walkHoursErrorFor = (activity, startedAt, endedAt) =>
+  walkHours.walkHoursError(startedAt, activity === 'daycation' ? null : endedAt);
 
 // Phones and the server can disagree on the time by a little, so an end
 // time up to this far in the future is taken as "now", not rejected.
@@ -1655,7 +1711,16 @@ function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time ca
 // A length alert more than this late (the walker added it partway through
 // the walk, or the server was down) is skipped rather than sent stale.
 const ALERT_GRACE_MS = 2 * 60000;
-const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at play group' };
+const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at play group', daycation: 'on a daycation' };
+// Buttons on the walk alerts. Android shows them (iPhone ignores them, so the
+// tap-to-open path must still do everything); sw.js handles each one.
+const walkAlertActions = (w) => ({
+  walkId: w.id,
+  dogName: w.dog_name || null,
+  actions: w.activity === 'daycation'
+    ? [{ action: 'end', title: 'End daycation' }]
+    : [{ action: 'extend', title: '+10 min' }, { action: 'end', title: 'End walk' }]
+});
 
 function enforceWalkLimits() {
   const open = db.prepare(`
@@ -1670,7 +1735,8 @@ function enforceWalkLimits() {
     const startedMs = new Date(w.started_at).getTime();
     // The walker's length alerts: only the latest one that's due is sent,
     // once, and only if it isn't stale.
-    const due = walkAlertMinutes(w.walk_alert_minutes)
+    // (Not on daycations: walk-length alerts would just be noise all day.)
+    const due = w.activity === 'daycation' ? [] : walkAlertMinutes(w.walk_alert_minutes)
       .filter((m) => m > w.alerted_minutes && startedMs + m * 60000 <= now && now < stopsAt);
     if (due.length) {
       const minutes = Math.max(...due);
@@ -1681,13 +1747,14 @@ function enforceWalkLimits() {
           title: `${w.dog_name || 'Your walk'}: ${minutes} minutes`,
           body: `You've been ${ACTIVITY_VERBS[w.activity] || 'walking'} for ${minutes} minutes.${returnTo ? ` Return to: ${returnTo}` : ''}`,
           url: '/',
-          tag: WALK_PUSH_TAG
+          tag: WALK_PUSH_TAG,
+          ...walkAlertActions(w)
         }).catch(() => {});
       }
     }
     if (now >= stopsAt) {
       const seconds = Math.round((stopsAt - startedMs) / 1000);
-      const atClosing = stopsAt === walkHours.walkWindow(w.started_at).closesAt.getTime();
+      const atClosing = w.activity !== 'daycation' && stopsAt === walkHours.walkWindow(w.started_at).closesAt.getTime();
       db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
         .run(new Date(stopsAt).toISOString(), seconds, w.id);
       console.warn(`[server] auto-stopped walk ${w.id} after ${Math.round(seconds / 60)} min${atClosing ? ' (closing time)' : ''}`);
@@ -1696,7 +1763,9 @@ function enforceWalkLimits() {
           title: `${w.dog_name || 'Your walk'}: stopped automatically`,
           body: atClosing
             ? `Walks end at ${walkHours.CLOSE_LABEL}. Open the app to say when it really ended.`
-            : `Walks stop after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
+            : w.activity === 'daycation'
+              ? `Daycations stop after ${DAYCATION_MINUTES / 60} hours. Open the app to say when it really ended.`
+              : `Walks stop after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
           url: '/',
           tag: WALK_PUSH_TAG
         }).catch(() => {});
@@ -1706,9 +1775,10 @@ function enforceWalkLimits() {
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: ${WARN_MINUTES_BEFORE} minutes left`,
-          body: 'Open the app to add more time, or the walk will stop on its own.',
+          body: w.activity === 'daycation' ? 'The daycation will stop on its own. End it when the dog is back.' : 'Add more time, or the walk will stop on its own.',
           url: '/',
-          tag: WALK_PUSH_TAG
+          tag: WALK_PUSH_TAG,
+          ...walkAlertActions(w)
         }).catch(() => {});
       }
     }

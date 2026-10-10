@@ -13,7 +13,7 @@ const MAX_TIP = 1000;
 const MAX_PRIVATE = 4000;
 const MAX_TIPS_PER_DOG = 300;
 
-function register(app, { db, isStaffOrPrivileged }) {
+function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   const dogExists = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ?');
 
   // What one walker is allowed to see about one dog's notes.
@@ -34,6 +34,49 @@ function register(app, { db, isStaffOrPrivileged }) {
     const dogId = parseInt(req.params.id, 10);
     if (!dogExists.get(dogId)) return res.status(404).json({ error: 'Dog not found' });
     res.json(notesFor(dogId, req.me.id));
+  });
+
+  // Every note in one place, for dogs still at the shelter: the shared tips,
+  // notes left at the end of walks (shown on each dog's profile already), and
+  // the asker's own private notes. Same no-author rule as above. Grouped by
+  // dog, the dog with the newest note first.
+  //
+  // ?scope=mine narrows it to what's the asker's own: their private notes and
+  // the notes from their own walks. Shared tips are never in it: they're a
+  // whiteboard with no owner, so not even their writer gets them marked.
+  app.get('/api/notes', (req, res) => {
+    const mine = req.query.scope === 'mine';
+    const rows = mine ? db.prepare(`
+      SELECT n.dog_id AS dogId, 'private' AS kind, n.id, n.body, n.updated_at AS at
+      FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
+      WHERE d.still_listed = 1 AND n.visibility = 'private' AND n.user_id = ?
+      UNION ALL
+      SELECT w.dog_id, 'walk', NULL, w.notes, w.started_at
+      FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+      WHERE d.still_listed = 1 AND w.user_id = ? AND w.notes IS NOT NULL AND w.notes != '' AND w.ended_at IS NOT NULL
+      ORDER BY at DESC
+    `).all(req.me.id, req.me.id) : db.prepare(`
+      SELECT n.dog_id AS dogId, CASE n.visibility WHEN 'public' THEN 'tip' ELSE 'private' END AS kind,
+             n.id, n.body, CASE n.visibility WHEN 'public' THEN n.created_at ELSE n.updated_at END AS at
+      FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
+      WHERE d.still_listed = 1 AND (n.visibility = 'public' OR n.user_id = ?)
+      UNION ALL
+      SELECT w.dog_id, 'walk', NULL, w.notes, w.started_at
+      FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+      WHERE d.still_listed = 1 AND w.notes IS NOT NULL AND w.notes != '' AND w.ended_at IS NOT NULL
+      ORDER BY at DESC
+    `).all(req.me.id);
+    const dogInfo = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation FROM dogs WHERE shelter_buddy_id = ?');
+    const byDog = new Map();
+    for (const r of rows) {
+      if (!byDog.has(r.dogId)) {
+        const dog = dogInfo.get(r.dogId);
+        if (cachedPhotoUrl) dog.photoUrl = cachedPhotoUrl(dog.id, dog.photoUrl);
+        byDog.set(r.dogId, { dog, notes: [] });
+      }
+      byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.at });
+    }
+    res.json({ dogs: Array.from(byDog.values()) });
   });
 
   app.post('/api/dogs/:id/notes', (req, res) => {

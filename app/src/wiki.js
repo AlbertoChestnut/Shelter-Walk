@@ -120,7 +120,7 @@ function demoSections() {
         '1 year and 100 hours of service.',
         '- Everything above, including EVO dogs.',
         '',
-        'Puppies 6 months or younger can never be walked, at any level.'
+        'Puppies under 6 months old can never be walked, at any level.'
       ].join('\n')
     },
     {
@@ -133,6 +133,14 @@ function demoSections() {
         '1. Open the **Available** tab, or tap **Scan** and scan the QR code on the kennel.',
         '2. Tap **Walk / Edit** on the dog, check the details, then tap **Start Walk**.',
         '3. The timer screen shows the check-out time and where to return the dog.',
+        '',
+        '## New kennel cards (no details yet)',
+        "Sometimes the shelter prints a kennel card before the dog is in its online listing, and brand-new arrivals may not have a name yet. Scanning one of those cards shows **📋 New kennel card** with the card's Animal ID and a drawn placeholder picture.",
+        '',
+        'You can still walk them:',
+        "1. Check the kennel card yourself first: puppies under 6 months old can't be walked, and make sure your level is cleared for any stickers on the card.",
+        '2. Pick the kennel letter and start as usual.',
+        "3. The walk is kept under the card's Animal ID and added to the dog's record as soon as the shelter lists them. The app checks for new dogs every 30 minutes.",
         '',
         '## Finishing a walk',
         '1. Tap **End Walk**, add a note if you like, then **Save & Finish**. The walk ends when you tap End Walk, not when you save.',
@@ -174,6 +182,49 @@ function demoSections() {
   ];
 }
 
+// Sections added after the first seed. Each is inserted once (at the end)
+// on databases that were already seeded, tracked by its own app_meta key,
+// so later edits or deletions by staff still stick.
+function addedSections() {
+  return [
+    {
+      key: 'wiki_added_which_dogs',
+      icon: '🗓️',
+      title: 'Which dogs should I walk?',
+      body: [
+        '**Goal:** every dog gets 2 or more walks a day if possible.',
+        '',
+        '## Morning (7:00am to 11:00am)',
+        '1. POO asterisk',
+        '2. POO',
+        '3. Non-POO',
+        '4. POO asterisk (2nd walks)',
+        '',
+        '## Mid-day (11:00am to 4:00pm)',
+        '1. Non-POO (2nd walks)',
+        '',
+        '## Afternoon / evening (4:00pm to 7:00pm)',
+        '1. POO with 1 walk',
+        '2. POO with an early 2nd walk',
+        '3. POO asterisk (close to 7:00pm)',
+        '4. Non-POO (2nd walks, if time)',
+        '5. Non-POO with an early 2nd walk (if time)',
+        '',
+        '## POO dog timeline',
+        '- **7am:** POO dogs out first, then non-POO for first walks.',
+        '- **12pm:** finish first walks for all. Begin second walks, starting with non-POOs, then POOs.',
+        '- **4pm:** focus on POO dogs\' last walks.',
+        '',
+        'These are general guidelines and are flexible depending on the needs of the day. If possible, POO dogs should get a potty break mid-day.',
+        '',
+        'The app shows a small timing tip on the walk screen when a POO dog\'s walk might be better saved for later. It\'s only a suggestion, never a block.',
+        '',
+        'More info: see "Who do I walk?" in the Volunteers Facebook group.'
+      ].join('\n')
+    }
+  ];
+}
+
 function register(app, { db, resolveAuthedUser }) {
   const seeded = db.prepare("SELECT value FROM app_meta WHERE key = 'wiki_seeded'").get();
   if (!seeded) {
@@ -184,6 +235,17 @@ function register(app, { db, resolveAuthedUser }) {
     db.transaction(() => {
       demoSections().forEach((s, i) => insert.run(s.title, s.icon, s.body, i + 1, now, now, 'demo'));
       db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('wiki_seeded', '1')").run();
+    })();
+  }
+  for (const s of addedSections()) {
+    if (db.prepare('SELECT value FROM app_meta WHERE key = ?').get(s.key)) continue;
+    const now = new Date().toISOString();
+    db.transaction(() => {
+      const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM wiki_sections').get().m;
+      db.prepare(
+        'INSERT INTO wiki_sections (title, icon, body, sort_order, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(s.title, s.icon, s.body, max + 1, now, now, 'demo');
+      db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')").run(s.key);
     })();
   }
 

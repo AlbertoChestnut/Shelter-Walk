@@ -150,6 +150,7 @@ ON CONFLICT(shelter_buddy_id) DO UPDATE SET
   tags = CASE WHEN @hasDetail = 1 THEN excluded.tags ELSE dogs.tags END,
   photo_url = COALESCE(excluded.photo_url, dogs.photo_url),
   still_listed = 1,
+  awaiting_listing = 0,
   missed_scrapes = 0,
   last_seen_at = excluded.last_seen_at,
   removed_at = NULL
@@ -274,58 +275,78 @@ async function doScrape(runId, finish) {
   const now = new Date().toISOString();
   const seenIds = [];
   let detailFailures = 0;
+  let skippedUnnamed = 0;
+  let dogFailures = 0;
 
   for (const item of list) {
     const id = item.shelterBuddyId;
     if (id == null) continue;
-    seenIds.push(id);
     const existing = getDogRow.get(id);
     const { detail, photoUrl } = await fetchDogDetailAndPhoto(id);
+    // Brand-new intakes can be listed before the shelter names them
+    // ("name": null). A dog we already have keeps its last name; a new one
+    // waits for its name and is added on the first scrape that has it.
+    const name = item.name || (detail && detail.name) || (existing && existing.name) || null;
+    if (!name) {
+      skippedUnnamed += 1;
+      continue;
+    }
+    seenIds.push(id);
     if (!detail) detailFailures += 1;
     const tags = detail && detail.tags ? JSON.stringify(detail.tags) : JSON.stringify([]);
 
-    upsertDog.run({
-      id,
-      name: item.name,
-      sex: item.sex || (detail && detail.sex) || null,
-      age: item.age || (detail && detail.age) || null,
-      breed: (detail && detail.primaryBreed) || null,
-      weight: (detail && detail.weight) || null,
-      desexed: (detail && detail.desexed) || null,
-      location: (detail && detail.location) || null,
-      dateInShelter: item.dateInShelter || (detail && detail.dateInShelter) || null,
-      summary: (detail && detail.summary) || null,
-      tags,
-      photoUrl,
-      hasDetail: detail ? 1 : 0,
-      now
-    });
-    // Eager, not deferred to whenever someone first views this dog -- and
-    // now that upsertDog has run, do it before anything else can fail this
-    // iteration, so a dog never sits without an attempted photo.
-    await cacheImageIfNeeded(id, photoUrl);
+    // One dog's bad data must never abort the whole run (and freeze every
+    // other dog's data): log it, keep the dog listed as-is, move on.
+    try {
+      upsertDog.run({
+        id,
+        name,
+        sex: item.sex || (detail && detail.sex) || null,
+        age: item.age || (detail && detail.age) || null,
+        breed: (detail && detail.primaryBreed) || null,
+        weight: (detail && detail.weight) || null,
+        desexed: (detail && detail.desexed) || null,
+        location: (detail && detail.location) || null,
+        dateInShelter: item.dateInShelter || (detail && detail.dateInShelter) || null,
+        summary: (detail && detail.summary) || null,
+        tags,
+        photoUrl,
+        hasDetail: detail ? 1 : 0,
+        now
+      });
+      // Eager, not deferred to whenever someone first views this dog -- and
+      // now that upsertDog has run, do it before anything else can fail this
+      // iteration, so a dog never sits without an attempted photo.
+      await cacheImageIfNeeded(id, photoUrl);
 
-    if (!existing) {
-      logEvent('new_dog', id, `${item.name} was added to the shelter's listing`, now);
-    } else if (!existing.still_listed) {
-      // Returning dog: bank their just-ended stay's length before
-      // date_in_shelter above gets overwritten with their new stay's start
-      // -- but only if they haven't been gone so long that stay no longer
-      // says anything useful about them today (see RETURN_STALE_MONTHS).
-      const leftAt = existing.removed_at || existing.last_seen_at;
-      if (leftAt && new Date(leftAt) >= monthsAgo(RETURN_STALE_MONTHS, now)) {
-        const priorStayDays = daysBetween(existing.date_in_shelter, leftAt);
-        if (priorStayDays > 0) addPreviousDays.run(priorStayDays, id);
-      } else {
-        resetStaleBehaviorMarkers.run(id);
+      // A stand-in from a kennel card scanned before the listing had the dog
+      // (awaiting_listing) is a new arrival too, not a return -- its walks were
+      // already filed under this ID, so they're now on the real dog.
+      if (!existing || existing.awaiting_listing) {
+        logEvent('new_dog', id, `${name} was added to the shelter's listing`, now);
+      } else if (!existing.still_listed) {
+        // Returning dog: bank their just-ended stay's length before
+        // date_in_shelter above gets overwritten with their new stay's start
+        // -- but only if they haven't been gone so long that stay no longer
+        // says anything useful about them today (see RETURN_STALE_MONTHS).
+        const leftAt = existing.removed_at || existing.last_seen_at;
+        if (leftAt && new Date(leftAt) >= monthsAgo(RETURN_STALE_MONTHS, now)) {
+          const priorStayDays = daysBetween(existing.date_in_shelter, leftAt);
+          if (priorStayDays > 0) addPreviousDays.run(priorStayDays, id);
+        } else {
+          resetStaleBehaviorMarkers.run(id);
+        }
+        const adopted = leftAt && wasAdoptedDuringStay.get(id, existing.date_in_shelter, leftAt);
+        logEvent(
+          'returned', id,
+          adopted ? `${name} was returned to the shelter after being adopted` : `${name} is back on the adoption floor`,
+          now,
+          adopted ? 'adopted_return' : 'floor_return'
+        );
       }
-      const adopted = leftAt && wasAdoptedDuringStay.get(id, existing.date_in_shelter, leftAt);
-      logEvent(
-        'returned', id,
-        adopted ? `${item.name} was returned to the shelter after being adopted` : `${item.name} is back on the adoption floor`,
-        now,
-        adopted ? 'adopted_return' : 'floor_return'
-      );
+    } catch (err) {
+      dogFailures += 1;
+      console.error(`[scraper] couldn't save dog ${id}, skipping it this run:`, err.message);
     }
 
     await sleep(250);
@@ -380,7 +401,11 @@ async function doScrape(runId, finish) {
     }).catch(() => {});
   }
 
-  const note = detailFailures ? `${detailFailures} dog detail fetches failed (kept previous data)` : null;
+  const note = [
+    detailFailures && `${detailFailures} dog detail fetches failed (kept previous data)`,
+    skippedUnnamed && `${skippedUnnamed} new listing(s) without a name yet, skipped`,
+    dogFailures && `${dogFailures} dog(s) couldn't be saved, skipped`
+  ].filter(Boolean).join('; ') || null;
   console.log(`[scraper] finished. ${seenIds.length} dogs currently listed.${note ? ' ' + note : ''}`);
   finish(true, seenIds.length, note);
   return { ok: true, count: seenIds.length, finishedAt: new Date().toISOString() };

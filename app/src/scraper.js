@@ -201,6 +201,22 @@ const getWalkersForDog = db.prepare(
   'SELECT DISTINCT user_id FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL AND user_id IS NOT NULL'
 );
 
+// Walkers who've hearted this dog (see favorite_dogs in db.js).
+const getFavoritersForDog = db.prepare('SELECT user_id FROM favorite_dogs WHERE dog_id = ?');
+// Same tag server.js reads isPendingAdoption from.
+const PENDING_ADOPTION_TAG = "I'm getting adopted!";
+
+function dogImageUrl(dogId) {
+  return fs.existsSync(path.join(IMAGES_DIR, `${dogId}.jpg`)) ? `/cached-images/${dogId}.jpg` : undefined;
+}
+
+// A favorite_* push to everyone who hearted this dog and opted into that kind.
+function pushToFavoriters(dogId, prefKey, payload) {
+  for (const { user_id: userId } of getFavoritersForDog.all(dogId)) {
+    if (hasPref(userId, prefKey)) sendPushToUser(userId, { url: '/', image: dogImageUrl(dogId), ...payload }).catch(() => {});
+  }
+}
+
 function logEvent(kind, dogId, title, occurredAt, detail) {
   insertEvent.run(kind, dogId || null, title || null, detail || null, occurredAt || new Date().toISOString());
 }
@@ -324,7 +340,18 @@ async function doScrape(runId, finish) {
       // already filed under this ID, so they're now on the real dog.
       if (!existing || existing.awaiting_listing) {
         logEvent('new_dog', id, `${name} was added to the shelter's listing`, now);
-      } else if (!existing.still_listed) {
+      } else if (existing.still_listed) {
+        // Someone just started adopting a favorite: worth a heads-up while
+        // there's still time to visit. Only on a fresh detail fetch, since a
+        // failed one keeps the old tags (see upsertDog).
+        const wasPending = JSON.parse(existing.tags || '[]').includes(PENDING_ADOPTION_TAG);
+        if (detail && !wasPending && (detail.tags || []).includes(PENDING_ADOPTION_TAG)) {
+          pushToFavoriters(id, 'favorite_pending', {
+            title: `Someone is adopting ${name}`,
+            body: 'One of your favorites may be going home soon.'
+          });
+        }
+      } else {
         // Returning dog: bank their just-ended stay's length before
         // date_in_shelter above gets overwritten with their new stay's start
         // -- but only if they haven't been gone so long that stay no longer
@@ -343,6 +370,10 @@ async function doScrape(runId, finish) {
           now,
           adopted ? 'adopted_return' : 'floor_return'
         );
+        pushToFavoriters(id, 'favorite_returned', {
+          title: `${name} is back at the shelter`,
+          body: 'One of your favorites has returned.'
+        });
       }
     } catch (err) {
       dogFailures += 1;
@@ -364,8 +395,12 @@ async function doScrape(runId, finish) {
       if (adoptedIds.has(dog.id)) {
         logEvent('adopted', dog.id, `${dog.name} was adopted!`, now);
         delistDog.run(now, dog.id);
+        // One push per person, even for a favorite they've also walked.
+        const favoriters = new Set(getFavoritersForDog.all(dog.id)
+          .map((r) => r.user_id).filter((userId) => hasPref(userId, 'favorite_adopted')));
+        favoriters.forEach((userId) => pushes.push({ userId, dog, favorite: true }));
         for (const { user_id: userId } of getWalkersForDog.all(dog.id)) {
-          if (hasPref(userId, 'adopted_walked_dog')) pushes.push({ userId, dog });
+          if (!favoriters.has(userId) && hasPref(userId, 'adopted_walked_dog')) pushes.push({ userId, dog });
         }
       } else if (dog.missed + 1 >= MISSES_BEFORE_DELIST) {
         // A plain removal (transferred, returned to owner, record
@@ -391,13 +426,13 @@ async function doScrape(runId, finish) {
     }
   })();
   // Pushes go out after the transaction commits, never from inside it.
-  for (const { userId, dog } of pushes) {
+  for (const { userId, dog, favorite } of pushes) {
     sendPushToUser(userId, {
       title: `${dog.name} was adopted! 🎉`,
-      body: 'A dog you walked found a home.',
+      body: favorite ? 'One of your favorites found a home.' : 'A dog you walked found a home.',
       url: '/',
       // Shown in the notification (the service worker fetches it).
-      image: fs.existsSync(path.join(IMAGES_DIR, `${dog.id}.jpg`)) ? `/cached-images/${dog.id}.jpg` : undefined
+      image: dogImageUrl(dog.id)
     }).catch(() => {});
   }
 

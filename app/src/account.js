@@ -12,7 +12,7 @@
 //          (tips never stored a visible author anyway);
 //        - everything personal is deleted: name, email, experience level,
 //          notification settings and push subscriptions, saved filters,
-//          private notes, an unfinished walk in progress.
+//          favorite dogs, private notes, an unfinished walk in progress.
 // There is no undo, by design.
 const http = require('http');
 
@@ -90,6 +90,7 @@ function register(app, { db }) {
     db.prepare('DELETE FROM notification_prefs WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM saved_filters WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM favorite_dogs WHERE user_id = ?').run(userId);
     // Guide sections remember the last editor's name; forget it.
     db.prepare('UPDATE wiki_sections SET updated_by = NULL WHERE updated_by = ?').run(name);
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);

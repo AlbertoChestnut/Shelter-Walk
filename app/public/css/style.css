@@ -400,6 +400,25 @@ html[data-theme="dark"] main#app.pb-only-bg {
 .badge.caution { background: #1c1c1c; color: #ffd400; }
 .badge.blocked { background: var(--red-fill); color: white; }
 .badge.out-now { background: #2f6fdb; color: white; }
+.badge.fav { background: #fde8ee; color: #c2185b; }
+html[data-theme="dark"] .badge.fav { background: rgba(236, 64, 122, 0.2); color: #f48fb1; }
+
+/* Heart toggle beside a dog's name (favorites). Sized as a real tap target
+   without pushing the name line taller. */
+.fav-btn {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  margin: -6px 0;
+  min-width: 32px;
+  min-height: 32px;
+  font-size: 1.25rem;
+  line-height: 1;
+  vertical-align: middle;
+  color: var(--muted);
+  cursor: pointer;
+}
+.fav-btn.on { color: #e0245e; }
 
 /* Small inline badges shown next to a dog's name (read-only display). */
 .marker-dot {
@@ -1155,9 +1174,16 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .breed-filter summary, .advanced-filters summary { cursor: pointer; padding: 4px 0; }
 .advanced-filters { border-top: 1px solid var(--border, #ddd); margin-top: 8px; padding-top: 4px; }
 
-/* Activity chips (Settings, scan screen): two per line on a phone. */
+/* Activity chips (Settings, scan screen): Walk on its own line, then the
+   other four two per line. */
 .activity-chips { gap: 6px; }
 .activity-chips .btn { flex: 1 1 calc(50% - 6px); width: auto; }
+.activity-chips .btn[data-activity="walk"] { flex-basis: 100%; }
+/* My Account → Feedback & bug reports */
+.feedback-kinds { gap: 6px; }
+.feedback-kinds .btn { flex: 1 1 0; width: auto; }
+.feedback-body { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.feedback-item.resolved { opacity: 0.6; }
 /* Scan screen: big start button with a small "Change" next to it. */
 .start-row { gap: 8px; align-items: stretch; }
 .start-row #startWalkBtn { flex: 1 1 auto; }

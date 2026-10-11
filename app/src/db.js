@@ -436,6 +436,34 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_dog_notes_private ON dog_notes(dog_id, user_id) WHERE visibility = 'private';
 `);
 
+// Dogs a walker has hearted. Personal, like private notes: drives the
+// "My favorites" filter and the favorite_* push notices (see scraper.js).
+// Kept after a dog leaves the listing, so a favorite that comes back is
+// still a favorite.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS favorite_dogs (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    dog_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, dog_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_favorite_dogs_dog ON favorite_dogs(dog_id);
+`);
+
+// Feedback and bug reports from My Account. Deliberately no user column:
+// like shared tips, a report can never be traced back to whoever sent it.
+// device is the browser's user agent, only when the sender ticks the box.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('bug', 'idea', 'other')),
+    body TEXT NOT NULL,
+    device TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+`);
+
 // Walks stop on their own after AUTO_STOP_MINUTES (see server.js) unless the
 // walker extends them. auto_stopped flags one the system ended (so the record
 // and the stats can say so), extend_minutes is the total time added by hand,

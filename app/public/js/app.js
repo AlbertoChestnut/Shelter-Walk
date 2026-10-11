@@ -353,6 +353,38 @@
   function tapOnNameControl(e) {
     return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge');
   }
+
+  // The heart next to a dog's name, wherever it's shown. One delegated
+  // handler keeps every copy of a dog's heart (card and profile) in step.
+  function favButtonHtml(dog) {
+    const on = !!dog.isFavorite;
+    return `<button type="button" class="fav-btn${on ? ' on' : ''}" data-dog-id="${dog.id}" aria-pressed="${on}" aria-label="${on ? 'Remove from favorites' : 'Add to favorites'}" title="${on ? 'Remove from favorites' : 'Add to favorites'}">${on ? '♥' : '♡'}</button>`;
+  }
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.fav-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const dogId = btn.dataset.dogId;
+    const favorite = !btn.classList.contains('on');
+    const paint = (on) => {
+      document.querySelectorAll(`.fav-btn[data-dog-id="${dogId}"]`).forEach((b) => {
+        b.classList.toggle('on', on);
+        b.textContent = on ? '♥' : '♡';
+        b.setAttribute('aria-pressed', String(on));
+        b.setAttribute('aria-label', on ? 'Remove from favorites' : 'Add to favorites');
+        b.title = on ? 'Remove from favorites' : 'Add to favorites';
+      });
+      (state.availableDogsRaw || []).forEach((d) => { if (String(d.id) === dogId) d.isFavorite = on; });
+    };
+    paint(favorite);
+    try {
+      await api(`/api/users/${state.currentUser.id}/favorites/${dogId}`, { method: 'PUT', body: JSON.stringify({ favorite }) });
+      toast(favorite ? 'Added to your favorites' : 'Removed from your favorites');
+    } catch (err) {
+      paint(!favorite);
+      toast(err.message, 'error');
+    }
+  });
   document.addEventListener('click', async (e) => {
     const trigger = e.target.closest('.photo-bio-trigger');
     if (!trigger || !trigger.dataset.dogId || tapOnNameControl(e)) return;
@@ -594,7 +626,7 @@
     walk: { emoji: '🚶', label: 'Walk', noun: 'walk', out: 'Currently being walked by' },
     cuddle: { emoji: '🤗', label: 'Cuddle', noun: 'cuddle', out: 'Currently cuddling with' },
     matchmaking: { emoji: '💞', label: 'Matchmaking', noun: 'matchmaking session', out: 'Currently at matchmaking with' },
-    playgroup: { emoji: '🎾', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' },
+    playgroup: { emoji: '🥎', label: 'Play Group', noun: 'play group', out: 'Currently at play group with' },
     daycation: { emoji: '🚗', label: 'Daycation', noun: 'daycation', out: 'Currently on a daycation with' }
   };
   const DAYCATION_HOURS = 12;
@@ -958,6 +990,9 @@
     document.getElementById('accountPageMenu').classList.toggle('hidden', page !== 'menu');
     document.getElementById('accountPageProfile').classList.toggle('hidden', page !== 'profile');
     document.getElementById('accountPagePrivacy').classList.toggle('hidden', page !== 'privacy');
+    document.getElementById('accountPageFeedback').classList.toggle('hidden', page !== 'feedback');
+    document.getElementById('accountPageFeedbackInbox').classList.toggle('hidden', page !== 'feedbackInbox');
+    if (page === 'feedbackInbox') loadFeedbackInbox();
     const inner = document.querySelector('#accountSheet .sheet-inner');
     if (inner) inner.scrollTop = 0;
   }
@@ -974,6 +1009,7 @@
     document.getElementById('accountNameStatus').textContent = '';
     document.getElementById('accountHideNameCheck').checked = !!state.currentUser.hideNameWhileWalking;
     document.getElementById('adminPanelLink').classList.toggle('hidden', !state.currentUser.isStaff);
+    document.getElementById('feedbackInboxRow').classList.toggle('hidden', !canReadFeedback());
     // Staff accounts are removed from the staff panel (so the coordinators can
     // never lock themselves out by accident) -- that's specific to deleting
     // the sign-in itself, so it's only this one button, not the data-only one.
@@ -981,6 +1017,83 @@
     openSheet(document.getElementById('accountSheet'), 'account');
   }
   document.getElementById('userBtn').addEventListener('click', openAccountSheet);
+
+  // ---------- Feedback & bug reports ----------
+  // Sent anonymously (the server never stores who sent one). Staff and
+  // privileged accounts read them in My Account → Feedback inbox.
+  const FEEDBACK_KINDS = { bug: '🐞 Bug', idea: '💡 Idea', other: '💬 Other' };
+  const canReadFeedback = () => !!(state.currentUser && (state.currentUser.isStaff || state.currentUser.isPrivileged));
+  let feedbackKind = 'bug';
+  document.querySelectorAll('#feedbackKindPicker [data-kind]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      feedbackKind = btn.dataset.kind;
+      document.querySelectorAll('#feedbackKindPicker [data-kind]').forEach((b) => b.classList.toggle('active', b === btn));
+    });
+  });
+  document.getElementById('sendFeedbackBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('sendFeedbackBtn');
+    const status = document.getElementById('feedbackStatus');
+    const bodyEl = document.getElementById('feedbackBody');
+    if (!bodyEl.value.trim()) { status.textContent = 'Write something first.'; return; }
+    btn.disabled = true;
+    status.textContent = 'Sending…';
+    try {
+      await api('/api/feedback', { method: 'POST', body: JSON.stringify({
+        kind: feedbackKind, body: bodyEl.value, includeDevice: document.getElementById('feedbackDeviceCheck').checked
+      }) });
+      bodyEl.value = '';
+      status.textContent = 'Sent. Thank you!';
+    } catch (err) {
+      status.textContent = err.message || 'Couldn\'t send. Try again in a moment.';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  async function loadFeedbackInbox() {
+    const list = document.getElementById('feedbackInboxList');
+    list.innerHTML = '<p class="small muted">Loading…</p>';
+    let items;
+    try {
+      ({ items } = await api('/api/feedback'));
+    } catch (err) {
+      list.innerHTML = `<p class="small muted">Couldn't load feedback: ${esc(err.message)}</p>`;
+      return;
+    }
+    if (!items.length) { list.innerHTML = '<p class="small muted">No feedback yet.</p>'; return; }
+    list.innerHTML = items.map((f) => `
+      <div class="card compact feedback-item${f.resolvedAt ? ' resolved' : ''}" data-id="${f.id}">
+        <p class="small" style="margin:0 0 4px;"><strong>${FEEDBACK_KINDS[f.kind] || esc(f.kind)}</strong> <span class="muted">· ${fmtDate(f.createdAt)} · ${fmtClock(f.createdAt)}${f.resolvedAt ? ' · resolved' : ''}</span></p>
+        <p class="feedback-body">${esc(f.body)}</p>
+        ${f.device ? `<p class="small muted" style="margin:4px 0 0;word-break:break-word;">${esc(f.device)}</p>` : ''}
+        <div class="row" style="margin-top:8px;gap:8px;">
+          <button type="button" class="btn small-btn" data-action="resolve">${f.resolvedAt ? 'Reopen' : 'Mark resolved'}</button>
+          <button type="button" class="btn small-btn" data-action="delete">Delete</button>
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('.feedback-item').forEach((card) => {
+      const id = card.dataset.id;
+      card.querySelector('[data-action="resolve"]').addEventListener('click', async () => {
+        try {
+          await api(`/api/feedback/${id}`, { method: 'PUT', body: JSON.stringify({ resolved: !card.classList.contains('resolved') }) });
+          loadFeedbackInbox();
+        } catch (err) { alert(err.message); }
+      });
+      card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+        if (!confirm('Delete this report for good?')) return;
+        try {
+          await api(`/api/feedback/${id}`, { method: 'DELETE' });
+          loadFeedbackInbox();
+        } catch (err) { alert(err.message); }
+      });
+    });
+  }
+  // From a "new feedback" notification.
+  function openFeedbackInbox() {
+    if (!canReadFeedback()) return;
+    openAccountSheet();
+    showAccountPage('feedbackInbox');
+  }
   document.getElementById('closeAccountSheetBtn').addEventListener('click', () => {
     closeSheet(document.getElementById('accountSheet'));
   });
@@ -1043,7 +1156,7 @@
     return `
       <div class="policy-doc">
         <h3 style="margin-top:0;">Shelter Walk Privacy Policy</h3>
-        <p class="small muted">Last updated September 23, 2026</p>
+        <p class="small muted">Last updated October 10, 2026</p>
 
         <h4>In plain language</h4>
         <ul>
@@ -1055,6 +1168,9 @@
 
         <h4>What we collect</h4>
         <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown next to your walks while they're in progress, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
+
+        <h4>Feedback and bug reports</h4>
+        <p>Reports sent from My Account are saved without your name or account, so nobody can tell who sent one. If you tick "Include my phone and browser type", your browser's standard identification line is saved with the report (it names the kind of phone and browser, like iPhone and Safari, nothing about you) to help fix bugs. Only staff can read reports, and they can delete them.</p>
 
         <h4>How your email is actually stored</h4>
         <p>Neither this app nor the separate sign-in system ever stores a readable copy of your email, anywhere, at any point. Each keeps a one-way cryptographic fingerprint of it instead (the same idea as how a password is checked without the site ever keeping the password itself) - just enough to recognize you when you come back. Even a full copy of either database is useless for building a list of anyone's email address from it.</p>
@@ -1139,7 +1255,7 @@
     showDangerConfirm({
       title: 'Delete your account',
       intro: [
-        "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, and private notes.",
+        "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, favorite dogs, and private notes.",
         "The walks you did stay in the shelter's records and totals, but they will no longer be connected to you in any way, not even for the site owner. Tips you shared stay on the dogs' boards, without your name.",
         'The site keeps day-to-day backups for 14 days, but only to roll the whole site back after a major problem - restoring one means restoring everyone\'s data to that point in time, not pulling your data back out on its own. Those backups age out completely after 14 days either way.'
       ],
@@ -1805,6 +1921,12 @@
   // ---------- Settings sheet ----------
   const settingsSheet = document.getElementById('settingsSheet');
   const WALK_ALERT_INPUTS = ['settingsWalkAlert1', 'settingsWalkAlert2', 'settingsWalkAlert3'];
+  // Settings checkbox -> notification pref, for the hearted-dog notices.
+  const FAVORITE_PREFS = [
+    ['settingsPrefFavAdopted', 'favorite_adopted'],
+    ['settingsPrefFavPending', 'favorite_pending'],
+    ['settingsPrefFavReturned', 'favorite_returned']
+  ];
   // The walk-length alerts typed in Settings, as whole minutes (empty boxes
   // skipped), or an error message.
   function readWalkAlerts() {
@@ -1861,6 +1983,7 @@
       const { prefs } = await api(`/api/users/${state.currentUser.id}/notification-prefs`);
       document.getElementById('settingsPrefAdopted').checked = !!prefs.adopted_walked_dog;
       document.getElementById('settingsPrefWalkStarted').checked = !!prefs.walk_started;
+      FAVORITE_PREFS.forEach(([inputId, key]) => { document.getElementById(inputId).checked = !!prefs[key]; });
       document.getElementById('settingsShowNewDog').checked = prefs.show_new_dog !== false;
       document.getElementById('settingsShowAdopted').checked = prefs.show_adopted !== false;
       document.getElementById('settingsShowReturned').checked = prefs.show_returned !== false;
@@ -1903,9 +2026,11 @@
       const wantsWalkStarted = document.getElementById('settingsPrefWalkStarted').checked;
       await saveNotificationPref('adopted_walked_dog', wantsAdopted, true);
       await saveNotificationPref('walk_started', wantsWalkStarted, true);
+      const favoritePrefs = FAVORITE_PREFS.map(([inputId, key]) => [key, document.getElementById(inputId).checked]);
+      for (const [key, on] of favoritePrefs) await saveNotificationPref(key, on, true);
       await api(`/api/users/${state.currentUser.id}/walk-alerts`, { method: 'PUT', body: JSON.stringify({ minutes: walkAlerts.minutes }) });
       let pushProblem = false;
-      if (wantsAdopted || wantsWalkStarted || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
+      if (wantsAdopted || wantsWalkStarted || favoritePrefs.some(([, on]) => on) || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
       await saveNotificationPref('show_new_dog', document.getElementById('settingsShowNewDog').checked, true);
       await saveNotificationPref('show_adopted', document.getElementById('settingsShowAdopted').checked, true);
       await saveNotificationPref('show_returned', document.getElementById('settingsShowReturned').checked, true);
@@ -2171,7 +2296,7 @@
     return `
       <button id="closeProfileBtn" class="sheet-close-btn" aria-label="Close">✕</button>
       ${dog.photoUrl ? `<img class="profile-photo photo-lightbox-trigger" src="${esc(dog.photoUrl)}" alt="${esc(dog.name)}" />` : ''}
-      <h2>${esc(dog.name)} ${sexIcon(dog.sex)}
+      <h2>${esc(dog.name)} ${sexIcon(dog.sex)} ${favButtonHtml(dog)}
         <span id="profileMarkerBadges" class="${hasMarkers ? 'marker-badges-toggle' : ''}">${markerBadges(dog)}</span>
       </h2>
       <div id="profileMarkerBreakdown" class="marker-breakdown hidden">${markerBreakdownHtml(dog)}</div>
@@ -2823,7 +2948,8 @@
       star: (d) => !!d.starFlag,
       pb: (d) => !!d.pbFlag,
       pendingAdoption: (d) => !!d.isPendingAdoption,
-      walkedByMe: (d) => !!d.walkedByMe
+      walkedByMe: (d) => !!d.walkedByMe,
+      favorite: (d) => !!d.isFavorite
     };
     Object.entries(singleTests).forEach(([key, test]) => {
       const mode = filters[key];
@@ -3119,7 +3245,7 @@
     const allBlueValues = BLUE_MARKERS.map((m) => m.value);
     const blueOnlyActive = allBlueValues.some((v) => state.markerFilters[v] === 'only') ? 1 : 0;
     const blueHideActive = allBlueValues.some((v) => state.markerFilters[v] === 'hide') ? 1 : 0;
-    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'male', 'female', 'desexed'];
+    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'male', 'female', 'desexed'];
     const otherActiveCount = otherFilterKeys.filter((k) => state.markerFilters[k]).length;
     const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
     const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
@@ -3162,6 +3288,7 @@
           Only dogs still needing a walk this shift
         </label>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">Dogs I've walked before</button>
+        <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.favorite)}" data-filter-key="favorite">♥ My favorites</button>
         <label class="small muted" style="margin:6px 0 0;">Kennel wing:</label>
         <div class="marker-row" style="gap:6px;">${locationChips}</div>
         <label class="small muted" style="margin:6px 0 0;">Tap once for only, twice to hide, again to clear:</label>
@@ -3197,7 +3324,7 @@
           <div class="dog-card ${dog.checkedOffToday ? 'checked-off' : ''}">
             <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
-              <p class="dog-name">${esc(dog.name)} ${markerBadges(dog)}</p>
+              <p class="dog-name">${esc(dog.name)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
               <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · Walked ${dog.walkCount}× · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
               <p class="dog-meta${!dog.recentWalkCount ? ' attention-low' : ''}">${dog.recentWalkCount || 0} walk${dog.recentWalkCount === 1 ? '' : 's'} this week</p>
               ${slotGridHtml(dog.id)}
@@ -4269,6 +4396,7 @@
           <div class="dog-info">
             <p class="dog-name${r.dog_id && r.kind === 'adopted' ? ' photo-bio-trigger" style="cursor:pointer;" data-dog-id="' + r.dog_id : ''}">${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
             ${r.personalHighlight ? '<span class="badge eligible">You walked this dog</span>' : ''}
+            ${r.favorite ? '<span class="badge fav">♥ Your favorite</span>' : ''}
             <p class="dog-meta">${fmtDate(r.occurred_at)}</p>
           </div>
         </div>
@@ -5599,6 +5727,7 @@
     navigator.serviceWorker.addEventListener('message', (event) => {
       const msg = event.data || {};
       if (msg.type === 'end-walk') endWalkFromNotification(msg.walkId, msg.at);
+      if (msg.type === 'open-feedback') openFeedbackInbox();
       if (msg.type === 'walk-extended' && state.walk.phase === 'active' && String(state.walk.walkId) === String(msg.walkId)) {
         state.walk.stopsAt = msg.stopsAt;
       }
@@ -5608,6 +5737,7 @@
   // Read once, before the URL is tidied away.
   const launchParams = new URLSearchParams(window.location.search);
   const pendingEnd = launchParams.get('endWalk') ? { walkId: launchParams.get('endWalk'), at: launchParams.get('at') } : null;
+  const pendingFeedbackInbox = launchParams.get('open') === 'feedback';
   if (window.location.search) history.replaceState(history.state, '', window.location.pathname);
 
   // ---------- Init ----------
@@ -5664,6 +5794,7 @@
     }
 
     render();
+    if (pendingFeedbackInbox) openFeedbackInbox();
   }
 
   // ---------- Offline banner ----------

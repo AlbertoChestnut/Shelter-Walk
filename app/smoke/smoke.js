@@ -89,7 +89,7 @@ async function main() {
 
     await page.click('.tab-btn[data-tab="stats"]');
     await page.waitForSelector('.edit-times-btn');
-    assert.match(await page.textContent('.dog-card .dog-name'), /🎾/);
+    assert.match(await page.textContent('.dog-card .dog-name'), /🥎/);
     step('Stats lists it with the play group emoji');
 
     // Back button: tabs never stack, Back from any tab goes to Available,

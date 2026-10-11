@@ -46,6 +46,43 @@ test.before(async () => {
   ins.run(5, ids.bob, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'bob private note');
   db.close();
 });
+test('feedback is anonymous, and only staff can read it', async () => {
+  const sent = await call('POST', '/api/feedback', { user: ALICE, body: { kind: 'bug', body: 'Camera froze on Scan', includeDevice: true } });
+  assert.equal(sent.status, 200);
+  assert.equal((await call('POST', '/api/feedback', { user: ALICE, body: { kind: 'idea', body: 'Dark map', includeDevice: false } })).status, 200);
+  assert.equal((await call('POST', '/api/feedback', { user: ALICE, body: { kind: 'nope', body: 'x' } })).status, 400);
+  assert.equal((await call('POST', '/api/feedback', { user: ALICE, body: { kind: 'bug', body: '   ' } })).status, 400);
+
+  // Nothing that could link a report to its sender is stored.
+  const db = new Database(dbFile, { readonly: true });
+  const cols = db.prepare("SELECT name FROM pragma_table_info('feedback')").all().map((c) => c.name);
+  db.close();
+  assert.deepEqual(cols.filter((c) => /user|email|name|author/i.test(c)), []);
+
+  // Volunteers can't read the inbox; staff can, and see no sender.
+  for (const user of [ALICE, BOB]) assert.equal((await call('GET', '/api/feedback', { user })).status, 403);
+  const inbox = await call('GET', '/api/feedback', { user: STAFF, staff: true });
+  assert.equal(inbox.status, 200);
+  assert.equal(inbox.json.items.length, 2);
+  for (const item of inbox.json.items) assert.deepEqual(Object.keys(item).filter((k) => /user|email|name|author/i.test(k)), []);
+  assert.ok(!JSON.stringify(inbox.json).includes(ALICE));
+  const bug = inbox.json.items.find((f) => f.kind === 'bug');
+  assert.ok(bug.device, 'device info kept when the box is ticked');
+  assert.equal(inbox.json.items.find((f) => f.kind === 'idea').device, null);
+
+  // Only staff can resolve or delete.
+  assert.equal((await call('PUT', `/api/feedback/${bug.id}`, { user: BOB, body: { resolved: true } })).status, 403);
+  assert.equal((await call('DELETE', `/api/feedback/${bug.id}`, { user: BOB })).status, 403);
+  assert.equal((await call('PUT', `/api/feedback/${bug.id}`, { user: STAFF, staff: true, body: { resolved: true } })).status, 200);
+  assert.equal((await call('DELETE', `/api/feedback/${bug.id}`, { user: STAFF, staff: true })).status, 200);
+});
+
+test('feedback is rate limited per sender', async () => {
+  let last;
+  for (let i = 0; i < 6; i += 1) last = await call('POST', '/api/feedback', { user: BOB, body: { kind: 'other', body: `note ${i}` } });
+  assert.equal(last.status, 429);
+});
+
 test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
 
 test('Together stats contain only totals: no names, emails, ids, or per-person numbers', async () => {

@@ -10,6 +10,7 @@ const push = require('./push');
 const wiki = require('./wiki');
 const impact = require('./impact');
 const notes = require('./notes');
+const feedback = require('./feedback');
 const account = require('./account');
 // Every walk notice (started, length alerts, time warning, auto-stopped) shares this tag,
 // so each one replaces the last on the phone rather than piling up.
@@ -231,6 +232,8 @@ const getWalkedByUserStats = db.prepare(`
   FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL
 `);
 
+const getFavorite = db.prepare('SELECT 1 FROM favorite_dogs WHERE dog_id = ? AND user_id = ?');
+
 const getRecentWalkCount = db.prepare(`
   SELECT COUNT(*) AS count FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL AND started_at >= ?
 `);
@@ -254,6 +257,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const userIdInt = parseInt(userId, 10);
   const myStats = userIdInt ? getWalkedByUserStats.get(row.shelter_buddy_id, userIdInt) : { count: 0, last_started_at: null };
   const walkedByMe = myStats.count > 0;
+  const isFavorite = userIdInt ? !!getFavorite.get(row.shelter_buddy_id, userIdInt) : false;
 
   const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
   const ageMonthsHard = ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS;
@@ -351,6 +355,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     recentWalkCount,
     currentWalk,
     walkedByMe,
+    isFavorite,
     // This user's own walks with the dog, for the "walks together" lines on
     // the profile and scan screens (walkCount above is shelter-wide).
     myWalkCount: myStats.count,
@@ -473,6 +478,7 @@ wiki.register(app, { db, resolveAuthedUser });
 impact.register(app, { db });
 impact.registerDay(app, { db, cachedPhotoUrl });
 const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
+feedback.register(app, { db, isStaffOrPrivileged, push });
 account.register(app, { db });
 
 app.get('/api/me', (req, res) => {
@@ -564,6 +570,11 @@ app.get('/api/me/export', (req, res) => {
   `).all(me.id);
   const savedFilters = db.prepare('SELECT name, filter_json AS filterJson, created_at AS createdAt FROM saved_filters WHERE user_id = ?').all(me.id);
   const notificationPrefs = db.prepare('SELECT pref_key AS pref, enabled FROM notification_prefs WHERE user_id = ?').all(me.id).map((r) => ({ ...r, enabled: !!r.enabled }));
+  const favoriteDogs = db.prepare(`
+    SELECT d.name AS dog, f.created_at AS createdAt
+    FROM favorite_dogs f JOIN dogs d ON d.shelter_buddy_id = f.dog_id
+    WHERE f.user_id = ? ORDER BY f.created_at ASC
+  `).all(me.id);
   res.json({
     exportedAt: new Date().toISOString(),
     note: "This is everything Shelter Walk has stored about your account. It does not include your email sign-in history or passkeys, which belong to the separate login system.",
@@ -572,7 +583,8 @@ app.get('/api/me/export', (req, res) => {
     privateNotes,
     publicTipsWritten,
     savedFilters,
-    notificationPrefs
+    notificationPrefs,
+    favoriteDogs
   });
 });
 
@@ -595,9 +607,14 @@ app.post('/api/users/:id/onboarding-complete', (req, res) => {
 // - show_*: whether an event kind appears in the Updates feed at all,
 //   opt-OUT (default on) -- e.g. someone who'd rather not see "a dog was
 //   removed" posts can turn just that off without losing the rest.
+// favorite_* are the hearted-dog notices (see scraper.js), separate from
+// adopted_walked_dog so someone can hear about just their favorites.
 const PREF_DEFAULTS = {
   adopted_walked_dog: false,
   walk_started: false,
+  favorite_adopted: false,
+  favorite_pending: false,
+  favorite_returned: false,
   show_new_dog: true,
   show_adopted: true,
   show_returned: true
@@ -630,6 +647,26 @@ function getUserPrefs(userId) {
   const byKey = Object.fromEntries(rows.map((r) => [r.pref_key, !!r.enabled]));
   return Object.fromEntries(PREF_KEYS.map((k) => [k, k in byKey ? byKey[k] : PREF_DEFAULTS[k]]));
 }
+
+// ---- Favorite dogs ----
+// Hearting a dog: a personal list for the "My favorites" filter and the
+// favorite_* notifications. Only listed or once-listed dogs, not kennel-card
+// stand-ins. Personal like a private note: no one else, staff included, can
+// change it.
+app.put('/api/users/:id/favorites/:dogId', (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const dogId = parseInt(req.params.dogId, 10);
+  if (!req.me || userId !== req.me.id) return res.status(403).json({ error: "That isn't your account." });
+  const favorite = !!(req.body && req.body.favorite);
+  if (favorite) {
+    const dog = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ? AND awaiting_listing = 0').get(dogId);
+    if (!dog) return res.status(404).json({ error: 'Dog not found' });
+    db.prepare('INSERT OR IGNORE INTO favorite_dogs (user_id, dog_id, created_at) VALUES (?, ?, ?)').run(userId, dogId, new Date().toISOString());
+  } else {
+    db.prepare('DELETE FROM favorite_dogs WHERE user_id = ? AND dog_id = ?').run(userId, dogId);
+  }
+  res.json({ dogId, favorite });
+});
 
 // ---- Walk length alerts ----
 // Up to MAX_WALK_ALERTS walk lengths, in minutes, at which the walker gets a
@@ -1138,6 +1175,7 @@ app.get('/api/updates', (req, res) => {
 
   let prefEnabled = false;
   let walkedDogIds = new Set();
+  let favoriteDogIds = new Set();
   let lastSeenAt = null;
   if (userId) {
     const prefs = getUserPrefs(userId);
@@ -1145,7 +1183,11 @@ app.get('/api/updates', (req, res) => {
     walkedDogIds = new Set(
       db.prepare('SELECT DISTINCT dog_id FROM walks WHERE user_id = ? AND ended_at IS NOT NULL').all(userId).map((r) => r.dog_id)
     );
-    rows = rows.filter((r) => prefs[`show_${r.kind}`] !== false);
+    favoriteDogIds = new Set(
+      db.prepare('SELECT dog_id FROM favorite_dogs WHERE user_id = ?').all(userId).map((r) => r.dog_id)
+    );
+    // A favorite's own news always shows, even in a category hidden here.
+    rows = rows.filter((r) => prefs[`show_${r.kind}`] !== false || favoriteDogIds.has(r.dog_id));
     const userRow = db.prepare('SELECT updates_last_seen_at FROM users WHERE id = ?').get(userId);
     lastSeenAt = userRow ? userRow.updates_last_seen_at : null;
   }
@@ -1156,6 +1198,7 @@ app.get('/api/updates', (req, res) => {
   rows = rows.slice(0, limit);
   rows.forEach((r) => {
     r.personalHighlight = !!(r.kind === 'adopted' && prefEnabled && r.dog_id && walkedDogIds.has(r.dog_id));
+    r.favorite = !!(r.dog_id && favoriteDogIds.has(r.dog_id));
     r.unread = lastSeenAt ? r.occurred_at > lastSeenAt : true;
   });
   res.json({ updates: rows, unreadCount });

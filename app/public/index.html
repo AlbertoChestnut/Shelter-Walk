@@ -69,6 +69,19 @@
       <input type="checkbox" id="settingsPrefWalkStarted" />
       Notify me when I start a walk (dog + return location)
     </label>
+    <label class="small muted" style="display:block;margin-top:12px;">Your favorite dogs (tap ♡ on a dog)</label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsPrefFavAdopted" />
+      Notify me when a favorite is adopted
+    </label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsPrefFavPending" />
+      Notify me when someone starts adopting a favorite
+    </label>
+    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <input type="checkbox" id="settingsPrefFavReturned" />
+      Notify me when a favorite comes back to the shelter
+    </label>
     <label class="small" style="display:block;margin-top:12px;">Alert me when a walk reaches (minutes)</label>
     <div class="row walk-alert-inputs" style="gap:6px;margin-top:6px;">
       <input type="number" id="settingsWalkAlert1" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="First walk alert, in minutes" />
@@ -149,6 +162,12 @@
         <button type="button" class="account-menu-row" data-page="privacy">
           <span>Privacy &amp; Data</span><span class="account-menu-chevron">›</span>
         </button>
+        <button type="button" class="account-menu-row" data-page="feedback">
+          <span>Feedback &amp; bug reports</span><span class="account-menu-chevron">›</span>
+        </button>
+        <button type="button" id="feedbackInboxRow" class="account-menu-row hidden" data-page="feedbackInbox">
+          <span>Feedback inbox</span><span class="account-menu-chevron">›</span>
+        </button>
         <a id="manageAccountLink" class="account-menu-row" href="https://login.shelterwalk.com/accounts/email/">
           <span>Manage email &amp; sign-in</span><span class="account-menu-chevron">↗</span>
         </a>
@@ -181,6 +200,32 @@
       <p id="downloadMyDataStatus" class="small muted" style="margin:4px 0 0;min-height:1.2em;"></p>
       <button type="button" id="deleteMyDataBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my walk data…</button>
       <button type="button" id="deleteAccountBtn" class="link-btn danger-link" style="display:block; margin:10px auto 0;">Delete my account…</button>
+    </div>
+
+    <div id="accountPageFeedback" class="hidden">
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <h2>Feedback &amp; bug reports</h2>
+      <p class="small muted" style="margin-top:0;">Found a bug, something confusing, or have an idea? Every report is read. Reports are anonymous: your name and account are never saved with them, so if you'd like a reply, say how to reach you.</p>
+      <div id="feedbackKindPicker" class="marker-row feedback-kinds">
+        <button type="button" class="btn small-btn filter-chip active" data-kind="bug">🐞 Bug</button>
+        <button type="button" class="btn small-btn filter-chip" data-kind="idea">💡 Idea</button>
+        <button type="button" class="btn small-btn filter-chip" data-kind="other">💬 Other</button>
+      </div>
+      <label for="feedbackBody" class="small muted" style="display:block;margin-top:12px;">What happened, or what would help?</label>
+      <textarea id="feedbackBody" rows="6" maxlength="2000" placeholder="e.g. The camera wouldn't open after I tapped Scan on my iPhone."></textarea>
+      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+        <input type="checkbox" id="feedbackDeviceCheck" checked />
+        Include my phone and browser type (helps fix bugs)
+      </label>
+      <button type="button" id="sendFeedbackBtn" class="btn primary" style="margin-top:12px;">Send</button>
+      <p id="feedbackStatus" class="small muted" style="margin:6px 0 0;min-height:1.2em;"></p>
+    </div>
+
+    <div id="accountPageFeedbackInbox" class="hidden">
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <h2>Feedback inbox</h2>
+      <p class="small muted" style="margin-top:0;">Anonymous reports from volunteers, newest first. Resolved ones move to the bottom.</p>
+      <div id="feedbackInboxList" class="stack tight"></div>
     </div>
   </div>
 </div>

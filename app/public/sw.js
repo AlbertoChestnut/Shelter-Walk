@@ -2,7 +2,7 @@
 // is often spotty, so the app should still show the last-known data (with
 // the page's own "Offline" banner) instead of going blank on a dropped
 // connection.
-const CACHE_NAME = 'shelter-walk-v5';
+const CACHE_NAME = 'shelter-walk-v6';
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
@@ -151,7 +151,7 @@ async function showPush(data) {
     // The small icon in the notification bar: Android draws only its shape,
     // so it's a white paw on transparent (the app icon showed as a square).
     badge: '/icons/badge-96.png',
-    data: { url: data.url || '/', walkId: data.walkId || null, dogName: data.dogName || null }
+    data: { url: data.url || '/', walkId: data.walkId || null, dogName: data.dogName || null, page: data.page || null }
   };
   // Buttons (walk alerts: +10 min / End walk). Android shows them; iPhone
   // ignores them and a tap just opens the app, which can do the same things.
@@ -247,6 +247,8 @@ self.addEventListener('notificationclick', (event) => {
     const at = new Date().toISOString();
     event.waitUntil(openApp(`/?endWalk=${encodeURIComponent(data.walkId)}&at=${encodeURIComponent(at)}`,
       { type: 'end-walk', walkId: data.walkId, at }));
+  } else if (data.page === 'feedback') {
+    event.waitUntil(openApp(url, { type: 'open-feedback' }));
   } else {
     event.waitUntil(openApp(url));
   }

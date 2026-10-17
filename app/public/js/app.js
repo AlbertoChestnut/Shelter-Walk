@@ -551,21 +551,44 @@
 
   // Balloons + confetti floating up for a second when a newly-detected
   // adoption first appears — purely celebratory, no user action needed.
-  function playCelebration() {
+  // The 20-hour level-up offer uses a slower, bigger, balloon-heavy version.
+  function playCelebration({ emojis = ['🎈', '🎉', '🎊', '🐕', '🐶', '🐩'], count = 18, seconds = 1.8 } = {}) {
     const container = document.createElement('div');
     container.className = 'celebrate-overlay';
-    const emojis = ['🎈', '🎉', '🎊', '🐕', '🐶', '🐩'];
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < count; i++) {
       const span = document.createElement('span');
       span.className = 'celebrate-piece';
       span.textContent = emojis[i % emojis.length];
       span.style.left = `${Math.random() * 100}%`;
-      span.style.animationDelay = `${Math.random() * 0.5}s`;
+      span.style.animationDelay = `${Math.random() * (seconds / 3.6)}s`;
+      span.style.animationDuration = `${seconds}s`;
       span.style.fontSize = `${1.2 + Math.random() * 1.3}rem`;
       container.appendChild(span);
     }
     document.body.appendChild(container);
-    setTimeout(() => container.remove(), 2000);
+    setTimeout(() => container.remove(), seconds * 1000 + 200 + (seconds / 3.6) * 1000);
+  }
+
+  // A Beginner whose walks pass 20 hours: balloons, then one question about
+  // moving up to Established. The server only offers it once (see
+  // levelUpOffer in server.js); Settings can change the level any time.
+  async function maybeOfferLevelUp(offered) {
+    if (!offered) return;
+    playCelebration({ emojis: ['🎈', '🎈', '🎈', '🎉', '🐶'], count: 32, seconds: 4 });
+    const yes = await appConfirm(
+      "You've walked dogs for more than 20 hours with Shelter Walk. That's the Established level: dogs in the shelter 7+ days, plus behavior (blue) stickers, PB dogs and dogs pending adoption (EVO dogs still need Experienced). Update your level to Established? You can change it any time in Settings.",
+      { title: '🎈 20 hours of volunteering! 🎈', confirmText: 'Yes, make me Established', cancelText: 'Stay Beginner' }
+    );
+    try {
+      const updated = await api(`/api/users/${state.currentUser.id}/level-up-offer`, { method: 'POST', body: JSON.stringify({ accept: yes }) });
+      state.currentUser.experienceLevel = updated.experienceLevel;
+      if (yes) {
+        toast("You're Established now. Thank you! 🐾");
+        if (state.tab !== 'walk') render(); // the dog list depends on your level
+      }
+    } catch (err) {
+      if (yes) appAlert(err.message);
+    }
   }
 
   // Alumni dogs get bonus days toward eligibility on top of their actual
@@ -701,32 +724,26 @@
   // Edit" label would be misleading -- only the edit part actually applies
   // here. Only known for dogs whose full eligibility was already computed
   // (the Available list); other callers omit it and keep the combined label.
+  // While you're out with one dog, every other dog's button is edit-only
+  // (markers, POO, kennel spot) -- see goToConfirmForDog().
   function dogActionButtons(dogId, cannotWalk) {
     const activeId = activeWalkDogId();
-    const blocked = activeId && activeId !== String(dogId);
+    const editOnly = cannotWalk || (activeId && activeId !== String(dogId));
     return `
       <div class="row" style="margin-top:6px;">
         <button class="btn small-btn view-profile-btn" data-id="${dogId}">View Info</button>
         <button class="btn small-btn walk-history-btn" data-dog-id="${dogId}" title="Walk history" aria-label="Walk history" style="flex:0 0 auto;width:auto;">🕘</button>
-        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}" ${blocked ? 'disabled title="Finish or cancel your current walk first"' : ''}>${cannotWalk ? '✎ Edit' : '▶ Walk / Edit'}</button>
+        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}">${editOnly ? '✎ Edit' : '▶ Walk / Edit'}</button>
       </div>`;
   }
 
   function wireDogActionButtons(scope) {
     // Tapping the photo is a shortcut straight to Walk/Edit -- the more
-    // common action of the two buttons below it. Greyed out (no handler at
-    // all) for every dog except the one you're actually out walking right
-    // now -- picking a different dog used to silently strand the walk
-    // that's still running, with nothing left pointing back at it.
-    const activeId = activeWalkDogId();
+    // common action of the two buttons below it (edit-only for other dogs
+    // while a walk is running).
     (scope || document).querySelectorAll('.dog-photo').forEach((img) => {
       const card = img.closest('[data-id]');
       if (!card) return;
-      if (activeId && activeId !== String(card.dataset.id)) {
-        img.style.cursor = 'default';
-        img.style.opacity = '0.5';
-        return;
-      }
       img.style.cursor = 'pointer';
       img.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1533,8 +1550,10 @@
   // refuses to overwrite state.walk with the new dog's confirm screen --
   // doing that used to silently strand the active walk (still running
   // server-side, but with nothing in the UI pointing back at it) with no
-  // way back to it short of a full page reload. Instead it just reopens the
-  // walk already running.
+  // way back to it short of a full page reload. Instead that dog opens in an
+  // edit-only popup (markers, POO, kennel spot) on top of whatever screen
+  // you're on, so you can catch up on a dog you walked earlier while out
+  // with the next one.
   function goToConfirmForDog(id) {
     const activeId = activeWalkDogId();
     // Any open walk blocks re-entering the confirm screen, even for the
@@ -1542,16 +1561,72 @@
     // state.walk.phase to 'confirm', which used to stomp the running
     // active/ending screen for the dog you're already out with, not just
     // for a different one.
+    if (activeId && activeId !== String(id)) {
+      showDogEditPopup(id);
+      return;
+    }
     if (activeId) {
-      if (activeId !== String(id)) {
-        appAlert(`You already have a walk in progress with ${state.walk.dog.name}. Finish or cancel that walk first.`, 'Walk in progress');
-      }
       activateWalkTab();
       renderWalk();
       return;
     }
     activateWalkTab();
     selectDogById(id);
+  }
+
+  // Markers, POO status and kennel spot for one dog, without touching
+  // state.walk -- the walk that's running stays exactly as it was. Uses the
+  // same generic info popup as the marker breakdown and dog notes.
+  async function showDogEditPopup(dogId) {
+    const popup = document.getElementById('markerInfoPopup');
+    const content = document.getElementById('markerInfoPopupContent');
+    if (!popup || !content) return;
+    content.innerHTML = '<h3 style="margin-top:0;">✎ Edit dog</h3><p class="muted small center">Loading…</p>';
+    openOverlay(popup);
+    let dog;
+    try {
+      ({ dog } = await api(`/api/dogs/${dogId}?userId=${state.currentUser.id}`));
+    } catch (err) {
+      content.innerHTML = `<h3 style="margin-top:0;">✎ Edit dog</h3><p class="small muted">Couldn't load this dog: ${esc(err.message)}</p>`;
+      return;
+    }
+    const pending = {
+      blueMarkers: [...(dog.blueMarkers || [])],
+      pooStatus: dog.pooStatus || 'none',
+      starFlag: !!dog.starFlag,
+      pbFlag: !!dog.pbFlag
+    };
+    content.innerHTML = `
+      <h3 style="margin-top:0;">✎ ${esc(dog.name)}</h3>
+      <p class="small muted" style="margin-top:-6px;">You're still out with ${esc(state.walk.dog.name)} — this only edits ${esc(dog.name)}.</p>
+      ${markerPickerHtml()}
+      <label style="display:block;margin-top:14px;">Kennel location</label>
+      ${kennelLetterPickerHtml('editPopupLocationPicker', dog.kennelLocation || '')}
+      <div class="row" style="margin-top:10px;">
+        <button type="button" id="editPopupSaveBtn" class="btn primary">Save Changes</button>
+        <button type="button" id="editPopupNotesBtn" class="btn">📝 Notes</button>
+      </div>
+      <p id="editPopupStatus" class="small muted" style="margin:6px 0 0;"></p>`;
+    wireMarkerPicker(pending, null, content);
+    wireKennelLetterPicker('editPopupLocationPicker');
+    document.getElementById('editPopupNotesBtn').addEventListener('click', () => showDogNotesPopup(dog.id));
+    document.getElementById('editPopupSaveBtn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('editPopupStatus');
+      const location = kennelLetterPickerValue('editPopupLocationPicker');
+      statusEl.textContent = 'Saving…';
+      try {
+        await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(pending) });
+        if (location && location !== dog.kennelLocation) {
+          await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
+        }
+        closeOverlay(popup);
+        toast(`${dog.name} saved`);
+        // The walk screen doesn't show other dogs; everywhere else might.
+        if (state.tab !== 'walk') render();
+      } catch (err) {
+        statusEl.textContent = `Failed: ${err.message}`;
+      }
+    });
   }
 
   // ---------- Experience levels (tiers) ----------
@@ -2278,7 +2353,7 @@
     let label = dog.tooYoung || dog.eligible === false ? '✎ Edit' : '▶ Walk / Edit';
     let disabled = '';
     if (activeId === String(dog.id)) label = '↩ Back to your walk';
-    else if (activeId) disabled = ' disabled title="Finish or cancel your current walk first"';
+    else if (activeId) label = '✎ Edit';
     else if (onConfirmScreenFor(dog.id)) label = '✎ Edit';
     return `<button type="button" id="profileEditBtn" class="btn primary" style="margin:6px 0 10px;"${disabled}>${label}</button>`;
   }
@@ -4127,6 +4202,8 @@
 
   // One completed walk as an editable card (times, activity, delete,
   // original-times badge, and a shortcut to the dog's tips/private note).
+  // Works mid-walk too, so notes left for later can be caught up on while
+  // out with the next dog.
   // Shared by the Today view and the per-day view so editing works the same
   // from either -- no need to detour through lifetime stats.
   function statsWalkCardHtml(w, prefix) {
@@ -5101,17 +5178,7 @@
           <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
         </div>
         <div class="card compact">
-          <label class="small">Behavior markers (tap to toggle)</label>
-          <div class="marker-row">
-            <button type="button" class="marker-shape star" data-group="star" title="Good for beginners">★</button>
-            ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''}" data-group="blue" data-value="${m.value}" title="${esc(m.name)}">${esc(m.letter)}</button>`).join('')}
-          </div>
-          <label class="small" style="display:block;margin-top:14px;">POO status</label>
-          <div class="marker-row">
-            <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
-            <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-            <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, clears the days-in-shelter wait">PB</button>
-          </div>
+          ${markerPickerHtml()}
           <label style="display:block;margin-top:14px;">Kennel location</label>
           ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung })}
           <div id="saveAllRow" class="row hidden" style="margin-top:10px;align-items:center;gap:10px;">
@@ -5335,19 +5402,36 @@
   // marker is also "on" — this recomputes every shape's active class from
   // `pending` from scratch, so that implication is always reflected however
   // `pending` got there (initial load or any click).
-  function applyPickerState(pending) {
+  function markerPickerHtml() {
+    return `
+      <label class="small">Behavior markers (tap to toggle)</label>
+      <div class="marker-row">
+        <button type="button" class="marker-shape star" data-group="star" title="Good for beginners">★</button>
+        ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''}" data-group="blue" data-value="${m.value}" title="${esc(m.name)}">${esc(m.letter)}</button>`).join('')}
+      </div>
+      <label class="small" style="display:block;margin-top:14px;">POO status</label>
+      <div class="marker-row">
+        <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
+        <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
+        <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, clears the days-in-shelter wait">PB</button>
+      </div>`;
+  }
+
+  // root: where the picker lives (the edit popup passes its own, so the
+  // page behind it is never touched).
+  function applyPickerState(pending, root = document) {
     const effectiveBlue = withImpliedBlank(pending.blueMarkers);
-    document.querySelectorAll('.marker-shape[data-group="blue"]').forEach((btn) => {
+    root.querySelectorAll('.marker-shape[data-group="blue"]').forEach((btn) => {
       btn.classList.toggle('active', effectiveBlue.includes(btn.dataset.value));
     });
     // POO is a strict single-select — plain and priority are unlinked, at
     // most one of them is ever active.
-    document.querySelectorAll('.marker-shape[data-group="poo"]').forEach((btn) => {
+    root.querySelectorAll('.marker-shape[data-group="poo"]').forEach((btn) => {
       btn.classList.toggle('active', pending.pooStatus === btn.dataset.value);
     });
-    const starBtn = document.querySelector('.marker-shape[data-group="star"]');
+    const starBtn = root.querySelector('.marker-shape[data-group="star"]');
     if (starBtn) starBtn.classList.toggle('active', pending.starFlag);
-    const pbBtn = document.querySelector('.marker-shape[data-group="pb"]');
+    const pbBtn = root.querySelector('.marker-shape[data-group="pb"]');
     if (pbBtn) pbBtn.classList.toggle('active', pending.pbFlag);
   }
 
@@ -5362,9 +5446,9 @@
   //   - pb (Potty Break OK): an independent boolean; clears the days-in-
   //     shelter wait for levels allowed PB dogs, since it authorizes a
   //     short walk regardless (see the eligibility rules in server.js).
-  function wireMarkerPicker(pending, onChange) {
-    applyPickerState(pending);
-    document.querySelectorAll('.marker-shape').forEach((btn) => {
+  function wireMarkerPicker(pending, onChange, root = document) {
+    applyPickerState(pending, root);
+    root.querySelectorAll('.marker-shape').forEach((btn) => {
       btn.addEventListener('click', () => {
         const group = btn.dataset.group;
         const value = btn.dataset.value;
@@ -5381,7 +5465,7 @@
         } else if (group === 'pb') {
           pending.pbFlag = !pending.pbFlag;
         }
-        applyPickerState(pending);
+        applyPickerState(pending, root);
         if (onChange) onChange();
       });
     });
@@ -5418,6 +5502,7 @@
           <div class="dog-notes-mount hidden"></div>
         </div>
         <button id="viewProfileBtn" class="btn">View Full Profile</button>
+        <button id="earlierWalksBtn" class="btn">✎ Edit an earlier walk / notes</button>
         <button id="endWalkBtn" class="btn danger big">End ${activityInfo(w.activity).label}</button>
         <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
@@ -5464,6 +5549,14 @@
       }
     });
     document.getElementById('viewProfileBtn').addEventListener('click', () => showProfileSheet(w.dog, state.walk.allWalks));
+    // Today's finished walks, each with its editor (times, activity) and
+    // 📝 Dog notes -- this walk keeps running; the Walk tab comes back to it.
+    document.getElementById('earlierWalksBtn').addEventListener('click', () => {
+      state.statsScope = 'mine';
+      state.statsRange = 'today';
+      state.statsView = 'summary';
+      switchTab('stats');
+    });
     document.getElementById('endWalkBtn').addEventListener('click', () => {
       clearInterval(timerInterval);
       // The walk ended now, not when the notes are saved.
@@ -5665,6 +5758,7 @@
         } catch (e) { /* non-critical; the walk itself already saved fine */ }
         state.walk.phase = 'summary';
         renderWalk();
+        maybeOfferLevelUp(res.levelUpOffer);
       } catch (err) {
         appAlert(err.message);
       }
@@ -5795,6 +5889,7 @@
 
     render();
     if (pendingFeedbackInbox) openFeedbackInbox();
+    else maybeOfferLevelUp(state.currentUser.levelUpOffer);
   }
 
   // ---------- Offline banner ----------

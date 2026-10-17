@@ -179,6 +179,11 @@ if (!userColumns.includes('default_activity')) {
 if (!userColumns.includes('walk_alert_minutes')) {
   db.exec("ALTER TABLE users ADD COLUMN walk_alert_minutes TEXT NOT NULL DEFAULT '[]'");
 }
+// level_up_offered_at: when a Beginner who passed 20 hours of walks was
+// asked (once) whether to move up to Established, whatever they answered.
+if (!userColumns.includes('level_up_offered_at')) {
+  db.exec('ALTER TABLE users ADD COLUMN level_up_offered_at TEXT');
+}
 // Migrations: add columns to dogs table if they don't exist yet (older DBs
 // created before these columns existed).
 // - poo_status: tri-state (none/poo/priority) — priority is the yellow

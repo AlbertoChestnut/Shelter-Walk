@@ -1,5 +1,6 @@
 // Tapping a dog anywhere opens its profile, and the profile always has an
-// Edit button that lands on that dog's Walk/Edit screen.
+// Edit button that lands on that dog's Walk/Edit screen -- or, for another
+// dog while you're out walking, an edit-only popup.
 // Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
 //   node smoke/dog-tap-edit.js
 const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
@@ -59,7 +60,20 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(true, 'and it returns to the running walk');
     await p.click('.tab-btn[data-tab="available"]');
     await p.locator('.avail-card[data-id="82"] .dog-name').click({ position: { x: 5, y: 5 } }); await profileOpen();
-    ok(await p.isDisabled('#profileEditBtn'), 'another dog during a walk: Edit is disabled');
+    ok(!(await p.isDisabled('#profileEditBtn')) && /Edit/.test(await p.textContent('#profileEditBtn')), 'another dog during a walk: profile offers Edit');
+    await p.click('#profileEditBtn'); await p.waitForSelector('#markerInfoPopup:not(.hidden) #editPopupSaveBtn');
+    ok(/Juniper/.test(await p.textContent('#markerInfoPopupContent')), 'it opens an edit-only popup for that dog');
+    await p.click('#markerInfoPopup .marker-shape[data-group="poo"][data-value="poo"]');
+    await p.click('#editPopupLocationPicker [data-letter="B"]');
+    await p.screenshot({ path: '/tmp/_dte2.png' });
+    await p.click('#editPopupSaveBtn'); await p.waitForSelector('#markerInfoPopup', { state: 'hidden' });
+    const jun = await (await fetch(base + '/api/dogs/82', { headers: { 'x-auth-email': EMAIL } })).json();
+    ok(jun.dog.pooStatus === 'poo' && jun.dog.kennelLocation === 'B', 'Juniper\'s POO status and kennel spot saved');
+    await p.click('.avail-card[data-id="82"] .walk-edit-btn'); await p.waitForSelector('#markerInfoPopup:not(.hidden) #editPopupSaveBtn');
+    ok(true, 'the card\'s Edit button opens the same popup');
+    await p.click('#closeMarkerInfoPopupBtn'); await p.waitForTimeout(300);
+    await p.click('.tab-btn[data-tab="walk"]'); await p.waitForSelector('#endWalkBtn');
+    ok(/Maple/.test(await p.textContent('#app')), 'Maple\'s walk is still running');
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await b.close();
   } finally { srv.kill(); fs.rmSync(DB, { force: true }); }

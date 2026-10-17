@@ -161,6 +161,20 @@ const PENDING_ADOPTION_TAG = "I'm getting adopted!";
 const STRAY_HOLD_TAG = 'On Stray Hold';
 const DEFAULT_EXPERIENCE_LEVEL = 'beginner';
 
+// A Beginner whose finished walks add up to 20 hours (the line between
+// Beginner and Established) is offered the move up once, with balloons.
+// Whether they say yes or not, they aren't asked again; Settings can still
+// change the level any time.
+const LEVEL_UP_HOURS = 20;
+function levelUpOffer(userId) {
+  const user = db.prepare('SELECT experience_level, level_up_offered_at FROM users WHERE id = ?').get(userId);
+  if (!user || user.experience_level !== 'beginner' || user.level_up_offered_at) return false;
+  const { seconds } = db.prepare(
+    'SELECT COALESCE(SUM(duration_seconds), 0) AS seconds FROM walks WHERE user_id = ? AND ended_at IS NOT NULL'
+  ).get(userId);
+  return seconds >= LEVEL_UP_HOURS * 3600;
+}
+
 function resolveExperienceLevel(userId) {
   const id = parseInt(userId, 10);
   if (!id) return null;
@@ -490,7 +504,7 @@ app.get('/api/me', (req, res) => {
   // shelterwalk.com's login-level "staff" flag (from Django), a different
   // thing from this app's own isPrivileged/canAudit permissions.
   const isStaff = req.headers['x-auth-staff'] === '1';
-  res.json({ ...user, isStaff });
+  res.json({ ...user, isStaff, levelUpOffer: levelUpOffer(user.id) });
 });
 
 // The Profile section's two fields save together as one first/last pair.
@@ -760,6 +774,17 @@ app.get('/api/users/:id', (req, res) => {
   ).get(parseInt(req.params.id, 10));
   if (!row) return res.status(404).json({ error: 'User not found' });
   res.json({ ...row, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit });
+});
+
+// The answer to the 20-hour level-up offer. accept: true moves a Beginner
+// to Established; either way the offer is marked as made.
+app.post('/api/users/:id/level-up-offer', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const user = db.prepare('SELECT experience_level FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const experienceLevel = req.body.accept === true && user.experience_level === 'beginner' ? 'established' : user.experience_level;
+  db.prepare('UPDATE users SET experience_level = ?, level_up_offered_at = ? WHERE id = ?').run(experienceLevel, new Date().toISOString(), id);
+  res.json({ id, experienceLevel });
 });
 
 // So the frontend can build the tier picker (onboarding + Settings) without
@@ -1434,7 +1459,8 @@ app.put('/api/walks/:id/end', (req, res) => {
     WHERE id = ?
   `).run(endedAt, durationSeconds, notes ? String(notes).trim() : null, autoStopped, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
 
-  res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped });
+  const levelUp = !!req.me && walk.user_id === req.me.id && levelUpOffer(req.me.id);
+  res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped, levelUpOffer: levelUp });
 });
 
 // Correct a walk's recorded times after the fact (you forgot to end it

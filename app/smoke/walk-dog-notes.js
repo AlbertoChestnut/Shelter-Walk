@@ -1,5 +1,6 @@
 // Looking back at a walk in Stats: the dog's tips/private note open in a popup
-// right from the walk card (the walk editor itself is times/activity only).
+// right from the walk card (the walk editor itself is times/activity only),
+// also while out with another dog.
 // Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
 //   node smoke/walk-dog-notes.js
 const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
@@ -14,6 +15,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const db = new Database(DB); const ts = new Date().toISOString();
     db.prepare("UPDATE users SET name='N', experience_level='beginner', onboarding_completed=1 WHERE id=?").run(me.id);
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (70, 'Pepper', 'Female', '2 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
+    db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (71, 'Biscuit', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
     const end = new Date(Date.now() - 60000), start = new Date(end - 20 * 60000);
     db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, activity) VALUES (70, ?, 'D', ?, ?, 1200, 'old note', 'walk')").run(me.id, start.toISOString(), end.toISOString());
     db.close();
@@ -32,6 +34,25 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.waitForSelector('.tip-item[data-private]');
     ok(/Use the harness/.test(await p.textContent('.tip-item[data-private]')), 'private note saved from the popup');
     await p.screenshot({ path: '/tmp/_wne2.png' });
+    await p.click('#closeMarkerInfoPopupBtn'); await p.waitForTimeout(300);
+
+    // Out with another dog: the walk screen links to today's earlier walks,
+    // where both the walk editor and the dog's notes still work.
+    await fetch(base + '/api/walks/start', { method: 'POST', headers: { 'x-auth-email': EMAIL, 'content-type': 'application/json' }, body: JSON.stringify({ dogId: 71, location: 'B', userId: me.id, activity: 'walk' }) });
+    await p.goto(base, { waitUntil: 'networkidle' });
+    await p.click('.tab-btn[data-tab="walk"]'); await p.waitForSelector('#earlierWalksBtn');
+    await p.click('#earlierWalksBtn'); await p.waitForSelector('.edit-times-btn');
+    ok(/Pepper/.test(await p.textContent('#app')), 'mid-walk: shortcut lands on today\'s earlier walk');
+    await p.click('.edit-times-btn'); await p.selectOption('.edit-activity', 'playgroup');
+    await p.click('.save-times-btn'); await p.waitForTimeout(500);
+    ok(new Database(DB).prepare('SELECT activity FROM walks WHERE dog_id = 70').get().activity === 'playgroup', 'mid-walk: earlier walk edited');
+    await p.click('.dog-notes-btn'); await p.waitForSelector('#markerInfoPopup .tip-input');
+    await p.fill('.tip-add-row:not(.private-note-add-row) .tip-input', 'Loves the side yard'); await p.click('.tip-add-btn');
+    await p.waitForSelector('.tip-item[data-tip]');
+    ok(true, 'mid-walk: tip added to the earlier dog');
+    await p.click('#closeMarkerInfoPopupBtn'); await p.waitForTimeout(300);
+    await p.click('.tab-btn[data-tab="walk"]'); await p.waitForSelector('#endWalkBtn');
+    ok(/Biscuit/.test(await p.textContent('#app')), 'and the running walk is still there');
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await b.close();
   } finally { srv.kill(); fs.rmSync(DB, { force: true }); }

@@ -2473,7 +2473,7 @@
         <p class="small">Longest walk together: ${fmtDuration(mine.longestSeconds)}</p>` : ''}
         ${happyLine}
         <hr />
-        <p class="small muted">Everyone combined has walked ${esc(dogName)} ${everyone.count}× (${fmtDuration(everyone.totalSeconds)} total).</p>
+        <p class="small muted">Walks logged in Shelter Walk by everyone: ${everyone.count} (${fmtDuration(everyone.totalSeconds)} total). ${esc(dogName)} also gets walks from people who don't use the app, so the real number is likely higher.</p>
       `;
     } catch (err) {
       content.innerHTML = `<h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3><p class="small muted">Couldn't load stats: ${esc(err.message)}</p>`;
@@ -2934,14 +2934,13 @@
     const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
     const map = new Map();
     const getEntry = (dogId) => {
-      if (!map.has(dogId)) map.set(dogId, { slots: [false, false, false, false], totalSeconds: 0 });
+      if (!map.has(dogId)) map.set(dogId, { slots: [false, false, false, false] });
       return map.get(dogId);
     };
     try {
       const data = await api(`/api/walks/for-day?fromUtc=${encodeURIComponent(startOfDay.toISOString())}&toUtc=${encodeURIComponent(endOfDay.toISOString())}&dateKey=${todayKey()}`);
       for (const w of data.walks) {
         const entry = getEntry(w.dog_id);
-        entry.totalSeconds += w.duration_seconds || 0;
         const idx = slotIndexForIso(w.started_at);
         if (idx >= 0) entry.slots[idx] = true;
       }
@@ -2959,9 +2958,7 @@
     const entry = (state.todaySlotsByDog || new Map()).get(dogId);
     const slots = entry ? entry.slots : [false, false, false, false];
     const boxes = slots.map((filled, i) => `<span class="slot-box ${filled ? 'filled' : ''}" title="${WALK_SLOTS[i].label}"></span>`).join('');
-    const total = entry && entry.totalSeconds
-      ? `<span class="small muted" style="margin-left:6px;">${fmtDuration(entry.totalSeconds)} today</span>` : '';
-    return `<div class="slot-grid" title="Today's walks: 7-10a · 10-1p · 1-4p · 4-7p">${boxes}${total}</div>`;
+    return `<div class="slot-grid" title="Walks logged in Shelter Walk today: 7-10a · 10-1p · 1-4p · 4-7p">${boxes}</div>`;
   }
 
   async function renderAvailable() {
@@ -3113,10 +3110,14 @@
 
   // Redraws from already-fetched data — used for search/filter changes so
   // they don't need a network round-trip each time.
+  // `hidden` sorts are kept but left out of the menu: they rank dogs by walks
+  // logged in the app, which reads as "this dog needs a walk" when the dog
+  // may well have been walked by someone not using the app.
   const AVAILABLE_SORTS = {
     shelterTime: { label: 'Days in shelter (most first)', cmp: (a, b) => (b.daysInShelter || 0) - (a.daysInShelter || 0) },
     lastWalked: {
-      label: 'Needs a walk (never / longest since)',
+      label: 'Longest since a logged walk',
+      hidden: true,
       cmp: (a, b) => {
         // A dog currently out counts as "just walked" — no need to walk
         // again right now, so it sorts to the bottom either way.
@@ -3130,7 +3131,8 @@
     },
     alphabetical: { label: 'Name (A-Z)', cmp: (a, b) => a.name.localeCompare(b.name) },
     attention: {
-      label: 'Needs attention (fewest walks this week)',
+      label: 'Fewest logged walks this week',
+      hidden: true,
       cmp: (a, b) => (a.recentWalkCount || 0) - (b.recentWalkCount || 0) || (b.daysInShelter || 0) - (a.daysInShelter || 0)
     },
     location: {
@@ -3365,16 +3367,18 @@
       + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive + advancedActive
       + state.locationFilter.size + (state.presetMinDaysAtLeast != null ? 1 : 0);
 
+    // Dogs also get walked by people who aren't using the app, so the green
+    // shift boxes only ever mean "a walk we know about", never "the whole day".
     const lastUpdatedLine = (state.lastScrapeAt
       ? `<p class="muted small" style="margin:0 0 6px;">Last updated ${fmtDate(state.lastScrapeAt)} · ${fmtClock(state.lastScrapeAt)}</p>`
-      : '');
+      : '') + `<p class="muted small" style="margin:0 0 6px;"><span class="slot-box filled" style="display:inline-block;vertical-align:-2px;"></span> = a walk logged here that shift. Dogs also get walked outside the app.</p>`;
     const filterRow = `
       <div class="card compact stack" style="gap:6px;margin-bottom:8px;">
         <input type="text" id="availableSearchInput" placeholder="Search by name…" value="${esc(state.availableSearch || '')}" />
         <div class="row" style="align-items:center;gap:6px;">
           <label class="small muted" style="flex:0 0 auto;margin:0;">Sort:</label>
           <select id="availableSortSelect" class="small" style="flex:1;">
-            ${Object.entries(AVAILABLE_SORTS).map(([key, s]) => `<option value="${key}" ${state.availableSort === key ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
+            ${Object.entries(AVAILABLE_SORTS).filter(([, s]) => !s.hidden).map(([key, s]) => `<option value="${key}" ${state.availableSort === key ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
           </select>
           <button type="button" id="availableSortDirBtn" class="btn small-btn" style="flex:0 0 auto;width:auto;" title="${state.availableSortDir === 'asc' ? 'Ascending' : 'Descending'}">${state.availableSortDir === 'asc' ? '▲' : '▼'}</button>
         </div>
@@ -3392,7 +3396,7 @@
         </label>` : ''}
         <label class="small muted" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="needsShiftWalkCheck" ${state.needsShiftWalkOnly ? 'checked' : ''} />
-          Only dogs still needing a walk this shift
+          Hide dogs with a walk logged this shift
         </label>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">Dogs I've walked before</button>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.favorite)}" data-filter-key="favorite">♥ My favorites</button>
@@ -3432,8 +3436,7 @@
             <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
               <p class="dog-name">${esc(dog.name)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
-              <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · Walked ${dog.walkCount}× · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
-              <p class="dog-meta${!dog.recentWalkCount ? ' attention-low' : ''}">${dog.recentWalkCount || 0} walk${dog.recentWalkCount === 1 ? '' : 's'} this week</p>
+              <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
               ${slotGridHtml(dog.id)}
               ${currentWalkBadge(dog)}
               ${badge}
@@ -5043,11 +5046,13 @@
           <label style="display:block;">Kennel location</label>
           ${kennelLetterPickerHtml('locationPicker', (known && known.kennelLocation) || '')}
         </div>
-        <div class="row start-row">
-          <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
-          <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
+        <div class="action-dock">
+          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+          <div class="row start-row">
+            <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
+            <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
+          </div>
         </div>
-        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
         <button id="backToScanBtn2" class="btn">Scan a different dog</button>
       </div>`;
     wireKennelLetterPicker('locationPicker');
@@ -5118,8 +5123,8 @@
     if (hour < 11) {
       if (star) return '';
       return poo
-        ? 'This dog already had a walk today. Mornings are for first walks, and POO dogs\' second walk is best after 4pm, so they go out late.'
-        : 'This dog already had a walk today. Mornings are for first walks; non-POO second walks are best mid-day (11am to 4pm).';
+        ? 'This dog already has a walk logged today. Mornings are for first walks, and POO dogs\' second walk is best after 4pm, so they go out late.'
+        : 'This dog already has a walk logged today. Mornings are for first walks; non-POO second walks are best mid-day (11am to 4pm).';
     }
     if (hour < 16) {
       if (!poo) return '';
@@ -5220,12 +5225,14 @@
           <p id="saveAllStatus" class="small muted" style="margin:6px 0 0;"></p>
         </div>
         ${tooYoung ? `<button id="startWalkBtn" class="btn primary big" disabled>Cannot Walk This Dog</button>` : `
-        <div class="row start-row">
-          <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
-          <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
-        </div>
-        <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
-        <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>`}
+        <div class="action-dock">
+          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+          <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
+          <div class="row start-row">
+            <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
+            <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
+          </div>
+        </div>`}
         <button id="backToScanBtn2" class="btn">Scan a different dog</button>
       </div>`;
 
@@ -5535,7 +5542,7 @@
         </div>
         <button id="viewProfileBtn" class="btn">View Full Profile</button>
         <button id="earlierWalksBtn" class="btn">✎ Edit an earlier walk / notes</button>
-        <button id="endWalkBtn" class="btn danger big">End ${activityInfo(w.activity).label}</button>
+        <div class="action-dock"><button id="endWalkBtn" class="btn danger big">End ${activityInfo(w.activity).label}</button></div>
         <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
     // Switching activity mid-session keeps the same timer; it just changes
@@ -5714,7 +5721,7 @@
           <label for="walkPrivateNote">Private note for yourself (optional)</label>
           <textarea id="walkPrivateNote" placeholder="Only you can see this"></textarea>
         </div>
-        <button id="saveWalkBtn" class="btn primary big">Save &amp; Finish</button>
+        <div class="action-dock"><button id="saveWalkBtn" class="btn primary big">Save &amp; Finish</button></div>
         <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
 

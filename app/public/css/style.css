@@ -378,7 +378,6 @@ html[data-theme="dark"] main#app.pb-only-bg {
 /* Compact Available-tab cards: tighter text, smaller photo/buttons. */
 .avail-card .dog-name { font-size: 0.95rem; }
 .avail-card .dog-meta { font-size: 0.78rem; line-height: 1.3; }
-.dog-meta.attention-low { color: var(--red); font-weight: 700; }
 .avail-card .badge { margin-top: 4px; padding: 2px 8px; font-size: 0.7rem; }
 .avail-card .checkoff-label { gap: 1px; }
 .avail-card.evo-caution { background: #fbeaea; border: 2px solid var(--red); }
@@ -1186,6 +1185,26 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .feedback-kinds .btn { flex: 1 1 0; width: auto; }
 .feedback-body { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .feedback-item.resolved { opacity: 0.6; }
+/* Start / End / Save & Finish stay pinned just above the tab bar while the
+   rest of the screen scrolls, so a small phone never has to scroll down to
+   reach them; at the end of the page the bar settles back into place. The
+   negative margins stretch it across main#app's side padding, and the
+   shadow covers the strip of bottom padding under it. */
+.action-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 -12px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 24px 0 var(--bg), 0 -4px 12px rgba(0, 0, 0, 0.08);
+}
+.action-dock .link-btn { align-self: center; }
+@media (max-height: 700px) { .action-dock .btn.big { padding: 14px; } }
 /* Scan screen: big start button with a small "Change" next to it. */
 .start-row { gap: 8px; align-items: stretch; }
 .start-row #startWalkBtn { flex: 1 1 auto; }

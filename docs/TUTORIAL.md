@@ -140,13 +140,14 @@ buttons sit at the top right: 👤 your account, 📖 the Guide, and ⚙ Setting
 
 ### 🐾 Available
 
-Lists every dog, with stickers, days in the shelter, kennel letter, walks this
-week and an Eligible badge. Tap **▶ Walk / Edit** to open a dog the same way a
+Lists every dog, with stickers, days in the shelter, kennel letter, green boxes
+for walks logged in the app this shift, and an Eligible badge. Not everyone uses
+the app, so an empty box doesn't mean a dog hasn't been out. Tap **▶ Walk / Edit** to open a dog the same way a
 scan does, **View Info** for their profile, or 🕘 for walk history. Tick
 **Out** if a dog was already walked today outside the app.
 
 Tap **Filters** to narrow the list by kennel wing, sex, age, breed, stickers,
-"Dogs I've walked before", or dogs still needing a walk this shift. Save a
+"Dogs I've walked before", or hiding dogs with a walk logged this shift. Save a
 combination under **Presets**.
 
 <p>

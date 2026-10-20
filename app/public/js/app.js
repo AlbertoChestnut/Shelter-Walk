@@ -1184,7 +1184,7 @@
         </ul>
 
         <h4>What we collect</h4>
-        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown next to your walks while they're in progress, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
+        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown to other volunteers only while one of your walks is in progress, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
 
         <h4>Feedback and bug reports</h4>
         <p>Reports sent from My Account are saved without your name or account, so nobody can tell who sent one. If you tick "Include my phone and browser type", your browser's standard identification line is saved with the report (it names the kind of phone and browser, like iPhone and Safari, nothing about you) to help fix bugs. Only staff can read reports, and they can delete them.</p>
@@ -1765,11 +1765,38 @@
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
         <h2>Welcome to Shelter Walk 🐾</h2>
-        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? Other volunteers and staff will see it next to your walks.</p>
+        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? It's never shown on your past walks, and you choose below whether other volunteers see it while you're out with a dog.</p>
         <label for="onboardingNameInput" class="small">Name</label>
         <input type="text" id="onboardingNameInput" maxlength="60" autocomplete="name" value="${esc(looksReal ? existing : '')}" />
+        <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+          <input type="checkbox" id="onboardingHideName" ${state.currentUser.hideNameWhileWalking ? 'checked' : ''} />
+          Keep my name private while I'm out with a dog
+        </label>
+        <p class="small muted" style="margin:10px 0 4px;">While you're walking a dog, other volunteers see it on the Available list like this:</p>
+        <div class="card compact name-preview" aria-hidden="true">
+          <div class="dog-card">
+            <img class="dog-photo small" src="/dog-silhouettes/7.svg?v=1" alt="" />
+            <div class="dog-info">
+              <p class="dog-name">Biscuit</p>
+              <p class="dog-meta">Boxer Mix · 39d · 🏠 B</p>
+              <span id="onboardingNamePreview" class="badge out-now"></span>
+            </div>
+          </div>
+        </div>
+        <p class="small muted" style="margin:4px 0 0;">You can change this any time in My Account.</p>
         <p id="onboardingNameStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingNameNext" class="btn primary" style="margin-top:6px;">Continue</button>`;
+      // The example card: the same badge the Available list shows, with
+      // "a Volunteer" in place of the name when it's kept private.
+      const walkInfo = activityInfo('walk');
+      const updatePreview = () => {
+        const typed = document.getElementById('onboardingNameInput').value.trim();
+        const shown = document.getElementById('onboardingHideName').checked ? 'a Volunteer' : (typed || 'your name');
+        document.getElementById('onboardingNamePreview').textContent = `${walkInfo.emoji} ${walkInfo.out} ${shown}`;
+      };
+      document.getElementById('onboardingNameInput').addEventListener('input', updatePreview);
+      document.getElementById('onboardingHideName').addEventListener('change', updatePreview);
+      updatePreview();
       const submit = async () => {
         const name = document.getElementById('onboardingNameInput').value.trim();
         const statusEl = document.getElementById('onboardingNameStatus');
@@ -1779,6 +1806,11 @@
         try {
           const updated = await api('/api/me', { method: 'PUT', body: JSON.stringify({ name }) });
           state.currentUser.name = updated.name;
+          const hide = document.getElementById('onboardingHideName').checked;
+          if (hide !== !!state.currentUser.hideNameWhileWalking) {
+            await api('/api/me/privacy', { method: 'PUT', body: JSON.stringify({ hideNameWhileWalking: hide }) });
+            state.currentUser.hideNameWhileWalking = hide;
+          }
           const nameEl = document.getElementById('userBtnName');
           if (nameEl) nameEl.textContent = updated.name;
           runOnboardingStep('level');

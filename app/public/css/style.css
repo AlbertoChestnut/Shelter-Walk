@@ -400,6 +400,8 @@ html[data-theme="dark"] main#app.pb-only-bg {
 .badge.caution { background: #1c1c1c; color: #ffd400; }
 .badge.blocked { background: var(--red-fill); color: white; }
 .badge.out-now { background: #2f6fdb; color: white; }
+/* Welcome screen: example card showing how your name appears while walking. */
+.name-preview { pointer-events: none; margin: 0; }
 .badge.fav { background: #fde8ee; color: #c2185b; }
 html[data-theme="dark"] .badge.fav { background: rgba(236, 64, 122, 0.2); color: #f48fb1; }
 

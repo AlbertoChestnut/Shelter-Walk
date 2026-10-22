@@ -66,12 +66,13 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
       WHERE d.still_listed = 1 AND w.notes IS NOT NULL AND w.notes != '' AND w.ended_at IS NOT NULL
       ORDER BY at DESC
     `).all(req.me.id);
-    const dogInfo = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation FROM dogs WHERE shelter_buddy_id = ?');
+    const dogInfo = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation, previous_names AS previousNames FROM dogs WHERE shelter_buddy_id = ?');
     const byDog = new Map();
     for (const r of rows) {
       if (!byDog.has(r.dogId)) {
         const dog = dogInfo.get(r.dogId);
         if (cachedPhotoUrl) dog.photoUrl = cachedPhotoUrl(dog.id, dog.photoUrl);
+        dog.previousNames = JSON.parse(dog.previousNames || '[]');
         byDog.set(r.dogId, { dog, notes: [] });
       }
       byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.at });

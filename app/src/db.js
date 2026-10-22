@@ -487,6 +487,30 @@ if (!walkColumns.includes('wrap_up_pending')) db.exec('ALTER TABLE walks ADD COL
 if (!walkColumns.includes('activity')) db.exec("ALTER TABLE walks ADD COLUMN activity TEXT NOT NULL DEFAULT 'walk'");
 if (!walkColumns.includes('alerted_minutes')) db.exec('ALTER TABLE walks ADD COLUMN alerted_minutes INTEGER NOT NULL DEFAULT 0');
 
+// Names the shelter used for a dog before renaming them (JSON array, see
+// dogNames.js). Backfilled once from each dog's "<name> was added to the
+// shelter's listing" event, for renames that happened before this column.
+if (!dogColumns.includes('previous_names')) {
+  db.exec("ALTER TABLE dogs ADD COLUMN previous_names TEXT NOT NULL DEFAULT '[]'");
+}
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'previous_names_backfilled'").get()) {
+  const { isRename, withPreviousName } = require('./dogNames');
+  const firstNames = db.prepare(`
+    SELECT d.shelter_buddy_id AS id, d.name, d.previous_names, e.title
+    FROM dogs d JOIN shelter_events e ON e.dog_id = d.shelter_buddy_id AND e.kind = 'new_dog'
+    WHERE d.previous_names = '[]'
+      AND e.id = (SELECT MIN(id) FROM shelter_events WHERE dog_id = d.shelter_buddy_id AND kind = 'new_dog')
+  `).all();
+  const setPrevious = db.prepare('UPDATE dogs SET previous_names = ? WHERE shelter_buddy_id = ?');
+  db.transaction(() => {
+    for (const r of firstNames) {
+      const m = /^(.*) was added to the shelter's listing$/.exec(r.title || '');
+      if (m && isRename(m[1], r.name)) setPrevious.run(withPreviousName('[]', m[1], r.name), r.id);
+    }
+    db.prepare("INSERT INTO app_meta (key, value) VALUES ('previous_names_backfilled', '1')").run();
+  })();
+}
+
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_walks_dog ON walks(dog_id, ended_at);

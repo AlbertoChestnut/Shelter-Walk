@@ -374,6 +374,10 @@ html[data-theme="dark"] main#app.pb-only-bg {
 .dog-info { flex: 1; min-width: 0; }
 .dog-name { font-weight: 700; font-size: 1.05rem; margin: 0 0 2px; }
 .dog-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
+/* A dog's old name(s) after the shelter renames them (akaHtml in app.js). */
+.dog-aka { color: var(--muted); font-size: 0.78rem; font-style: italic; margin: -2px 0 2px; }
+.dog-aka.profile-aka { margin: -10px 0 8px; }
+.walk-dog-name + .dog-aka { margin: -6px 0 8px; }
 
 /* Compact Available-tab cards: tighter text, smaller photo/buttons. */
 .avail-card .dog-name { font-size: 0.95rem; }

@@ -354,6 +354,17 @@
     return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge');
   }
 
+  // Names the shelter used before renaming a dog: shown small under the
+  // current name, and searching for one still finds the dog.
+  function akaHtml(dog, extraClass) {
+    const names = (dog && dog.previousNames) || [];
+    return names.length ? `<p class="dog-aka${extraClass ? ' ' + extraClass : ''}">aka ${esc(names.join(', '))}</p>` : '';
+  }
+  // q is already trimmed and lowercased.
+  function dogNameMatches(dog, q) {
+    return [dog.name, ...(dog.previousNames || [])].some((n) => String(n).toLowerCase().includes(q));
+  }
+
   // The heart next to a dog's name, wherever it's shown. One delegated
   // handler keeps every copy of a dog's heart (card and profile) in step.
   function favButtonHtml(dog) {
@@ -2406,6 +2417,7 @@
       <h2>${esc(dog.name)} ${sexIcon(dog.sex)} ${favButtonHtml(dog)}
         <span id="profileMarkerBadges" class="${hasMarkers ? 'marker-badges-toggle' : ''}">${markerBadges(dog)}</span>
       </h2>
+      ${akaHtml(dog, 'profile-aka')}
       <div id="profileMarkerBreakdown" class="marker-breakdown hidden">${markerBreakdownHtml(dog)}</div>
       <p class="muted small nowrap" style="margin-top:-6px;">ID ${dog.id}</p>
       ${profileEditButtonHtml(dog)}
@@ -3275,7 +3287,7 @@
       }
     }
     const search = (state.availableSearch || '').trim().toLowerCase();
-    if (search) visibleDogs = visibleDogs.filter((d) => d.name.toLowerCase().includes(search));
+    if (search) visibleDogs = visibleDogs.filter((d) => dogNameMatches(d, search));
     // Each sort's cmp is written for its natural "primary" direction (e.g.
     // most-days-first, A-Z) — that's what 'desc' means here, the default;
     // 'asc' just reverses whichever sort is currently selected.
@@ -3436,6 +3448,7 @@
             <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
               <p class="dog-name">${esc(dog.name)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
+              ${akaHtml(dog)}
               <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
               ${slotGridHtml(dog.id)}
               ${currentWalkBadge(dog)}
@@ -3806,12 +3819,13 @@
     input.addEventListener('input', () => {
       const q = input.value.trim().toLowerCase();
       if (!q) { results.innerHTML = ''; return; }
-      const matches = allDogs.filter((d) => d.name.toLowerCase().includes(q)).slice(0, 8);
+      const matches = allDogs.filter((d) => dogNameMatches(d, q)).slice(0, 8);
       results.innerHTML = matches.length ? matches.map((d) => `
         <div class="card compact dog-card search-result" data-id="${d.id}">
           <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>
+            ${akaHtml(d)}
             <p class="dog-meta">${esc(d.breed || '')} · <span class="nowrap">🏠 ${esc(d.kennelLocation || '?')}</span></p>
           </div>
         </div>`).join('') : '<p class="muted small">No matches.</p>';
@@ -3843,6 +3857,7 @@
           <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(dog.name)} ${sexIcon(dog.sex)} ${markerBadges(dog)}</p>
+            ${akaHtml(dog)}
             <p class="dog-meta">${esc(dog.breed || '')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · ID ${dog.id}</p>
           </div>
         </div>
@@ -4066,6 +4081,7 @@
           <img loading="lazy" decoding="async" class="dog-photo small" src="${g.dog.photoUrl ? esc(g.dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(g.dog.name)}</p>
+            ${akaHtml(g.dog)}
             <p class="dog-meta">${g.notes.length} note${g.notes.length === 1 ? '' : 's'}${g.dog.kennelLocation ? ` · 🏠 ${esc(g.dog.kennelLocation)}` : ''} · tap to open ›</p>
           </div>
         </div>
@@ -4076,7 +4092,7 @@
           </li>`).join('')}
         </ul>
       </div>`;
-    const matches = (g, q) => !q || g.dog.name.toLowerCase().includes(q) || g.notes.some((n) => n.body.toLowerCase().includes(q));
+    const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => n.body.toLowerCase().includes(q));
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
       <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : 'All dog notes'}</h2>
@@ -4699,11 +4715,11 @@
       const q = searchInput.value.trim().toLowerCase();
       addWalkSelectedDogId = null;
       if (!q) { results.innerHTML = ''; return; }
-      const matches = allDogs.filter((d) => d.name.toLowerCase().includes(q)).slice(0, 6);
+      const matches = allDogs.filter((d) => dogNameMatches(d, q)).slice(0, 6);
       results.innerHTML = matches.map((d) => `
         <div class="card compact dog-card add-walk-dog-result" data-id="${d.id}" data-name="${esc(d.name)}">
           <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
-          <div class="dog-info"><p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p></div>
+          <div class="dog-info"><p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>${akaHtml(d)}</div>
         </div>`).join('');
       results.querySelectorAll('.add-walk-dog-result').forEach((row) => {
         row.addEventListener('click', () => {
@@ -4846,7 +4862,7 @@
     input.addEventListener('input', () => {
       const q = input.value.trim().toLowerCase();
       if (!q) { results.innerHTML = ''; return; }
-      const matches = allDogs.filter((d) => d.name.toLowerCase().includes(q)).slice(0, 8);
+      const matches = allDogs.filter((d) => dogNameMatches(d, q)).slice(0, 8);
       if (!matches.length) {
         results.innerHTML = '<p class="muted small">No matching dogs.</p>';
         return;
@@ -4856,6 +4872,7 @@
           <img loading="lazy" decoding="async" class="dog-photo" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>
+            ${akaHtml(d)}
             <p class="dog-meta">${esc(d.breed || '')} · ${d.daysInShelter} days in shelter</p>
           </div>
         </div>`).join('');
@@ -5180,6 +5197,7 @@
             <img loading="lazy" decoding="async" class="dog-photo photo-bio-trigger" data-dog-id="${dog.id}" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
               <p class="dog-name photo-bio-trigger" data-dog-id="${dog.id}" style="cursor:pointer;">${esc(dog.name)} ${markerBadges(dog)}</p>
+              ${akaHtml(dog)}
               <p class="dog-meta">${esc(dog.breed || '')} · ${esc(dog.sex || '')} · ${esc(dog.age || '')} · ID ${dog.id}</p>
               <p class="dog-meta">${shelterDaysHtml(dog)} in shelter</p>
               ${dog.currentWalk && dog.currentWalk.userId !== state.currentUser.id ? currentWalkBadge(dog) : ''}
@@ -5520,6 +5538,7 @@
           <div class="timer-display">${fmtClock(w.startedAt)}</div>
           <p class="muted small center" style="margin-top:-8px;">⏰ Check-out time - write this on the kennel</p>
           <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
+          ${akaHtml(w.dog, 'center')}
           <p class="muted small center" style="margin-top:-6px;">ID ${w.dog.id}</p>
           ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This walk will be added to their record once the shelter lists them.</p>` : ''}
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 const { sendPushToUser, hasPref } = require('./push');
+const { isRename, withPreviousName } = require('./dogNames');
 
 const BASE = 'https://pets.wake.gov';
 const USER_AGENT = 'dogwalk-personal-tracker/1.0 (+personal use, low frequency scrape)';
@@ -162,6 +163,7 @@ const startRun = db.prepare('INSERT INTO scrape_runs (started_at) VALUES (?)');
 const finishRun = db.prepare('UPDATE scrape_runs SET finished_at = ?, ok = ?, dog_count = ?, note = ? WHERE id = ?');
 
 const getDogRow = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?');
+const setPreviousNames = db.prepare('UPDATE dogs SET previous_names = ? WHERE shelter_buddy_id = ?');
 const getStillListed = db.prepare('SELECT shelter_buddy_id AS id, name, missed_scrapes AS missed FROM dogs WHERE still_listed = 1');
 const addPreviousDays = db.prepare('UPDATE dogs SET previous_days_in_shelter = previous_days_in_shelter + ? WHERE shelter_buddy_id = ?');
 // Was the stay that just ended actually an adoption, or a plain delisting
@@ -330,6 +332,11 @@ async function doScrape(runId, finish) {
         hasDetail: detail ? 1 : 0,
         now
       });
+      // Renamed by the shelter: keep the old name so the app can show
+      // "aka <old name>" and still find them by it (see dogNames.js).
+      if (existing && !existing.awaiting_listing && isRename(existing.name, name)) {
+        setPreviousNames.run(withPreviousName(existing.previous_names, existing.name, name), id);
+      }
       // Eager, not deferred to whenever someone first views this dog -- and
       // now that upsertDog has run, do it before anything else can fail this
       // iteration, so a dog never sits without an attempted photo.

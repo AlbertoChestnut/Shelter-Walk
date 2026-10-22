@@ -323,6 +323,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   return {
     id: row.shelter_buddy_id,
     name: row.name,
+    previousNames: JSON.parse(row.previous_names || '[]'),
     sex: row.sex,
     age: row.age,
     ageMonths,

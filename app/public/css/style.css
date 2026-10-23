@@ -1193,10 +1193,11 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
    rest of the screen scrolls, so a small phone never has to scroll down to
    reach them; at the end of the page the bar settles back into place. The
    negative margins stretch it across main#app's side padding, and the
-   shadow covers the strip of bottom padding under it. */
+   negative bottom pins it over main#app's 24px bottom padding rather than
+   above it (a solid shadow there used to cover the Cancel button below). */
 .action-dock {
   position: sticky;
-  bottom: 0;
+  bottom: -24px;
   z-index: 5;
   display: flex;
   flex-direction: column;
@@ -1205,7 +1206,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
   padding: 8px 12px;
   background: var(--bg);
   border-top: 1px solid var(--border);
-  box-shadow: 0 24px 0 var(--bg), 0 -4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
 }
 .action-dock .link-btn { align-self: center; }
 @media (max-height: 700px) { .action-dock .btn.big { padding: 14px; } }

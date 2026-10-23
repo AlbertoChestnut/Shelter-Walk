@@ -48,6 +48,13 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await onScreen('#backToScanBtn2'), 'scrolled to the end, "Scan a different dog" is reachable');
     await p.click('#startWalkBtn'); await p.waitForSelector('#endWalkBtn');
     ok(await onScreen('#endWalkBtn'), 'End is on screen without scrolling');
+    // The bar sits flush on the tab bar while stuck, so it needs no solid
+    // shadow below it to hide the gap -- that shadow used to paint over the
+    // top of Cancel once scrolled to the end.
+    await p.evaluate(() => { document.getElementById('app').scrollTop = 150; });
+    const dock = await p.locator('.action-dock').boundingBox(), tabbar = await p.locator('.tabbar').boundingBox();
+    ok(Math.abs(dock.y + dock.height - tabbar.y) < 1, 'mid-scroll, the bar sits right on the tab bar');
+    ok(!/0px 24px 0px/.test(await p.$eval('.action-dock', (e) => getComputedStyle(e).boxShadow)), 'no solid shadow under the bar to cover Cancel');
     await p.screenshot({ path: '/tmp/_ad2.png' });
     await p.click('#endWalkBtn'); await p.waitForSelector('#saveWalkBtn');
     ok(await onScreen('#saveWalkBtn'), 'Save & Finish is on screen without scrolling');

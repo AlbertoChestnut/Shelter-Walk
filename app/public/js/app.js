@@ -3065,7 +3065,8 @@
       pb: (d) => !!d.pbFlag,
       pendingAdoption: (d) => !!d.isPendingAdoption,
       walkedByMe: (d) => !!d.walkedByMe,
-      favorite: (d) => !!d.isFavorite
+      favorite: (d) => !!d.isFavorite,
+      playgroup: playgroupEligible
     };
     Object.entries(singleTests).forEach(([key, test]) => {
       const mode = filters[key];
@@ -3080,6 +3081,12 @@
       result = result.filter((d) => (d.effectiveDaysInShelter != null ? d.effectiveDaysInShelter : d.daysInShelter) >= min);
     }
     return result;
+  }
+
+  // PB-only dogs, dogs best without other dogs, and adopted dogs can't
+  // join play group.
+  function playgroupEligible(dog) {
+    return !dog.pbFlag && !dog.isPendingAdoption && !(dog.tags || []).includes('Best in Home without Dogs');
   }
 
   function dogHasBreed(dog, breed) {
@@ -3190,6 +3197,18 @@
         locationFilter: [],
         minDaysAtLeast: null
       }
+    },
+    {
+      key: '__playgroup',
+      name: 'Playgroup Eligible',
+      description: 'Hides dogs who are PB only, best without other dogs, or adopted',
+      filter: { markerFilters: { playgroup: 'only' }, locationFilter: [], minDaysAtLeast: null }
+    },
+    {
+      key: '__not_playgroup',
+      name: 'Not Playgroup Eligible',
+      description: 'Only dogs who are PB only, best without other dogs, or adopted',
+      filter: { markerFilters: { playgroup: 'hide' }, locationFilter: [], minDaysAtLeast: null }
     }
   ];
 
@@ -3366,7 +3385,7 @@
     const allBlueValues = BLUE_MARKERS.map((m) => m.value);
     const blueOnlyActive = allBlueValues.some((v) => state.markerFilters[v] === 'only') ? 1 : 0;
     const blueHideActive = allBlueValues.some((v) => state.markerFilters[v] === 'hide') ? 1 : 0;
-    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'male', 'female', 'desexed'];
+    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'playgroup', 'male', 'female', 'desexed'];
     const otherActiveCount = otherFilterKeys.filter((k) => state.markerFilters[k]).length;
     const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
     const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
@@ -3424,6 +3443,7 @@
         <div class="marker-row" style="gap:6px;">${starChip}</div>
         <div class="marker-row" style="gap:6px;">${blueChips}</div>
         <div class="marker-row" style="gap:6px;">${otherChips}</div>
+        <div class="marker-row" style="gap:6px;">${textChip('playgroup', '🥎 Playgroup eligible', 'Not PB only, best without other dogs, or adopted (hide to see dogs who are)')}</div>
         ${advancedSectionHtml()}
         <button type="button" id="clearFiltersBtn" class="btn small-btn" style="margin-top:8px;">Clear Filters</button>
         `}

@@ -1,5 +1,5 @@
-// "Show dogs that match: All / Any ✓ filter": ✓ criteria AND by default and
-// OR in Any mode, while ✕ filters and the kennel wing still narrow the list.
+// "Combine filters with: And / Or": every filter (✓, ✕, kennel wing) is one
+// condition, all required with And, any one enough with Or.
 // Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
 //   node smoke/filter-match.js
 const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
@@ -24,24 +24,30 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const names = async () => (await p.$$eval('.avail-card .dog-name', (els) => els.map((e) => e.textContent.replace(/[♥♡]/g, '').trim()))).sort().join(',');
     await p.goto(base, { waitUntil: 'networkidle' });
     await p.click('#toggleMoreFiltersBtn');
-    ok(await p.isVisible('.seg-btn.on[data-filter-match="all"]'), '"All ✓ filters" is the default');
+    const shows = async (n) => p.waitForFunction((n) => document.querySelectorAll('.avail-card').length === n, n);
+    ok(await p.isVisible('.seg-btn.on[data-filter-match="all"]'), 'And is the default');
     await p.click('[data-filter-key="female"]');
     await p.click('[data-filter-key="favorite"]');
     await p.waitForSelector('.empty-state');
-    ok(true, 'All: female AND favorite matches nobody');
+    ok(true, 'And: ✓ female, ✓ favorite matches nobody');
     await p.click('[data-filter-match="any"]');
-    await p.waitForFunction(() => document.querySelectorAll('.avail-card').length === 2);
-    ok(await names() === 'Biscuit,Pepper', 'Any: female OR favorite shows Pepper and Biscuit');
+    await shows(2);
+    ok(await names() === 'Biscuit,Pepper', 'Or: ✓ female, ✓ favorite shows Pepper and Biscuit');
     await p.screenshot({ path: '/tmp/_fmatch1.png' });
     await p.click('[data-location-key="A"]');
-    await p.waitForFunction(() => document.querySelectorAll('.avail-card').length === 1);
-    ok(await names() === 'Pepper', 'kennel wing still narrows in Any mode');
-    await p.click('[data-location-key="A"]');
-    await p.click('[data-filter-key="male"]'); await p.click('[data-filter-key="male"]');
-    await p.waitForFunction(() => document.querySelectorAll('.avail-card').length === 1);
-    ok(await names() === 'Pepper', 'a ✕ filter still hides dogs that match a ✓ one');
+    await shows(3);
+    ok(await names() === 'Biscuit,Mochi,Pepper', 'Or: the kennel wing adds its dogs too');
     await p.click('#clearFiltersBtn');
-    ok(await p.isVisible('.seg-btn.on[data-filter-match="all"]'), 'Clear Filters goes back to All');
+    // ✕ male, ✕ favorite: And = female non-favorites; Or = not male or not a favorite.
+    await p.click('[data-filter-key="male"]'); await p.click('[data-filter-key="male"]');
+    await p.click('[data-filter-key="favorite"]'); await p.click('[data-filter-key="favorite"]');
+    await shows(1);
+    ok(await names() === 'Pepper', 'And: ✕ male, ✕ favorite shows only Pepper');
+    await p.click('[data-filter-match="any"]');
+    await shows(2);
+    ok(await names() === 'Mochi,Pepper', 'Or: ✕ male, ✕ favorite shows Pepper and Mochi');
+    await p.click('#clearFiltersBtn');
+    ok(await p.isVisible('.seg-btn.on[data-filter-match="all"]'), 'Clear Filters goes back to And');
     ok(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.join('; ') : ''));
     await b.close();
   } finally { srv.kill(); }

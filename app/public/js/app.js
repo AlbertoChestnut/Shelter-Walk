@@ -78,7 +78,7 @@
     // within 'hide' (a dog needs ANY selected letter / must have NONE of the
     // hidden ones); every other key is its own independent AND'd criterion.
     markerFilters: {},
-    filterMatch: 'all', // 'all' | 'any': whether a dog needs every ✓ criterion or just one
+    filterMatch: 'all', // 'all' | 'any': whether a dog must pass every filter (And) or just one (Or)
     needsShiftWalkOnly: false,
     locationFilter: new Set(), // kennel wing letters (A-E) to include; empty = all
     showMoreFilters: false,
@@ -3004,23 +3004,22 @@
     return 'only';
   }
 
-  // Each criterion below becomes one "only" test and one "hide" test.
-  // Blue letters OR together within each mode (a dog needs ANY 'only'
-  // letter, and is dropped if it has ANY 'hide' letter) since requiring
-  // every selected letter at once would almost never match anything. The
-  // criteria themselves AND together, or OR in "Any" mode
-  // (state.filterMatch). Hides always drop a dog either way.
+  // Every filter in the panel becomes one condition a dog must pass: a ✓
+  // criterion, a ✕ criterion, the kennel wing, age, days in the shelter.
+  // The conditions AND together, or OR when state.filterMatch is 'any'.
+  // Within one criterion the values still OR: blue letters need ANY ✓
+  // letter (requiring every selected letter at once would almost never
+  // match anything), and a ✕ on letters means having NONE of them.
   function applyMarkerFilters(dogs) {
     const filters = state.markerFilters;
-    const onlyTests = [];
-    const hideTests = [];
+    const conditions = [];
     // One criterion whose values OR within each mode.
     const group = (tests) => {
       const keys = Object.keys(tests);
       const only = keys.filter((k) => filters[k] === 'only');
       const hide = keys.filter((k) => filters[k] === 'hide');
-      if (only.length) onlyTests.push((d) => only.some((k) => tests[k](d)));
-      if (hide.length) hideTests.push((d) => hide.some((k) => tests[k](d)));
+      if (only.length) conditions.push((d) => only.some((k) => tests[k](d)));
+      if (hide.length) conditions.push((d) => !hide.some((k) => tests[k](d)));
     };
     const blueTests = {};
     BLUE_MARKERS.forEach((m) => { blueTests[m.value] = (d) => (d.blueMarkers || []).includes(m.value); });
@@ -3052,24 +3051,23 @@
       playgroup: playgroupEligible
     };
     Object.entries(singleTests).forEach(([key, test]) => group({ [key]: test }));
-    const any = state.filterMatch === 'any';
-    let result = dogs.filter((d) => !hideTests.some((t) => t(d))
-      && (!onlyTests.length || (any ? onlyTests.some((t) => t(d)) : onlyTests.every((t) => t(d)))));
-    if (state.minShelterDays != null) result = result.filter((d) => (d.daysInShelter || 0) >= state.minShelterDays);
+    if (state.minShelterDays != null) conditions.push((d) => (d.daysInShelter || 0) >= state.minShelterDays);
     if (state.ageMinYears != null || state.ageMaxYears != null) {
       // "Up to 3 years" includes 3 years and some months. Unknown ages drop out.
       const minMonths = state.ageMinYears != null ? state.ageMinYears * 12 : 0;
       const maxMonths = state.ageMaxYears != null ? (state.ageMaxYears + 1) * 12 : Infinity;
-      result = result.filter((d) => d.ageMonths != null && d.ageMonths >= minMonths && d.ageMonths < maxMonths);
+      conditions.push((d) => d.ageMonths != null && d.ageMonths >= minMonths && d.ageMonths < maxMonths);
     }
     if (state.locationFilter.size) {
-      result = result.filter((d) => d.kennelLocation && state.locationFilter.has(d.kennelLocation.trim()[0]?.toUpperCase()));
+      conditions.push((d) => d.kennelLocation && state.locationFilter.has(d.kennelLocation.trim()[0]?.toUpperCase()));
     }
     if (state.presetMinDaysAtLeast != null) {
       const min = state.presetMinDaysAtLeast;
-      result = result.filter((d) => (d.effectiveDaysInShelter != null ? d.effectiveDaysInShelter : d.daysInShelter) >= min);
+      conditions.push((d) => (d.effectiveDaysInShelter != null ? d.effectiveDaysInShelter : d.daysInShelter) >= min);
     }
-    return result;
+    if (!conditions.length) return dogs;
+    const any = state.filterMatch === 'any';
+    return dogs.filter((d) => (any ? conditions.some((t) => t(d)) : conditions.every((t) => t(d))));
   }
 
   // PB-only dogs, dogs best without other dogs, and adopted dogs can't
@@ -3421,12 +3419,11 @@
           <input type="checkbox" id="needsShiftWalkCheck" ${state.needsShiftWalkOnly ? 'checked' : ''} />
           Hide dogs with a walk logged this shift
         </label>
-        <label class="small muted" style="margin:6px 0 0;">Show dogs that match:</label>
-        <div class="seg seg-small" role="radiogroup" aria-label="Show dogs that match" style="margin:0;">
-          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? '' : 'on'}" data-filter-match="all" role="radio" aria-checked="${state.filterMatch !== 'any'}">All ✓ filters</button>
-          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? 'on' : ''}" data-filter-match="any" role="radio" aria-checked="${state.filterMatch === 'any'}">Any ✓ filter</button>
+        <label class="small muted" style="margin:6px 0 0;">Combine filters with:</label>
+        <div class="seg seg-small" role="radiogroup" aria-label="Combine filters with" style="margin:0;">
+          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? '' : 'on'}" data-filter-match="all" role="radio" aria-checked="${state.filterMatch !== 'any'}">And (match all)</button>
+          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? 'on' : ''}" data-filter-match="any" role="radio" aria-checked="${state.filterMatch === 'any'}">Or (match any)</button>
         </div>
-        ${state.filterMatch === 'any' ? '<p class="small muted" style="margin:0;">✕ filters, kennel wing, age and days in the shelter still narrow the list.</p>' : ''}
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">Dogs I've walked before</button>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.favorite)}" data-filter-key="favorite">♥ My favorites</button>
         <label class="small muted" style="margin:6px 0 0;">Kennel wing:</label>

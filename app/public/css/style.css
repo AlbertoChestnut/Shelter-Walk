@@ -600,6 +600,12 @@ svg.asterisk-icon { display: block; }
    corner badge. */
 .btn.small-btn.filter-chip.active { background: var(--green-btn); border-color: var(--green-dark); color: white; }
 .btn.small-btn.filter-chip.excluding { background: var(--red-fill); border-color: #8a2a20; color: white; }
+/* A leading ✓ / ✕ on actual filter chips (not the other toggle buttons
+   that borrow .filter-chip) so include vs exclude doesn't rest on green
+   vs red alone. */
+.btn.small-btn.filter-chip:is([data-filter-key], [data-location-key]) { gap: 4px; }
+.btn.small-btn.filter-chip:is([data-filter-key], [data-location-key]).active::before { content: '✓'; font-weight: 900; }
+.btn.small-btn.filter-chip[data-filter-key].excluding::before { content: '✕'; font-weight: 900; }
 
 /* Available-tab filter chips: "only" reuses the green ✓ .active look above;
    "hide" gets a deliberately different red/✕ look so it never reads as

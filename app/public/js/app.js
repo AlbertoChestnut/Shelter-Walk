@@ -3356,7 +3356,7 @@
           </div>
         </details>`;
     const locationChips = KENNEL_LETTERS.map((letter) => `
-      <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 44px;">${letter}</button>`).join('');
+      <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 auto;min-width:44px;">${letter}</button>`).join('');
 
     // Shown on the collapsed "Filters" toggle so it's obvious something is
     // narrowing the list even while the panel itself is tucked away. Blue

@@ -3048,7 +3048,8 @@
       pendingAdoption: (d) => !!d.isPendingAdoption,
       walkedByMe: (d) => !!d.walkedByMe,
       favorite: (d) => !!d.isFavorite,
-      playgroup: playgroupEligible
+      playgroup: playgroupEligible,
+      walkable: (d) => d.eligible === true
     };
     Object.entries(singleTests).forEach(([key, test]) => group({ [key]: test }));
     if (state.minShelterDays != null) conditions.push((d) => (d.daysInShelter || 0) >= state.minShelterDays);
@@ -3184,6 +3185,18 @@
         locationFilter: [],
         minDaysAtLeast: null
       }
+    },
+    {
+      key: '__walkable',
+      name: 'Eligible to Walk',
+      description: 'Only dogs cleared for your level right now',
+      filter: { markerFilters: { walkable: 'only' }, locationFilter: [], minDaysAtLeast: null }
+    },
+    {
+      key: '__not_walkable',
+      name: 'Not Eligible to Walk',
+      description: 'Dogs who are too young or not cleared for your level yet',
+      filter: { markerFilters: { walkable: 'hide' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__playgroup',
@@ -3375,7 +3388,7 @@
     const allBlueValues = BLUE_MARKERS.map((m) => m.value);
     const blueOnlyActive = allBlueValues.some((v) => state.markerFilters[v] === 'only') ? 1 : 0;
     const blueHideActive = allBlueValues.some((v) => state.markerFilters[v] === 'hide') ? 1 : 0;
-    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'playgroup', 'male', 'female', 'desexed'];
+    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'playgroup', 'walkable', 'male', 'female', 'desexed'];
     const otherActiveCount = otherFilterKeys.filter((k) => state.markerFilters[k]).length;
     const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
     const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
@@ -3438,7 +3451,7 @@
         <div class="marker-row" style="gap:6px;">${starChip}</div>
         <div class="marker-row" style="gap:6px;">${blueChips}</div>
         <div class="marker-row" style="gap:6px;">${otherChips}</div>
-        <div class="marker-row" style="gap:6px;">${textChip('playgroup', '🥎 Playgroup eligible', 'Not PB only, best without other dogs, or adopted (hide to see dogs who are)')}</div>
+        <div class="marker-row" style="gap:6px;">${textChip('walkable', '🦮 Eligible to walk', 'Cleared for your level right now, the same as the Eligible ✓ badge (hide to see dogs who are not)')}${textChip('playgroup', '🥎 Playgroup eligible', 'Not PB only, best without other dogs, or adopted (hide to see dogs who are)')}</div>
         ${advancedSectionHtml()}
         <button type="button" id="clearFiltersBtn" class="btn small-btn" style="margin-top:8px;">Clear Filters</button>
         `}

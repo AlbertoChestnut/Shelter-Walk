@@ -78,6 +78,7 @@
     // within 'hide' (a dog needs ANY selected letter / must have NONE of the
     // hidden ones); every other key is its own independent AND'd criterion.
     markerFilters: {},
+    filterMatch: 'all', // 'all' | 'any': whether a dog needs every ✓ criterion or just one
     needsShiftWalkOnly: false,
     locationFilter: new Set(), // kennel wing letters (A-E) to include; empty = all
     showMoreFilters: false,
@@ -3003,62 +3004,44 @@
     return 'only';
   }
 
+  // Each criterion below becomes one "only" test and one "hide" test.
   // Blue letters OR together within each mode (a dog needs ANY 'only'
   // letter, and is dropped if it has ANY 'hide' letter) since requiring
-  // every selected letter at once would almost never match anything. Every
-  // other criterion here only ever has one chip, so it's just its own
-  // independent AND'd condition.
+  // every selected letter at once would almost never match anything. The
+  // criteria themselves AND together, or OR in "Any" mode
+  // (state.filterMatch). Hides always drop a dog either way.
   function applyMarkerFilters(dogs) {
     const filters = state.markerFilters;
-    const blueValues = BLUE_MARKERS.map((m) => m.value);
-    const blueOnly = blueValues.filter((v) => filters[v] === 'only');
-    const blueHide = blueValues.filter((v) => filters[v] === 'hide');
-    let result = dogs;
-    if (blueOnly.length) {
-      result = result.filter((d) => (d.blueMarkers || []).some((m) => blueOnly.includes(m)));
-    }
-    if (blueHide.length) {
-      result = result.filter((d) => !(d.blueMarkers || []).some((m) => blueHide.includes(m)));
-    }
+    const onlyTests = [];
+    const hideTests = [];
+    // One criterion whose values OR within each mode.
+    const group = (tests) => {
+      const keys = Object.keys(tests);
+      const only = keys.filter((k) => filters[k] === 'only');
+      const hide = keys.filter((k) => filters[k] === 'hide');
+      if (only.length) onlyTests.push((d) => only.some((k) => tests[k](d)));
+      if (hide.length) hideTests.push((d) => hide.some((k) => tests[k](d)));
+    };
+    const blueTests = {};
+    BLUE_MARKERS.forEach((m) => { blueTests[m.value] = (d) => (d.blueMarkers || []).includes(m.value); });
+    group(blueTests);
     // poo/poo_priority are two values of the same underlying field, not two
     // independent flags — ANDing them (the old behavior) could never match
     // anything once both were set to 'only'. OR them like the blue letters.
-    const pooTests = { poo: (d) => d.pooStatus === 'poo', poo_priority: (d) => d.pooStatus === 'priority' };
-    const pooOnly = Object.keys(pooTests).filter((k) => filters[k] === 'only');
-    const pooHide = Object.keys(pooTests).filter((k) => filters[k] === 'hide');
-    if (pooOnly.length) result = result.filter((d) => pooOnly.some((k) => pooTests[k](d)));
-    if (pooHide.length) result = result.filter((d) => !pooHide.some((k) => pooTests[k](d)));
+    group({ poo: (d) => d.pooStatus === 'poo', poo_priority: (d) => d.pooStatus === 'priority' });
     // Adopter filters. Male/female are two values of one field, so they OR
     // like the POO chips. Breeds OR within each mode like the blue letters,
     // and a breed also matches dogs with it in their shelter tags (mixes).
-    const sexTests = { male: (d) => d.sex === 'Male', female: (d) => d.sex === 'Female' };
-    const sexOnly = Object.keys(sexTests).filter((k) => filters[k] === 'only');
-    const sexHide = Object.keys(sexTests).filter((k) => filters[k] === 'hide');
-    if (sexOnly.length) result = result.filter((d) => sexOnly.some((k) => sexTests[k](d)));
-    if (sexHide.length) result = result.filter((d) => !sexHide.some((k) => sexTests[k](d)));
-    const breedKeys = Object.keys(filters).filter((k) => k.startsWith('breed:'));
-    const breedOnly = breedKeys.filter((k) => filters[k] === 'only').map((k) => k.slice(6));
-    const breedHide = breedKeys.filter((k) => filters[k] === 'hide').map((k) => k.slice(6));
-    if (breedOnly.length) result = result.filter((d) => breedOnly.some((b) => dogHasBreed(d, b)));
-    if (breedHide.length) result = result.filter((d) => !breedHide.some((b) => dogHasBreed(d, b)));
+    group({ male: (d) => d.sex === 'Male', female: (d) => d.sex === 'Female' });
+    const breedTests = {};
+    Object.keys(filters).filter((k) => k.startsWith('breed:')).forEach((k) => { breedTests[k] = (d) => dogHasBreed(d, k.slice(6)); });
+    group(breedTests);
     // Advanced: shelter tags (compatibility, heartworm, stray hold, video)
-    // are each their own AND'd criterion; sizes OR within each mode.
-    Object.keys(filters).filter((k) => k.startsWith('tag:')).forEach((k) => {
-      const tag = k.slice(4);
-      if (filters[k] === 'only') result = result.filter((d) => (d.tags || []).includes(tag));
-      else if (filters[k] === 'hide') result = result.filter((d) => !(d.tags || []).includes(tag));
-    });
-    const sizeOnly = SIZE_FILTERS.filter((z) => filters[z.key] === 'only');
-    const sizeHide = SIZE_FILTERS.filter((z) => filters[z.key] === 'hide');
-    if (sizeOnly.length) result = result.filter((d) => sizeOnly.some((z) => z.test(weightLbs(d))));
-    if (sizeHide.length) result = result.filter((d) => !sizeHide.some((z) => z.test(weightLbs(d))));
-    if (state.minShelterDays != null) result = result.filter((d) => (d.daysInShelter || 0) >= state.minShelterDays);
-    if (state.ageMinYears != null || state.ageMaxYears != null) {
-      // "Up to 3 years" includes 3 years and some months. Unknown ages drop out.
-      const minMonths = state.ageMinYears != null ? state.ageMinYears * 12 : 0;
-      const maxMonths = state.ageMaxYears != null ? (state.ageMaxYears + 1) * 12 : Infinity;
-      result = result.filter((d) => d.ageMonths != null && d.ageMonths >= minMonths && d.ageMonths < maxMonths);
-    }
+    // are each their own criterion; sizes OR within each mode.
+    Object.keys(filters).filter((k) => k.startsWith('tag:')).forEach((k) => group({ [k]: (d) => (d.tags || []).includes(k.slice(4)) }));
+    const sizeTests = {};
+    SIZE_FILTERS.forEach((z) => { sizeTests[z.key] = (d) => z.test(weightLbs(d)); });
+    group(sizeTests);
     const singleTests = {
       desexed: (d) => d.desexed === 'Yes',
       star: (d) => !!d.starFlag,
@@ -3068,11 +3051,17 @@
       favorite: (d) => !!d.isFavorite,
       playgroup: playgroupEligible
     };
-    Object.entries(singleTests).forEach(([key, test]) => {
-      const mode = filters[key];
-      if (mode === 'only') result = result.filter(test);
-      else if (mode === 'hide') result = result.filter((d) => !test(d));
-    });
+    Object.entries(singleTests).forEach(([key, test]) => group({ [key]: test }));
+    const any = state.filterMatch === 'any';
+    let result = dogs.filter((d) => !hideTests.some((t) => t(d))
+      && (!onlyTests.length || (any ? onlyTests.some((t) => t(d)) : onlyTests.every((t) => t(d)))));
+    if (state.minShelterDays != null) result = result.filter((d) => (d.daysInShelter || 0) >= state.minShelterDays);
+    if (state.ageMinYears != null || state.ageMaxYears != null) {
+      // "Up to 3 years" includes 3 years and some months. Unknown ages drop out.
+      const minMonths = state.ageMinYears != null ? state.ageMinYears * 12 : 0;
+      const maxMonths = state.ageMaxYears != null ? (state.ageMaxYears + 1) * 12 : Infinity;
+      result = result.filter((d) => d.ageMonths != null && d.ageMonths >= minMonths && d.ageMonths < maxMonths);
+    }
     if (state.locationFilter.size) {
       result = result.filter((d) => d.kennelLocation && state.locationFilter.has(d.kennelLocation.trim()[0]?.toUpperCase()));
     }
@@ -3221,6 +3210,7 @@
     state.ageMinYears = filter.ageMinYears != null ? filter.ageMinYears : null;
     state.ageMaxYears = filter.ageMaxYears != null ? filter.ageMaxYears : null;
     state.minShelterDays = filter.minShelterDays != null ? filter.minShelterDays : null;
+    state.filterMatch = filter.matchAny ? 'any' : 'all';
     state.showMoreFilters = true;
     state.filtersTab = 'filters';
     redrawAvailableList();
@@ -3233,12 +3223,14 @@
       minDaysAtLeast: state.presetMinDaysAtLeast,
       ageMinYears: state.ageMinYears,
       ageMaxYears: state.ageMaxYears,
-      minShelterDays: state.minShelterDays
+      minShelterDays: state.minShelterDays,
+      matchAny: state.filterMatch === 'any'
     };
   }
 
   function clearAllFilters() {
     state.markerFilters = {};
+    state.filterMatch = 'all';
     state.locationFilter = new Set();
     state.presetMinDaysAtLeast = null;
     state.ageMinYears = null;
@@ -3429,6 +3421,12 @@
           <input type="checkbox" id="needsShiftWalkCheck" ${state.needsShiftWalkOnly ? 'checked' : ''} />
           Hide dogs with a walk logged this shift
         </label>
+        <label class="small muted" style="margin:6px 0 0;">Show dogs that match:</label>
+        <div class="seg seg-small" role="radiogroup" aria-label="Show dogs that match" style="margin:0;">
+          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? '' : 'on'}" data-filter-match="all" role="radio" aria-checked="${state.filterMatch !== 'any'}">All ✓ filters</button>
+          <button type="button" class="seg-btn ${state.filterMatch === 'any' ? 'on' : ''}" data-filter-match="any" role="radio" aria-checked="${state.filterMatch === 'any'}">Any ✓ filter</button>
+        </div>
+        ${state.filterMatch === 'any' ? '<p class="small muted" style="margin:0;">✕ filters, kennel wing, age and days in the shelter still narrow the list.</p>' : ''}
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">Dogs I've walked before</button>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.favorite)}" data-filter-key="favorite">♥ My favorites</button>
         <label class="small muted" style="margin:6px 0 0;">Kennel wing:</label>
@@ -3585,6 +3583,12 @@
         redrawAvailableList();
       });
     }
+    document.querySelectorAll('.seg-btn[data-filter-match]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.filterMatch = btn.dataset.filterMatch;
+        redrawAvailableList();
+      });
+    });
     const clearBtn = document.getElementById('clearFiltersBtn');
     if (clearBtn) clearBtn.addEventListener('click', () => clearAllFilters());
 

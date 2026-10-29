@@ -1299,9 +1299,9 @@ app.post('/api/walks/start', (req, res) => {
     dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   }
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
-  if (!dog.still_listed && !dog.awaiting_listing) {
-    return res.status(409).json({ error: `${dog.name} is no longer listed at the shelter, so a walk can't be started.` });
-  }
+  // A dog off the listing (say, just returned, before the shelter's site
+  // catches up) can still be walked: the walk is filed under their ID like
+  // any other, and the scraper treats them as a return when they reappear.
 
   const ageMonths = parseAgeMonths(dog.age);
   if (ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS) {

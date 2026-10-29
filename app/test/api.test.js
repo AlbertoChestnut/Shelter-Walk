@@ -82,9 +82,12 @@ test('walk lifecycle: start, block duplicates, cancel', async () => {
   assert.equal((await call('GET', '/api/walks/active?userId=1')).json.walk, null);
 });
 
-test('cannot walk a dog that is no longer listed', async () => {
+test('a dog no longer listed (e.g. just returned) can still be walked', async () => {
   const r = await call('POST', '/api/walks/start', { body: { dogId: 2, userId: 1 } });
-  assert.equal(r.status, 409);
+  assert.equal(r.status, 200);
+  const dog = await call('GET', '/api/dogs/2?userId=1');
+  assert.equal(dog.json.dog.stillListed, false, 'the app can show the not-on-the-site heads-up');
+  assert.equal((await call('DELETE', `/api/walks/${r.json.walkId}`)).status, 200);
 });
 
 test('a completed walk counts in stats; a cancelled one does not', async () => {

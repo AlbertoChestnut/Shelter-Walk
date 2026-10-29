@@ -5045,6 +5045,18 @@
         renderWalk();
         return;
       }
+      // Off the site (adopted, maybe returned before the listing caught up):
+      // a stale record could be the wrong dog, so check the card first.
+      if (dog.stillListed === false) {
+        const goOn = await appConfirm(
+          `${dog.name} (ID ${dog.id}) is not in the database anymore. If they were adopted and returned, they may not have been added back to the site yet. Double check that the dog you're walking matches the kennel card you scanned before you go on.`,
+          { title: '⚠️ Not on the shelter\'s site', confirmText: 'It matches, continue', cancelText: 'Scan again' }
+        );
+        // Not stale(): closing the dialog is itself a Back, which bumps dogLookupSeq.
+        if (state.tab !== 'walk') return;
+        // Same as Back from a scanned dog: the popstate handler reopens the camera.
+        if (!goOn) { history.back(); return; }
+      }
       state.walk.phase = 'confirm';
       state.walk.dog = dog;
       state.walk.allWalks = walks;
@@ -5225,6 +5237,7 @@
       <div class="stack tight walk-confirm">
         ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies under 6 months old can't be walked - no exceptions.</strong></div>` : ''}
         ${!tooYoung && dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
+        ${dog.stillListed === false ? `<div class="timing-hint" role="note">📋 ${esc(dog.name)} isn't on the shelter's site right now. You can still walk them, and this walk will be added to their record.</div>` : ''}
         ${!tooYoung && timingHint ? `<div class="timing-hint" role="note">ℹ️ ${esc(timingHint)} <button type="button" class="link-btn" id="timingHintGuideBtn">Which dogs should I walk?</button></div>` : ''}
         <div class="card compact" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
@@ -5579,7 +5592,8 @@
           <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
           ${akaHtml(w.dog, 'center')}
           <p class="muted small center" style="margin-top:-6px;">ID ${w.dog.id}</p>
-          ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This walk will be added to their record once the shelter lists them.</p>` : ''}
+          ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This walk will be added to their record once the shelter lists them.</p>`
+            : w.dog.stillListed === false ? `<p class="small center unlisted-note">📋 Not on the shelter's site right now. This walk will still be added to their record.</p>` : ''}
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
           <div class="timer-display" id="timerDisplay">00:00</div>
         </div>

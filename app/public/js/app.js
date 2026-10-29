@@ -103,7 +103,8 @@
     togetherOpenMonths: null, // same, for Together's past days
     selectedDateKey: null,
     selectedShiftIndex: null, // which of the 4 shift tiles is drilled into on the Stats day view, if any
-    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes)
+    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes) | 'shelter' (listing trends)
+    shelterRange: 30, // days shown on the Shelter trend charts (0 = all)
     notesQuery: '', // search text on the all-notes view
     notesMine: false, // all-notes view narrowed to my private + my walk notes
     togetherDay: null, // dateKey of the Together day being viewed, if any
@@ -3463,8 +3464,10 @@
         ` : ''}
       </div>`;
 
+    // How many dogs this search/filter returns, against everyone listed.
+    const resultCount = `<p class="muted small result-count" style="margin:0 0 6px;">Showing <strong>${visibleDogs.length}</strong> of ${allDogs.length} dog${allDogs.length === 1 ? '' : 's'}</p>`;
     if (!visibleDogs.length) {
-      appEl.innerHTML = lastUpdatedLine + filterRow + `<p class="empty-state">No dogs match this filter.</p>`;
+      appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<p class="empty-state">No dogs match this filter.</p>`;
       restoreScroll(state.availableScrollTop);
       wireAvailableFilters();
       return;
@@ -3495,7 +3498,7 @@
           ${dogActionButtons(dog.id, dog.tooYoung || dog.eligible === false)}
         </div>`;
     }).join('');
-    appEl.innerHTML = lastUpdatedLine + filterRow + `<div class="stack tight">${cards}</div>`;
+    appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<div class="stack tight">${cards}</div>`;
     restoreScroll(state.availableScrollTop);
     wireAvailableFilters();
     wireDogActionButtons(appEl);
@@ -3983,6 +3986,7 @@
         <button type="button" class="seg-btn ${state.statsScope === 'mine' ? 'on' : ''}" data-scope="mine" role="tab" aria-selected="${state.statsScope === 'mine'}">My stats</button>
         <button type="button" class="seg-btn ${state.statsScope === 'together' ? 'on' : ''}" data-scope="together" role="tab" aria-selected="${state.statsScope === 'together'}">Together</button>
         <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
+        <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
       </div>`;
   }
   function wireStatsScopeSwitch() {
@@ -4099,6 +4103,142 @@
     }));
   }
 
+  // Shelter trends: dogs listed each day, and dogs coming in / going out,
+  // rebuilt from the scraper's event log (see shelterTrends.js). No volunteer
+  // data is involved.
+  const SHELTER_RANGES = [{ days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 0, label: 'All' }];
+  async function renderShelterTrends() {
+    const myTab = state.tab;
+    let data;
+    try {
+      data = await api('/api/shelter-trends');
+    } catch (err) {
+      if (state.tab === myTab) showLoadError('the shelter trends', err, renderStats);
+      return;
+    }
+    if (state.tab !== myTab || state.statsScope !== 'shelter') return;
+    const days = state.shelterRange ? data.days.slice(-state.shelterRange) : data.days;
+    const sum = (k) => days.reduce((n, d) => n + d[k], 0);
+    const perDay = (k) => (days.length ? Math.round((sum(k) / days.length) * 10) / 10 : 0);
+    const tile = (value, label, sub) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    const first = days[0];
+    const change = first ? data.listedNow - first.listed : 0;
+    const shortDate = (key) => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+    const tableRows = [...days].reverse().map((d) => `
+      <tr><td>${esc(shortDate(d.dateKey))}</td><td>${d.listed}</td><td>${d.newDogs}</td><td>${d.returned}</td><td>${d.adopted}</td><td>${d.otherExits}</td></tr>`).join('');
+    appEl.innerHTML = `
+      ${statsScopeSwitchHtml()}
+      <div class="seg seg-small" role="radiogroup" aria-label="Time range">
+        ${SHELTER_RANGES.map((r) => `<button type="button" class="seg-btn ${state.shelterRange === r.days ? 'on' : ''}" data-shelter-range="${r.days}" role="radio" aria-checked="${state.shelterRange === r.days}">${r.label}</button>`).join('')}
+      </div>
+      <div class="stat-grid three">
+        ${tile(data.listedNow, 'Dogs listed now', first ? `${change > 0 ? '+' : ''}${change} since ${esc(shortDate(first.dateKey))}` : '')}
+        ${tile(sum('broughtIn'), 'Brought in', `${perDay('broughtIn')} a day`)}
+        ${tile(sum('adopted'), 'Adopted', `${perDay('adopted')} a day`)}
+      </div>
+      <h2 class="section-heading">Dogs listed</h2>
+      <div class="card compact trend-card">${trendChartHtml(days, [{ key: 'listed', label: 'Dogs listed', cls: 'listed' }])}</div>
+      <h2 class="section-heading">In and out each day</h2>
+      <div class="card compact trend-card">${trendChartHtml(days, [
+        { key: 'broughtIn', label: 'Brought in', cls: 'in' },
+        { key: 'adopted', label: 'Adopted', cls: 'out' }
+      ])}</div>
+      <details class="trend-table-wrap">
+        <summary class="small muted">Show as a table</summary>
+        <div class="trend-table-scroll">
+          <table class="trend-table">
+            <thead><tr><th>Day</th><th>Listed</th><th>New</th><th>Returned</th><th>Adopted</th><th>Other exits</th></tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+      </details>
+      <p class="small muted center" style="margin-top:14px;">From the shelter's public listing, checked through the day. "Listed" counts every dog on the listing at day's end, including dogs in foster. "Brought in" is new dogs plus dogs returned. "Other exits" are dogs that left the listing without showing as adopted (transfers, returned to owner and so on). Tracking starts ${esc(shortDate(data.days[0] ? data.days[0].dateKey : ''))}.</p>`;
+    wireStatsScopeSwitch();
+    appEl.querySelectorAll('[data-shelter-range]').forEach((b) => b.addEventListener('click', () => {
+      state.shelterRange = Number(b.dataset.shelterRange);
+      renderShelterTrends();
+    }));
+    wireTrendCharts(days, shortDate);
+  }
+
+  // A small hand-drawn SVG line chart over days (one y-axis, starting at 0
+  // for counts). series: [{ key, label, cls }]; cls picks the line color in
+  // style.css. Hover/tap shows every series' value for that day.
+  function trendChartHtml(days, series) {
+    if (!days.length) return `<p class="small muted" style="margin:0;">Nothing to show yet.</p>`;
+    // Drawn at the screen's real width so text stays its normal size.
+    const W = Math.max(280, Math.round((appEl.clientWidth || 360) - 34)), H = 200, padL = 34, padR = 10, padT = 10, padB = 24;
+    const max = Math.max(1, ...days.flatMap((d) => series.map((s) => d[s.key])));
+    // Count charts start at zero; the listing chart zooms to its range so day
+    // to day changes are visible.
+    const isLevel = series.length === 1 && series[0].key === 'listed';
+    const minRaw = isLevel ? Math.min(...days.map((d) => d.listed)) : 0;
+    const step = niceStep((max - minRaw) / 4 || 1);
+    const yMin = isLevel ? Math.max(0, Math.floor((minRaw - step / 2) / step) * step) : 0;
+    const yMax = Math.ceil(max / step) * step || step;
+    const x = (i) => padL + (days.length === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (days.length - 1));
+    const y = (v) => padT + (H - padT - padB) * (1 - (v - yMin) / ((yMax - yMin) || 1));
+    const grid = [];
+    for (let v = yMin; v <= yMax + 1e-9; v += step) {
+      grid.push(`<line class="trend-grid" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" /><text class="trend-axis" x="${padL - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`);
+    }
+    // About five date labels along the bottom, always including the ends.
+    const labelEvery = Math.max(1, Math.ceil(days.length / 5));
+    const xLabels = days.map((d, i) => ((i % labelEvery === 0 && x(days.length - 1) - x(i) >= 48) || i === days.length - 1)
+      ? `<text class="trend-axis" x="${x(i)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === days.length - 1 ? 'end' : 'middle'}">${esc(shortDayLabel(d.dateKey))}</text>` : '').join('');
+    const lines = series.map((s) => `<polyline class="trend-line ${s.cls}" points="${days.map((d, i) => `${x(i).toFixed(1)},${y(d[s.key]).toFixed(1)}`).join(' ')}" />`).join('');
+    const legend = series.length > 1
+      ? `<div class="trend-legend">${series.map((s) => `<span><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}</span>`).join('')}</div>` : '';
+    const geom = { W, padL, padR, n: days.length, series, ys: days.map((d) => series.map((s) => y(d[s.key]))), xs: days.map((d, i) => x(i)) };
+    return `${legend}
+      <div class="trend-chart" data-geom='${esc(JSON.stringify(geom))}'>
+        <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(series.map((s) => s.label).join(' and '))} by day">
+          ${grid.join('')}${xLabels}${lines}
+          <line class="trend-cursor hidden" x1="0" x2="0" y1="${padT}" y2="${H - padB}" />
+          ${series.map((s) => `<circle class="trend-dot ${s.cls} hidden" r="4" cx="0" cy="0" />`).join('')}
+        </svg>
+        <div class="trend-tip hidden"></div>
+      </div>`;
+  }
+  function niceStep(raw) {
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / mag;
+    return Math.max(1, (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag);
+  }
+  function shortDayLabel(key) {
+    const [y, m, d] = key.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+  }
+  function wireTrendCharts(days, fmtDay) {
+    appEl.querySelectorAll('.trend-chart').forEach((box) => {
+      const g = JSON.parse(box.dataset.geom);
+      const svg = box.querySelector('svg');
+      const cursor = box.querySelector('.trend-cursor');
+      const dots = [...box.querySelectorAll('.trend-dot')];
+      const tip = box.querySelector('.trend-tip');
+      const show = (clientX) => {
+        const r = svg.getBoundingClientRect();
+        const vx = ((clientX - r.left) / r.width) * g.W;
+        let i = 0;
+        g.xs.forEach((xv, k) => { if (Math.abs(xv - vx) < Math.abs(g.xs[i] - vx)) i = k; });
+        cursor.setAttribute('x1', g.xs[i]); cursor.setAttribute('x2', g.xs[i]);
+        cursor.classList.remove('hidden');
+        dots.forEach((dot, k) => { dot.setAttribute('cx', g.xs[i]); dot.setAttribute('cy', g.ys[i][k]); dot.classList.remove('hidden'); });
+        const d = days[i];
+        tip.innerHTML = `<strong>${esc(fmtDay(d.dateKey))}</strong>${g.series.map((s) => `<div><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}: <strong>${d[s.key]}</strong></div>`).join('')}`
+          + (g.series.some((s) => s.key === 'broughtIn') ? `<div class="muted">${d.newDogs} new · ${d.returned} returned</div>` : '');
+        tip.classList.remove('hidden');
+        const px = (g.xs[i] / g.W) * r.width;
+        const tw = tip.offsetWidth;
+        tip.style.left = `${Math.min(Math.max(0, px - tw / 2), r.width - tw)}px`;
+      };
+      const hide = () => { cursor.classList.add('hidden'); dots.forEach((dot) => dot.classList.add('hidden')); tip.classList.add('hidden'); };
+      box.addEventListener('pointermove', (e) => show(e.clientX));
+      box.addEventListener('pointerdown', (e) => show(e.clientX));
+      box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') hide(); });
+    });
+  }
+
   // Every dog's notes in one list (dogs still at the shelter): shared tips,
   // notes from walks, and your own private notes, newest first. Tapping a dog
   // opens its profile, where the tips and your note can be edited; the list
@@ -4188,6 +4328,10 @@
     if (state.statsScope === 'notes') {
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
       return renderAllNotes();
+    }
+    if (state.statsScope === 'shelter') {
+      appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+      return renderShelterTrends();
     }
     if (state.statsScope === 'together') {
       if (state.togetherDay) return renderTogetherDay();

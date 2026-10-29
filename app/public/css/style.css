@@ -1337,3 +1337,32 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .visit-month[open] .visit-month-chevron { transform: none; }
 .visit-month[open] > .stack { margin: 8px 0 4px; gap: 8px; }
 .visit-month > .stack > .card { margin-bottom: 0; }
+
+/* Stats > Shelter trend charts. Series colors: brand green for the single
+   listing line; blue / orange (validated categorical pair) for in vs out. */
+:root { --trend-listed: #2f6f4f; --trend-in: #2a78d6; --trend-out: #eb6834; --trend-grid: #e6e9e5; }
+html[data-theme="dark"] { --trend-listed: #6fc194; --trend-in: #3987e5; --trend-out: #d95926; --trend-grid: #33373a; }
+.trend-card { padding: 10px 6px 6px; }
+.trend-chart { position: relative; touch-action: pan-y; }
+.trend-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.trend-grid { stroke: var(--trend-grid); stroke-width: 1; }
+.trend-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.trend-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.trend-line.listed, .trend-dot.listed { stroke: var(--trend-listed); }
+.trend-line.in, .trend-dot.in { stroke: var(--trend-in); }
+.trend-line.out, .trend-dot.out { stroke: var(--trend-out); }
+.trend-dot { fill: var(--card-bg); stroke-width: 2.5; }
+.trend-cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.trend-chart .hidden { display: none; }
+.trend-tip { position: absolute; top: -6px; transform: translateY(-100%); background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 0.8rem; line-height: 1.4; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; z-index: 2; }
+.trend-legend { display: flex; gap: 14px; font-size: 0.8rem; color: var(--text); padding: 0 6px 6px; }
+.trend-swatch { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; background: var(--trend-listed); }
+.trend-swatch.in { background: var(--trend-in); }
+.trend-swatch.out { background: var(--trend-out); }
+.trend-table-wrap { margin-top: 12px; }
+.trend-table-scroll { overflow-x: auto; margin-top: 6px; }
+.trend-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.trend-table th, .trend-table td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--border); }
+.trend-table th:first-child, .trend-table td:first-child { text-align: left; }
+.trend-table th { color: var(--muted); font-weight: 600; }
+

@@ -9,6 +9,7 @@ const { dogSilhouetteSvg, silhouetteUrl } = require('./silhouette');
 const push = require('./push');
 const wiki = require('./wiki');
 const impact = require('./impact');
+const shelterTrends = require('./shelterTrends');
 const notes = require('./notes');
 const feedback = require('./feedback');
 const account = require('./account');
@@ -492,6 +493,7 @@ function walkAccessDenied(req, res, walk) {
 wiki.register(app, { db, resolveAuthedUser });
 impact.register(app, { db });
 impact.registerDay(app, { db, cachedPhotoUrl });
+shelterTrends.register(app, { db });
 const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
 feedback.register(app, { db, isStaffOrPrivileged, push });
 account.register(app, { db });

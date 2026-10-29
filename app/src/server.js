@@ -1182,6 +1182,11 @@ app.put('/api/manual-checkoffs', (req, res) => {
 app.get('/api/updates', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   const limit = clampLimit(req.query.limit, 100);
+  // Optional time window (the feed's Today / This week / Custom filter).
+  // Normalized through Date so only real timestamps reach the query.
+  const isoParam = (v) => { const d = v ? new Date(String(v)) : null; return d && !isNaN(d) ? d.toISOString() : null; };
+  const since = isoParam(req.query.since) || '';
+  const until = isoParam(req.query.until) || '9999';
   // Fetch more than asked before filtering by show_* prefs, so hiding a
   // category doesn't just leave someone with a short feed once they've
   // scrolled past however many of that kind happened to lead the results.
@@ -1195,10 +1200,10 @@ app.get('/api/updates', (req, res) => {
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
-    WHERE e.kind != 'removed'
+    WHERE e.kind != 'removed' AND e.occurred_at >= ? AND e.occurred_at < ?
     ORDER BY e.occurred_at DESC, e.id DESC
     LIMIT ?
-  `).all(limit * 4);
+  `).all(since, until, limit * 4);
   rows.forEach((r) => { if (r.dog_id) r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url); });
 
   let prefEnabled = false;

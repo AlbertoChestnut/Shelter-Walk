@@ -96,6 +96,9 @@
     availableScrollTop: 0,
     updatesScrollTop: 0,
     updatesHtml: null, // last rendered Updates feed, redrawn as-is on Back from a dog
+    updatesRange: 'all', // 'all' | 'today' | 'week' | 'custom' -- the feed's time filter
+    updatesFrom: '', // custom range, as <input type="datetime-local"> values (device time)
+    updatesTo: '',
     savedFilters: [],
     statsView: 'summary',
     statsPresentOnly: true,
@@ -4667,12 +4670,62 @@
     };
   }
 
+  // The Updates time filter: [since, until) as Dates, null meaning open-ended.
+  // Today and This week go by the phone's own clock; a week starts Sunday.
+  const UPDATES_RANGES = [['all', 'All'], ['today', 'Today'], ['week', 'This week'], ['custom', 'Custom']];
+  function updatesWindow() {
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    if (state.updatesRange === 'today') return { since: midnight, until: null };
+    if (state.updatesRange === 'week') {
+      const sunday = new Date(midnight); sunday.setDate(sunday.getDate() - sunday.getDay());
+      return { since: sunday, until: null };
+    }
+    if (state.updatesRange === 'custom') {
+      const at = (v) => (v ? new Date(v) : null); // datetime-local values parse as device time
+      return { since: at(state.updatesFrom), until: at(state.updatesTo) };
+    }
+    return { since: null, until: null };
+  }
+  function updatesFilterHtml(rows) {
+    const w = updatesWindow();
+    const n = (kind) => rows.filter((r) => r.kind === kind).length;
+    const parts = [[n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
+    return `
+      <div class="card compact stack" style="gap:6px;margin-bottom:10px;">
+        <div class="seg seg-small" role="radiogroup" aria-label="Show updates from" style="margin:0;">
+          ${UPDATES_RANGES.map(([key, label]) => `<button type="button" class="seg-btn ${state.updatesRange === key ? 'on' : ''}" data-updates-range="${key}" style="white-space:nowrap;padding:7px 4px;" role="radio" aria-checked="${state.updatesRange === key}">${label}</button>`).join('')}
+        </div>
+        ${state.updatesRange === 'custom' ? `
+        <div class="updates-custom-range">
+          <label class="small muted" for="updatesFromInput">From</label>
+          <input type="datetime-local" id="updatesFromInput" value="${esc(state.updatesFrom)}" />
+          <label class="small muted" for="updatesToInput">To</label>
+          <input type="datetime-local" id="updatesToInput" value="${esc(state.updatesTo)}" />
+        </div>` : ''}
+        <p class="muted small result-count" style="margin:0;"><strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}${parts.length ? ` · ${parts.join(' · ')}` : ''}${state.updatesRange === 'week' ? ` · since ${esc(w.since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}${rows.length >= 150 ? ' (newest 150 shown)' : ''}</p>
+      </div>`;
+  }
+  function wireUpdatesFilter() {
+    appEl.querySelectorAll('[data-updates-range]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.updatesRange === state.updatesRange) return;
+      state.updatesRange = b.dataset.updatesRange;
+      state.updatesScrollTop = 0;
+      renderUpdates();
+    }));
+    [['updatesFromInput', 'updatesFrom'], ['updatesToInput', 'updatesTo']].forEach(([id, key]) => {
+      const input = document.getElementById(id);
+      if (input) input.addEventListener('change', () => { state[key] = input.value; renderUpdates(); });
+    });
+  }
+
   async function renderUpdates() {
     appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
     const myTab = state.tab;
+    const w = updatesWindow();
+    const qs = (w.since ? `&since=${encodeURIComponent(w.since.toISOString())}` : '') + (w.until ? `&until=${encodeURIComponent(w.until.toISOString())}` : '');
     let data;
     try {
-      data = await api(`/api/updates?userId=${state.currentUser.id}&limit=150`);
+      data = await api(`/api/updates?userId=${state.currentUser.id}&limit=150${qs}`);
     } catch (err) {
       if (state.tab === myTab) showLoadError('updates', err, renderUpdates);
       return;
@@ -4680,7 +4733,10 @@
     if (state.tab !== myTab) return;
     const rows = data.updates || [];
     if (!rows.length) {
-      appEl.innerHTML = `<p class="empty-state">No updates yet.</p>`;
+      appEl.innerHTML = state.updatesRange === 'all'
+        ? `<p class="empty-state">No updates yet.</p>`
+        : updatesFilterHtml(rows) + `<p class="empty-state">No updates in this time range.</p>`;
+      wireUpdatesFilter();
       return;
     }
     // data-id is only present for kinds where the photo-tap-to-walk/edit
@@ -4725,11 +4781,15 @@
     // The "Previous updates" divider only makes sense when there's an
     // actual new/old split to label -- an all-read (or all-unread) list
     // just renders as one plain stack.
-    appEl.innerHTML = unreadRows.length && readRows.length
+    appEl.innerHTML = updatesFilterHtml(rows) + (unreadRows.length && readRows.length
       ? `<div class="stack">${unreadHtml}</div><h2 class="section-heading" style="margin-top:18px;">Previous updates</h2><div class="stack">${readHtml}</div>`
-      : `<div class="stack">${unreadHtml}${readHtml}</div>`;
+      : `<div class="stack">${unreadHtml}${readHtml}</div>`);
     state.updatesHtml = appEl.innerHTML;
     wireDogActionButtons(appEl);
+    wireUpdatesFilter();
+    // A custom range that stops in the past may be hiding newer unread
+    // updates, so it doesn't count as having seen them.
+    if (w.until && w.until < new Date()) return;
     // Mark as seen only after actually rendering the list (not just on
     // fetch) -- the rows just shown keep their already-computed `unread`
     // green border for this viewing, and only lose it on the NEXT visit.
@@ -4751,6 +4811,7 @@
     lastWalkPhase = null;
     appEl.innerHTML = state.updatesHtml;
     wireDogActionButtons(appEl);
+    wireUpdatesFilter();
     restoreScroll(state.updatesScrollTop);
   }
 

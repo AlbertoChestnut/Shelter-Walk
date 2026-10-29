@@ -1366,3 +1366,7 @@ html[data-theme="dark"] { --trend-listed: #6fc194; --trend-in: #3987e5; --trend-
 .trend-table th:first-child, .trend-table td:first-child { text-align: left; }
 .trend-table th { color: var(--muted); font-weight: 600; }
 
+/* Updates > Custom time range: label + input pairs, stacked on a phone. */
+.updates-custom-range { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+.updates-custom-range label { margin: 0; }
+.updates-custom-range input { min-width: 0; width: 100%; }

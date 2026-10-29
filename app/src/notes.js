@@ -115,6 +115,28 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
     res.json({ ok: true });
   });
 
+  // The "note for other walkers" left when ending a walk lives on the walk
+  // itself, but it's listed with the tips and follows the same whiteboard
+  // rules: any walker can reword or clear it. Only the note text is touched;
+  // the walk record stays as it was.
+  const sharedWalkNote = db.prepare(
+    "SELECT id FROM walks WHERE id = ? AND dog_id = ? AND ended_at IS NOT NULL AND notes IS NOT NULL AND notes != ''"
+  );
+  app.put('/api/dogs/:id/walk-notes/:walkId', (req, res) => {
+    const walk = sharedWalkNote.get(parseInt(req.params.walkId, 10), parseInt(req.params.id, 10));
+    if (!walk) return res.status(404).json({ error: 'Note not found' });
+    const body = cleanText(req.body && req.body.body, MAX_TIP);
+    if (!body) return res.status(400).json({ error: 'A note can\'t be empty. Delete it instead.' });
+    db.prepare('UPDATE walks SET notes = ? WHERE id = ?').run(body, walk.id);
+    res.json({ id: walk.id });
+  });
+  app.delete('/api/dogs/:id/walk-notes/:walkId', (req, res) => {
+    const walk = sharedWalkNote.get(parseInt(req.params.walkId, 10), parseInt(req.params.id, 10));
+    if (!walk) return res.status(404).json({ error: 'Note not found' });
+    db.prepare('UPDATE walks SET notes = NULL WHERE id = ?').run(walk.id);
+    res.json({ ok: true });
+  });
+
   // Your private note for this dog: replace it, or append (used by the
   // end-of-walk screen). Empty text removes it.
   app.put('/api/dogs/:id/private-note', (req, res) => {

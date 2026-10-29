@@ -236,6 +236,27 @@ test('tips are a whiteboard: anyone can edit or delete any tip; input is validat
   assert.equal((await call('GET', '/api/dogs/1/notes', { user: BOB })).json.sharedTips[0].body.length, 1000, 'tips are capped');
 });
 
+test('notes left at the end of a walk follow the whiteboard rules too', async () => {
+  const db = new Database(dbFile);
+  const t = new Date(Date.now() - 3600000).toISOString();
+  const ins = db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, activity) VALUES (?, ?, 'D', ?, ?, 600, ?, 'walk')");
+  const walkId = ins.run(1, ids.alice, t, t, 'Bad puller').lastInsertRowid;
+  const openId = ins.run(1, ids.alice, t, null, 'still out').lastInsertRowid;
+  db.close();
+  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${walkId}`, { user: BOB, body: { body: 'Pulls at first, settles' } })).status, 200, 'another walker can reword it');
+  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${walkId}`, { user: BOB, body: { body: '  ' } })).status, 400);
+  assert.equal((await call('DELETE', `/api/dogs/2/walk-notes/${walkId}`, { user: CAROL })).status, 404, 'must be this dog\'s walk');
+  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${openId}`, { user: CAROL })).status, 404, 'not a walk still going');
+  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${walkId}`, { user: CAROL })).status, 200, 'and a third walker can clear it');
+  const ro = new Database(dbFile, { readonly: true });
+  const walk = ro.prepare('SELECT notes, ended_at FROM walks WHERE id = ?').get(walkId);
+  ro.close();
+  const rw = new Database(dbFile); rw.prepare('DELETE FROM walks WHERE id = ?').run(openId); rw.close();
+  assert.equal(walk.notes, null);
+  assert.equal(walk.ended_at, t, 'the walk itself is untouched');
+  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${walkId}`, { user: CAROL })).status, 404, 'already gone');
+});
+
 test('private note: replace, append, and clear', async () => {
   await call('PUT', '/api/dogs/2/private-note', { user: BOB, body: { body: 'first' } });
   await call('PUT', '/api/dogs/2/private-note', { user: BOB, body: { body: 'second', append: true } });

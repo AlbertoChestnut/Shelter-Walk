@@ -2202,7 +2202,8 @@
   //    stored with what is returned, so the list can't be used to single
   //    anyone out.
   //  - Private note: one per walker per dog, visible only to its writer.
-  // Notes written at the end of past walks are listed too (read-only).
+  // Notes left for other walkers at the end of past walks are listed too,
+  // with the same edit/delete (only the note changes, never the walk).
   function dogNotesShellHtml() {
     return `<div class="dog-notes"><p class="muted small center">Loading notes…</p></div>`;
   }
@@ -2217,22 +2218,23 @@
       return;
     }
     const reload = () => mountDogNotes(container, dog, walks);
+    // Walk notes come from the walks the caller passed in, so keep those in
+    // step with what was just saved (reload re-reads only the tips).
+    const patchWalkNote = (walkId, body) => {
+      const w = (walks || []).find((x) => String(x.id) === String(walkId));
+      if (w) w.notes = body;
+    };
     const items = [
       ...data.sharedTips.map((t) => ({ kind: 'tip', id: t.id, body: t.body, when: t.createdAt, updatedAt: t.updatedAt })),
-      ...(walks || []).filter((w) => w.notes).map((w) => ({ kind: 'walk', body: w.notes, when: w.started_at }))
+      ...(walks || []).filter((w) => w.notes && w.ended_at).map((w) => ({ kind: 'walk', id: w.id, body: w.notes, when: w.started_at }))
     ].sort((a, b) => (a.when < b.when ? 1 : -1));
-    const tipRows = items.map((n) => n.kind === 'tip'
-      ? `<li class="tip-item" data-tip="${n.id}">
+    const tipRows = items.map((n) => `<li class="tip-item${n.kind === 'walk' ? ' tip-item-walk' : ''}" ${n.kind === 'walk' ? 'data-walk' : 'data-tip'}="${n.id}">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${esc(n.body)} ${noteDateHtml(n.when, n.updatedAt)}</span>
+           <span class="tip-text">${esc(n.body)} ${n.kind === 'walk' ? `<span class="tip-date">from a walk · ${fmtNoteDate(n.when)}</span>` : noteDateHtml(n.when, n.updatedAt)}</span>
            <span class="tip-item-actions">
              <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
              <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
            </span>
-         </li>`
-      : `<li class="tip-item tip-item-walk">
-           <span class="tip-bullet">•</span>
-           <span class="tip-text">${esc(n.body)} <span class="tip-date">from a walk · ${fmtNoteDate(n.when)}</span></span>
          </li>`).join('');
     container.innerHTML = `
       <label class="small muted" style="display:block;margin-top:12px;">Tips <span class="badge neutral">Anyone can edit or delete</span></label>
@@ -2274,9 +2276,12 @@
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTip(); } });
 
     // Edit a tip in place: the bullet becomes a one-line textbox with Save/Cancel.
-    container.querySelectorAll('.tip-item[data-tip]').forEach((li) => {
-      const id = li.dataset.tip;
-      const current = (data.sharedTips.find((t) => String(t.id) === id) || {}).body || '';
+    // Notes from walks work the same way, through their own route.
+    container.querySelectorAll('.tip-item[data-tip], .tip-item[data-walk]').forEach((li) => {
+      const isWalk = li.dataset.walk !== undefined;
+      const id = isWalk ? li.dataset.walk : li.dataset.tip;
+      const url = `/api/dogs/${dog.id}/${isWalk ? 'walk-notes' : 'notes'}/${id}`;
+      const current = (items.find((n) => n.kind === (isWalk ? 'walk' : 'tip') && String(n.id) === id) || {}).body || '';
       li.querySelector('[data-act="edit"]').addEventListener('click', () => {
         li.classList.add('editing');
         li.innerHTML = `
@@ -2292,7 +2297,7 @@
           const next = inp.value.trim();
           if (!next) { toast('Use the ✕ next to a tip to delete it.', 'error'); return; }
           if (next === current) { reload(); return; }
-          try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); reload(); }
+          try { await api(url, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); if (isWalk) patchWalkNote(id, next); reload(); }
           catch (err) { toast(err.message, 'error'); }
         };
         inp.addEventListener('keydown', (e) => {
@@ -2304,7 +2309,7 @@
       });
       li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
         if (!(await appConfirm('Delete this tip? Every walker will stop seeing it.', { title: 'Delete tip', confirmText: 'Delete', danger: true }))) return;
-        try { await api(`/api/dogs/${dog.id}/notes/${id}`, { method: 'DELETE' }); toast('Tip deleted'); reload(); }
+        try { await api(url, { method: 'DELETE' }); toast('Tip deleted'); if (isWalk) patchWalkNote(id, null); reload(); }
         catch (err) { toast(err.message, 'error'); }
       });
     });

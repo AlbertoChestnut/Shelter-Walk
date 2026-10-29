@@ -30,6 +30,13 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('.dog-notes-btn'); await p.waitForSelector('#markerInfoPopup .private-note-input');
     ok(/Pepper's notes/.test(await p.textContent('#markerInfoPopupContent')), 'dog notes popup opens for the right dog');
     ok(/old note/.test(await p.textContent('#markerInfoPopupContent')), 'the earlier walk note is listed in the popup');
+    await p.click('.tip-item[data-walk] [data-act="edit"]');
+    await p.fill('.tip-item[data-walk] .tip-edit-input', 'Bad puller'); await p.click('.tip-item[data-walk] [data-act="save"]');
+    await p.waitForFunction(() => /Bad puller/.test(document.querySelector('.tip-item[data-walk]')?.textContent || ''));
+    ok(new Database(DB).prepare('SELECT notes FROM walks WHERE dog_id = 70').get().notes === 'Bad puller', 'the walk note can be edited like a tip');
+    await p.click('.tip-item[data-walk] [data-act="erase"]'); await p.click('#appDialogOk');
+    await p.waitForFunction(() => !document.querySelector('.tip-item[data-walk]'));
+    ok(new Database(DB).prepare('SELECT notes FROM walks WHERE dog_id = 70').get().notes === null, 'and deleted, leaving the walk itself');
     await p.fill('.private-note-input', 'Use the harness'); await p.click('.private-note-add-btn');
     await p.waitForSelector('.tip-item[data-private]');
     ok(/Use the harness/.test(await p.textContent('.tip-item[data-private]')), 'private note saved from the popup');

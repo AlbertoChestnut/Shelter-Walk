@@ -2,6 +2,7 @@
   "name": "dogwalk",
   "version": "1.0.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "Personal tracker for walking shelter dogs at Wake County Animal Center",
   "main": "src/server.js",
   "scripts": {

@@ -117,4 +117,15 @@ Replace the example domains and email addresses with your own.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Copyright (C) Alberto J. Chestnut.
+
+Shelter Walk is free software under the [GNU Affero General Public License
+v3.0 or later](LICENSE). You can use, change, and host it, but if you share a
+changed version or run one for other people (including as a website), you
+must make your source code available to them under the same license.
+
+Versions released before this change were under the MIT License.
+
+The name "Shelter Walk" and its logo are not covered by the license. Forks
+are welcome, but please give yours a different name and don't suggest it is
+the official project.

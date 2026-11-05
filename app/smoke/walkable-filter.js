@@ -1,4 +1,4 @@
-// "🦮 Eligible to walk" chip and presets: ✓ shows only dogs cleared for the
+// "🦮 Eligible to walk" chip and preset: ✓ shows only dogs cleared for the
 // volunteer's level right now (the Eligible ✓ badge), ✕ shows the rest.
 // Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
 //   node smoke/walkable-filter.js
@@ -43,9 +43,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await shows(1);
     ok(await names() === 'Pepper', 'Eligible to Walk preset');
     await p.click('[data-filters-tab="presets"]');
-    await p.click('[data-preset-key="__not_walkable"]');
-    await shows(3);
-    ok(await names() === 'Biscuit,Newbie,Tiny', 'Not Eligible to Walk preset');
+    ok(!(await p.$('[data-preset-key="__not_walkable"]')), 'no Not Eligible to Walk preset');
     ok(!errs.length, 'no page errors' + (errs.length ? ': ' + errs.join('; ') : ''));
     await b.close();
   } finally { srv.kill(); }

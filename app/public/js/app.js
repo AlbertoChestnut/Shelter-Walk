@@ -3006,6 +3006,14 @@
   function filterChipClass(mode) {
     return mode === 'only' ? 'active' : mode === 'hide' ? 'excluding' : '';
   }
+  // The blue "any" chip's state: 'only' when every letter but EVO is ✓,
+  // 'hide' when every blue marker is ✕, otherwise off.
+  function blueAnyFilterMode() {
+    const letters = BLUE_MARKERS.filter((m) => m.value !== 'blue_evo');
+    if (letters.length && letters.every((m) => state.markerFilters[m.value] === 'only')) return 'only';
+    if (BLUE_MARKERS.length && BLUE_MARKERS.every((m) => state.markerFilters[m.value] === 'hide')) return 'hide';
+    return null;
+  }
   function cycleFilterMode(mode) {
     if (mode === 'only') return 'hide';
     if (mode === 'hide') return 'none';
@@ -3165,13 +3173,21 @@
     BLUE_MARKERS.forEach((m) => { obj[m.value] = mode; });
     return obj;
   }
+  // POO dogs go out first thing in the morning and last thing in the
+  // evening; 11 to 4 is for the non-POO dogs.
+  function nonPooHours() {
+    const h = new Date().getHours();
+    return h >= 11 && h < 16;
+  }
   const BUILT_IN_PRESETS = [
     {
       key: '__beginner',
       name: 'Beginner',
       description: 'For anyone with less than 20 hours',
       filter: {
-        markerFilters: { ...allBlueFilterObject('hide'), pb: 'hide' },
+        // Adopted (pending adoption) dogs aren't cleared for Beginners --
+        // same rule as the server's allowPending.
+        markerFilters: { ...allBlueFilterObject('hide'), pb: 'hide', pendingAdoption: 'hide' },
         locationFilter: [],
         minDaysAtLeast: 15
       }
@@ -3201,10 +3217,18 @@
       filter: { markerFilters: { walkable: 'only' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
-      key: '__not_walkable',
-      name: 'Not Eligible to Walk',
-      description: 'Dogs who are too young or not cleared for your level yet',
-      filter: { markerFilters: { walkable: 'hide' }, locationFilter: [], minDaysAtLeast: null }
+      key: '__poo',
+      name: 'POO Dogs',
+      description: 'For mornings and evenings (before 11 and after 4)',
+      suggestedNow: () => !nonPooHours(),
+      filter: { markerFilters: { poo: 'only', poo_priority: 'only' }, locationFilter: [], minDaysAtLeast: null }
+    },
+    {
+      key: '__non_poo',
+      name: 'Non-POO Dogs',
+      description: 'For the middle of the day (11 to 4)',
+      suggestedNow: () => nonPooHours(),
+      filter: { markerFilters: { poo: 'hide', poo_priority: 'hide' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__playgroup',
@@ -3275,7 +3299,7 @@
           <div class="card compact" style="padding:8px;">
             <div class="row" style="justify-content:space-between;align-items:center;">
               <div>
-                <strong class="small">${esc(p.name)}</strong>
+                <strong class="small">${esc(p.name)}</strong>${p.suggestedNow && p.suggestedNow() ? ' <span class="badge eligible">Now</span>' : ''}
                 <div class="small muted">${esc(p.description)}</div>
               </div>
               <button type="button" class="btn small-btn preset-apply-btn" data-preset-key="${p.key}">Apply</button>
@@ -3325,15 +3349,14 @@
     const dirCmp = state.availableSortDir === 'asc' ? (a, b) => -baseCmp(a, b) : baseCmp;
     visibleDogs = [...visibleDogs].sort(dirCmp);
 
-    // Blue letters (excl. EVO) share one "any" chip: clicking it sets every
-    // letter to 'only' at once (or clears them if already all set), a
-    // shortcut for "show me anything with a blue sticker" without tapping
-    // each letter — EVO stays independent since it has its own meaning.
-    const blueLetterValues = BLUE_MARKERS.filter((m) => m.value !== 'blue_evo').map((m) => m.value);
-    const blueAnyActive = blueLetterValues.length > 0 && blueLetterValues.every((v) => state.markerFilters[v] === 'only');
+    // Blue letters share one "any" chip that cycles like every other chip:
+    // tap once for only (every letter except EVO, which has its own
+    // meaning), twice to hide every blue sticker (EVO included), again to
+    // clear them all.
+    const blueAnyMode = blueAnyFilterMode();
     const starChip = `<button type="button" class="marker-shape star filter-chip ${filterChipClass(state.markerFilters.star)}" data-filter-key="star" title="Good for beginners">★</button>`;
     const blueChips = `
-      <button type="button" class="marker-shape blue filter-chip ${blueAnyActive ? 'active' : ''}" data-filter-action="blue-any" title="Toggle all blue markers (except EVO)"></button>
+      <button type="button" class="marker-shape blue filter-chip ${filterChipClass(blueAnyMode)}" data-filter-action="blue-any" title="All blue markers: tap for only (except EVO), twice to hide all, again to clear"></button>
       ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''} filter-chip ${filterChipClass(state.markerFilters[m.value])}" data-filter-key="${m.value}" title="${esc(m.name)}">${esc(m.letter)}</button>`).join('')}`;
     const otherChips = `
       <button type="button" class="marker-shape poo filter-chip ${filterChipClass(state.markerFilters.poo)}" data-filter-key="poo" title="POO dog"></button>
@@ -3594,11 +3617,12 @@
     const blueAnyBtn = document.querySelector('.filter-chip[data-filter-action="blue-any"]');
     if (blueAnyBtn) {
       blueAnyBtn.addEventListener('click', () => {
-        const letters = BLUE_MARKERS.filter((m) => m.value !== 'blue_evo').map((m) => m.value);
-        const allOnly = letters.every((v) => state.markerFilters[v] === 'only');
-        letters.forEach((v) => {
-          if (allOnly) delete state.markerFilters[v];
-          else state.markerFilters[v] = 'only';
+        const next = cycleFilterMode(blueAnyFilterMode());
+        BLUE_MARKERS.forEach((m) => {
+          if (next === 'hide') state.markerFilters[m.value] = 'hide';
+          else if (next === 'none') delete state.markerFilters[m.value];
+          else if (m.value !== 'blue_evo') state.markerFilters[m.value] = 'only';
+          else if (state.markerFilters[m.value] === 'hide') delete state.markerFilters[m.value];
         });
         redrawAvailableList();
       });

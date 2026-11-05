@@ -21,7 +21,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     db.close();
     const b = await chromium.launch();
     const page = async (email, headers = {}) => {
-      const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': email, ...headers }, serviceWorkers: 'block' });
+      // A phone UA, or a staff account is sent to the desktop /staff dashboard.
+      const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148', extraHTTPHeaders: { 'x-auth-email': email, ...headers }, serviceWorkers: 'block' });
       const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
       await p.goto(base, { waitUntil: 'networkidle' });
       return { p, ctx, errs };

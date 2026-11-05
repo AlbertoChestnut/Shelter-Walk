@@ -16,6 +16,11 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const ts = new Date().toISOString();
     const ins = db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, blue_markers) VALUES (?, ?, 'Female', '2 Years', '2026-07-01T00:00:00', 1, ?, ?, '[]')");
     ['Pepper', 'Biscuit', 'Bella', 'Max'].forEach((n, i) => ins.run(90 + i, n, ts, ts));
+    db.prepare("UPDATE dogs SET location = 'In Foster' WHERE shelter_buddy_id = 93").run();
+    // A past day with a foster count on record; the rest are gaps.
+    const tenAgo = new Date(Date.now() - 10 * 86400000);
+    const key = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(tenAgo);
+    db.prepare('INSERT INTO shelter_daily_counts (date_key, listed, in_foster, recorded_at) VALUES (?, 4, 1, ?)').run(key, tenAgo.toISOString());
     const ev = db.prepare('INSERT INTO shelter_events (kind, dog_id, occurred_at) VALUES (?, NULL, ?)');
     for (let d = 1; d <= 40; d++) {
       const at = new Date(Date.now() - d * 86400000).toISOString();
@@ -28,7 +33,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.goto(base, { waitUntil: 'networkidle' });
     const count = () => p.$eval('.result-count', (e) => e.textContent.trim());
-    ok(await count() === 'Showing 4 of 4 dogs', 'count with no search');
+    ok(await count() === 'Showing 3 of 4 dogs', 'count with no search (the foster dog is hidden by default)');
     await p.fill('#availableSearchInput', 'b');
     await p.waitForFunction(() => document.querySelectorAll('.avail-card').length === 2);
     ok(await count() === 'Showing 2 of 4 dogs', 'count follows the search');
@@ -41,8 +46,10 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.waitForSelector('.trend-chart');
     ok(await p.locator('.trend-chart').count() === 2, 'two trend charts');
     ok(await p.locator('.trend-line').count() === 3, 'listed line + brought in + adopted lines');
+    ok(await p.locator('.trend-point.floor').count() === 2, 'floor shows as points on its two known days, gaps elsewhere');
     const tiles = await p.$$eval('.stat-tile .value', (els) => els.map((e) => e.textContent));
-    ok(tiles[0] === '4', 'dogs listed now tile');
+    ok(tiles[0] === '3' && tiles[1] === '4', 'on the floor now (listed minus foster) and listed now tiles');
+    await p.locator('.trend-chart').nth(1).scrollIntoViewIfNeeded();
     const box = await p.locator('.trend-chart').nth(1).boundingBox();
     await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     ok(await p.locator('.trend-chart').nth(1).locator('.trend-tip:not(.hidden)').count() === 1, 'hover shows a tooltip');

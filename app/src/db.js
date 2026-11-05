@@ -401,6 +401,18 @@ db.exec(`
   );
 `);
 
+// End-of-day listing counts for Stats > Shelter, written after each good
+// scrape (the day's last one wins). It's the only record of how many listed
+// dogs were in foster on a past day; total listed is rebuilt from events.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shelter_daily_counts (
+    date_key TEXT PRIMARY KEY,
+    listed INTEGER NOT NULL,
+    in_foster INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+  );
+`);
+
 // Small key/value store for app-level flags (e.g. "wiki already seeded").
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_meta (
@@ -510,6 +522,23 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'previous_names_backfilled'"
     db.prepare("INSERT INTO app_meta (key, value) VALUES ('previous_names_backfilled', '1')").run();
   })();
 }
+
+// A staff-saved report "shape" (which sections, granularity, optionally a
+// few individual dogs) for the staff dashboard's report builder -- shared
+// across every staff account like wiki_sections, not scoped to one person
+// (deliberately no user_id). Never stores a date range, so reloading one is
+// immediately useful against "now" rather than a frozen historical window.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS saved_staff_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    sections TEXT NOT NULL,
+    granularity TEXT NOT NULL DEFAULT 'day',
+    dog_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`);
 
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`

@@ -1,0 +1,370 @@
+/* Staff dashboard: a desktop-oriented page, separate from the mobile app's
+   style.css. Color tokens below are copied (not imported -- no module system
+   for CSS here) from style.css's :root / html[data-theme="dark"] blocks, so
+   this page looks consistent with the rest of the app without depending on
+   a file that's being edited independently. */
+:root {
+  --green: #2f6f4f;
+  --green-dark: #1f4d36;
+  --amber: #b3781c;
+  --red: #b3392c;
+  --bg: #f6f7f5;
+  --card-bg: #ffffff;
+  --text: #1c211f;
+  --muted: #5d6862;
+  --border: #e1e5e0;
+  --radius: 14px;
+  color-scheme: light dark;
+}
+html[data-theme="dark"] {
+  --green: #3f8a63;
+  --green-dark: #2f6f4f;
+  --amber: #d9a441;
+  --red: #e6857a;
+  --bg: #16181a;
+  --card-bg: #24272a;
+  --text: #eef0ee;
+  --muted: #9aa39c;
+  --border: #383c3f;
+  color-scheme: dark;
+}
+/* Status palette (dataviz skill, references/palette.md) -- fixed, never
+   themed: same four steps work on both the light and dark surface. Used
+   only to flag a walk running longer than its activity's running average
+   (never an "overtime"/limit concept), always paired with a label (never
+   color alone), never for identity/categorical data. */
+:root {
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  min-height: 100vh;
+}
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+.hidden { display: none !important; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card-bg);
+}
+.topbar h1 { font-size: 1.15rem; margin: 0; }
+.topbar h1 .muted { font-weight: 400; }
+.section-tabs { display: flex; gap: 8px; margin-left: auto; }
+.tab-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.tab-btn.active { background: var(--green); color: #fff; border-color: var(--green); }
+
+/* Fills the viewport up to a generous cap, rather than a fixed narrow
+   column -- this runs on real desktop/lobby monitors, not just a laptop. */
+#app { width: 100%; max-width: 1800px; margin: 0 auto; padding: 24px; }
+.panel { display: block; }
+
+.stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.stat-tile {
+  flex: 1 1 160px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-value { font-size: 2rem; font-weight: 700; line-height: 1; }
+.stat-label { color: var(--muted); font-size: 0.85rem; }
+
+.location-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px;
+}
+.location-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  min-height: 120px;
+}
+.location-card h2 { margin: 0 0 8px; font-size: 1.1rem; }
+.location-card.empty { color: var(--muted); }
+.walk-entry {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.walk-entry:first-of-type { border-top: none; }
+.walk-entry .entry-head { display: flex; align-items: center; gap: 8px; }
+.walk-entry .dog-avatar {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.walk-entry .entry-head-text { min-width: 0; flex: 1 1 auto; }
+.walk-entry .dog-name { font-weight: 600; }
+.walk-entry .activity-icon { margin-right: 2px; }
+.walk-entry .elapsed { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--green-dark); }
+html[data-theme="dark"] .walk-entry .elapsed { color: var(--green); }
+.walk-entry .meta { color: var(--muted); font-size: 0.82rem; }
+.walk-entry .progress-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  margin: 6px 0 4px;
+  overflow: hidden;
+}
+.walk-entry .progress-fill { height: 100%; border-radius: 3px; background: var(--status-good); transition: width 1s linear, background-color 0.3s; }
+.walk-entry .progress-fill.warning { background: var(--status-warning); }
+.walk-entry .progress-note { font-size: 0.78rem; font-weight: 600; }
+.walk-entry .progress-note.warning { color: #8a6200; }
+html[data-theme="dark"] .walk-entry .progress-note.warning { color: var(--status-warning); }
+
+/* Live header: pulsing "updating" dot + per-tile flash when a stat changes. */
+.live-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 6px;
+  animation: live-pulse 2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.stat-tile.flash { animation: stat-flash 0.6s ease-out; }
+@keyframes stat-flash {
+  0% { background: color-mix(in srgb, var(--green) 25%, var(--card-bg)); }
+  100% { background: var(--card-bg); }
+}
+.trend-arrow { font-size: 0.85rem; font-weight: 600; }
+
+/* Side by side on anything wide enough for two ~360px halves; stacks on a
+   narrow screen. Both children share this one row's bottom margin instead
+   of carrying their own, since they're always rendered together here. */
+.chart-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.chart-row > .sparkline-card, .chart-row > .outs-today-card { flex: 1 1 360px; margin-bottom: 0; }
+
+.sparkline-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+.sparkline-card h3 { margin: 0 0 8px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+.sparkline-bars { height: 130px; }
+.spark-svg { width: 100%; height: 100%; overflow: visible; }
+/* Gridlines/axis: hairline, recessive, one step off the card surface --
+   never the series color (dataviz skill: "text never wears the data color"). */
+.spark-grid { stroke: var(--border); stroke-width: 1; shape-rendering: crispEdges; }
+.spark-axis-line { stroke: var(--border); stroke-width: 1; shape-rendering: crispEdges; }
+/* The y-axis values are what you actually have to read at a glance (on a
+   TV, from across the room) -- sized up and weighted more than the x-axis
+   hour labels, which are more of a reference strip underneath the bars. */
+.spark-y-label { fill: var(--muted); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.spark-x-label { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.spark-bar { fill: var(--green); rx: 1.5; }
+.spark-bar:hover { fill: var(--green-dark); }
+html[data-theme="dark"] .spark-bar:hover { fill: var(--trend-listed, #3987e5); }
+
+/* Small, compact metric boxes -- same label/value shape as the big stat
+   tiles above, just a lot less space per box. */
+/* Flex column so .outs-today-boxes can grow into whatever height the row
+   gives this card (it's side by side with the taller chart card, and a
+   flex row stretches both to match by default) instead of leaving a slab
+   of dead space below a few small boxes. */
+.outs-today-card { display: flex; flex-direction: column; }
+.outs-today-card h3 { margin: 0 0 8px; display: flex; align-items: baseline; gap: 6px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+.outs-today-boxes { flex: 1; display: flex; align-items: center; gap: 14px; }
+.outs-today-boxes .mini-stat {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 10px;
+  text-align: center;
+}
+.outs-today-boxes .mini-stat .mini-value { display: block; font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.outs-today-boxes .mini-stat .mini-label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+/* Daycations are off-site -- visually separated with a dashed border rather
+   than the solid-bordered location/activity cards, since "location" doesn't
+   really apply to them. Sits below the kennel grid (secondary to it) and
+   stays compact: a row of small chips, not full-width stacked rows. */
+.daycation-card {
+  background: var(--card-bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-top: 16px;
+}
+.daycation-card h2 { margin: 0 0 8px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+.daycation-card .entry-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.daycation-card .walk-entry {
+  flex: 0 1 220px;
+  max-width: 260px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.daycation-card .walk-entry .dog-avatar { width: 28px; height: 28px; }
+.daycation-card .walk-entry .dog-name { font-size: 0.88rem; }
+.daycation-card .walk-entry .elapsed { font-size: 0.85rem; }
+.daycation-card .walk-entry .meta { font-size: 0.74rem; }
+
+.view-toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.view-toggle-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.view-toggle-btn.active { background: var(--green); color: #fff; border-color: var(--green); }
+
+.demo-banner {
+  background: repeating-linear-gradient(135deg, var(--status-warning) 0 14px, #00000014 14px 28px);
+  color: #3a2a00;
+  font-weight: 700;
+  text-align: center;
+  padding: 8px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+html[data-theme="dark"] .demo-banner { color: #241a00; }
+.demo-toggle-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin-left: 12px;
+}
+.demo-toggle-btn.active { background: var(--status-warning); color: #3a2a00; border-color: var(--status-warning); }
+
+.report-controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; margin-bottom: 10px; }
+.report-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.report-controls input, .report-controls select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.report-controls button {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.export-links { margin: 10px 0 18px; }
+.export-links a { color: var(--green-dark); }
+html[data-theme="dark"] .export-links a { color: var(--green); }
+
+.report-tables { display: flex; gap: 20px; flex-wrap: wrap; }
+.report-tables table {
+  border-collapse: collapse;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.report-tables caption { text-align: left; font-weight: 600; padding: 8px 10px 4px; }
+.report-tables th, .report-tables td { padding: 6px 12px; text-align: left; border-top: 1px solid var(--border); font-size: 0.9rem; }
+.report-tables tr:first-child th, .report-tables tr:first-child td { border-top: none; }
+
+.sections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 6px 14px;
+  margin: 4px 0 14px;
+  padding: 10px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.sections-grid label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer; }
+
+.dog-picker { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.dog-picker input { flex: 1 1 220px; }
+.dog-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.dog-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 6px 3px 12px;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dog-chip button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.saved-reports-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.saved-reports-row label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.saved-reports-row select, .saved-reports-row input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+.saved-reports-row button {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.dog-detail-card { margin-top: 10px; }
+.dog-detail-card h4 { margin: 0 0 6px; }

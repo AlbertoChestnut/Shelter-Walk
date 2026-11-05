@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shelter Walk — Staff</title>
+<meta name="theme-color" content="#2f6f4f" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="stylesheet" href="/css/staff.css" />
+<script src="/js/theme-init.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Shelter Walk <span class="muted">Staff</span></h1>
+  <nav class="section-tabs">
+    <button class="tab-btn active" data-section="live">Live board</button>
+    <button class="tab-btn" data-section="reports">Reports</button>
+  </nav>
+  <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
+  <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
+</header>
+
+<main id="app">
+  <section id="liveSection" class="panel">
+    <div id="demoBanner" class="demo-banner hidden">DEMO MODE — not real data</div>
+    <div class="stat-row">
+      <div class="stat-tile"><span class="stat-value" id="statActiveWalkers">—</span><span class="stat-label">Active walkers</span></div>
+      <div class="stat-tile"><span class="stat-value" id="statActiveCount">—</span><span class="stat-label">Dogs out now</span></div>
+      <div class="stat-tile"><span class="stat-value" id="statWalksToday">—</span><span class="stat-label">Walks today <span id="walksTrendArrow" class="trend-arrow"></span></span></div>
+    </div>
+    <div class="chart-row">
+      <div class="sparkline-card">
+        <h3>Today's activity by hour</h3>
+        <div class="sparkline-bars" id="sparklineBars"></div>
+      </div>
+      <div class="outs-today-card">
+        <h3>Dogs out today <span class="muted" id="dogsOutTodayTotal"></span></h3>
+        <div class="outs-today-boxes" id="outsTodayBuckets"></div>
+      </div>
+    </div>
+
+    <div class="view-toggle">
+      <span class="muted small">View by:</span>
+      <button type="button" class="view-toggle-btn active" data-view="location">📍 Location</button>
+      <button type="button" class="view-toggle-btn" data-view="activity">🏷️ Activity</button>
+    </div>
+    <div class="location-grid" id="locationGrid"></div>
+
+    <div id="daycationCard" class="daycation-card hidden">
+      <h2>🚗 Daycation <span class="muted small">— off-site</span></h2>
+      <div class="entry-grid" id="daycationEntries"></div>
+    </div>
+  </section>
+
+  <section id="reportsSection" class="panel hidden">
+    <div class="saved-reports-row">
+      <label>Saved report formats
+        <select id="savedReportSelect"><option value="">— choose one to load —</option></select>
+      </label>
+      <button type="button" id="loadSavedReportBtn">Load</button>
+      <label>Save current as
+        <input type="text" id="saveReportName" placeholder="e.g. Monthly county report" maxlength="120" />
+      </label>
+      <button type="button" id="saveReportBtn">Save as…</button>
+      <button type="button" id="deleteSavedReportBtn" class="hidden">Delete loaded format</button>
+    </div>
+
+    <form id="reportForm" class="report-controls">
+      <label>From <input type="date" id="reportFrom" /></label>
+      <label>To <input type="date" id="reportTo" /></label>
+      <label>Group by
+        <select id="reportGranularity">
+          <option value="day">Day</option>
+          <option value="week">Week</option>
+          <option value="month">Month</option>
+        </select>
+      </label>
+      <button type="submit">Update</button>
+    </form>
+
+    <div class="sections-grid" id="sectionsGrid">
+      <label><input type="checkbox" value="byActivity" checked /> By activity</label>
+      <label><input type="checkbox" value="byPeriod" checked /> By period</label>
+      <label><input type="checkbox" value="byLocation" /> By location</label>
+      <label><input type="checkbox" value="byDayOfWeek" /> By day of week</label>
+      <label><input type="checkbox" value="byTimeOfDay" /> By time of day</label>
+      <label><input type="checkbox" value="shelterContext" /> Shelter context</label>
+      <label><input type="checkbox" value="uniqueDogsServed" /> Unique dogs served</label>
+      <label><input type="checkbox" value="highlights" /> Highlights</label>
+    </div>
+
+    <div class="dog-picker">
+      <label class="muted small" style="width:100%;">Individual dog report (optional)
+        <input type="text" id="dogPickerInput" list="dogPickerList" placeholder="Type a dog's name…" />
+      </label>
+      <datalist id="dogPickerList"></datalist>
+      <button type="button" id="addDogBtn">Add</button>
+      <span id="dogPickerError" class="small" style="color:var(--red);"></span>
+    </div>
+    <div class="dog-chips" id="dogChips"></div>
+
+    <p class="muted small">Totals and most breakdowns are shelter-wide and anonymous — no volunteer is ever named or singled out, and a period with very few walks is left out of the "by period" breakdown so it can't be traced back to one person. "Unique dogs served" and individual dog reports name dogs, never volunteers.</p>
+    <div class="export-links">
+      Download: <a id="exportCsv" href="#">CSV</a> · <a id="exportXlsx" href="#">Excel</a> · <a id="exportPdf" href="#">PDF</a>
+    </div>
+    <div id="reportOutput"></div>
+  </section>
+</main>
+
+<script src="/js/staff.js"></script>
+</body>
+</html>

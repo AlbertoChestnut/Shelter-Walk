@@ -3,6 +3,7 @@ const path = require('path');
 const db = require('./db');
 const { sendPushToUser, hasPref } = require('./push');
 const { isRename, withPreviousName } = require('./dogNames');
+const shelterTrends = require('./shelterTrends');
 
 const BASE = 'https://pets.wake.gov';
 const USER_AGENT = 'dogwalk-personal-tracker/1.0 (+personal use, low frequency scrape)';
@@ -450,6 +451,7 @@ async function doScrape(runId, finish) {
   ].filter(Boolean).join('; ') || null;
   console.log(`[scraper] finished. ${seenIds.length} dogs currently listed.${note ? ' ' + note : ''}`);
   finish(true, seenIds.length, note);
+  try { shelterTrends.recordDailyCounts(db); } catch (e) { console.warn('[scraper] daily counts not saved:', e.message); }
   return { ok: true, count: seenIds.length, finishedAt: new Date().toISOString() };
 }
 

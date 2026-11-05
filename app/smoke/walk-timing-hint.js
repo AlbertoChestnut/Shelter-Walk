@@ -1,6 +1,7 @@
 // The walk screen's timing tip from the "Which dogs should I walk?" sign:
-// a POO dog's 2nd walk mid-day gets a "consider waiting" nudge linking to the
-// Guide section; a first walk, or the evening, gets none.
+// a POO dog's mid-day walk (1st or 2nd) gets a "save this slot for a
+// non-POO dog" nudge linking to the Guide section; a non-POO dog, or the
+// evening, gets none.
 // Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
 //   node smoke/walk-timing-hint.js
 const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
@@ -19,6 +20,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const ts = '2026-10-10T12:00:00.000Z';
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, poo_status) VALUES (70, 'Pepper', 'Female', '2 Years', '2026-07-01T00:00:00', 1, ?, ?, 'poo')").run(ts, ts);
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, poo_status) VALUES (71, 'Rocky', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?, 'poo')").run(ts, ts);
+    db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, poo_status) VALUES (72, 'Daisy', 'Female', '4 Years', '2026-07-01T00:00:00', 1, ?, ?, 'none')").run(ts, ts);
     db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, activity) VALUES (70, ?, 'D', '2026-10-10T12:00:00.000Z', '2026-10-10T12:20:00.000Z', 1200, 'walk')").run(me.id);
     db.close();
     const b = await chromium.launch();
@@ -31,14 +33,17 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
       return { p, ctx, errs };
     };
     let { p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 70);
-    ok(/Consider waiting: POO dogs' last walk is best after 4pm/.test(await p.textContent('.timing-hint')), 'mid-day 2nd walk of a POO dog gets the tip');
+    ok(/POO dogs still get a walk after 4pm either way/.test(await p.textContent('.timing-hint')), 'mid-day 2nd walk of a POO dog gets the tip');
     await p.screenshot({ path: '/tmp/_wth1.png' });
     await p.click('#timingHintGuideBtn'); await p.waitForSelector('.guide-article');
     ok(/Which dogs should I walk\?/.test(await p.textContent('.guide-article h2')), 'tip link opens the Guide section');
     await p.screenshot({ path: '/tmp/_wth2.png', fullPage: true });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
     ({ p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 71));
-    ok((await p.locator('.timing-hint').count()) === 0, 'first walk of the day gets no tip');
+    ok(/POO dogs still get a walk after 4pm either way/.test(await p.textContent('.timing-hint')), 'mid-day 1st walk of a POO dog now gets the tip too');
+    await ctx.close();
+    ({ p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 72));
+    ok((await p.locator('.timing-hint').count()) === 0, 'mid-day 1st walk of a non-POO dog gets no tip');
     await ctx.close();
     ({ p, ctx, errs } = await open('2026-10-10T21:30:00.000Z', 70));
     ok((await p.locator('.timing-hint').count()) === 0, 'POO dog in the evening gets no tip');

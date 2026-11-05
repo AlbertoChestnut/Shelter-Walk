@@ -10,6 +10,7 @@ const push = require('./push');
 const wiki = require('./wiki');
 const impact = require('./impact');
 const shelterTrends = require('./shelterTrends');
+const staffDashboard = require('./staffDashboard');
 const notes = require('./notes');
 const feedback = require('./feedback');
 const account = require('./account');
@@ -78,6 +79,37 @@ function sendIndex(req, res) {
   res.type('html').send(INDEX_HTML);
 }
 
+// Good enough to decide "should this land on the staff dashboard instead",
+// not anything security-sensitive -- iPadOS Safari's UA doesn't look mobile,
+// so an iPad lands on the mobile app same as before, which is fine.
+const MOBILE_UA_RE = /Mobi|Android|iPhone|iPod|Windows Phone/i;
+
+// A staff account opening the site itself (not a bookmarked /scan) on a
+// non-mobile browser almost always means "put me on the ops dashboard," not
+// the phone-first volunteer app -- so send them straight to /staff instead.
+function sendRoot(req, res) {
+  if (req.headers['x-auth-staff'] === '1' && !MOBILE_UA_RE.test(req.headers['user-agent'] || '')) {
+    return res.redirect('/staff');
+  }
+  sendIndex(req, res);
+}
+
+// Staff-only desktop dashboard: a separate standalone page from the mobile
+// volunteer app above, not linked from it -- staff reach it by bookmarking
+// /staff, the same way /scan is a bookmarkable shortcut. The X-Auth-Staff
+// check here is defense-in-depth only; the real gate is Caddy's forward_auth
+// (see the X-Auth-Email/X-Auth-Staff comment above resolveAuthedUser below).
+const STAFF_HTML = fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8')
+  .replace('/css/staff.css', `/css/staff.css?v=${ASSET_VERSION}`)
+  .replace('/js/staff.js', `/js/staff.js?v=${ASSET_VERSION}`);
+
+function sendStaff(req, res) {
+  if (req.headers['x-auth-staff'] !== '1') return res.status(403).type('text/plain').send('Staff only.');
+  res.set('Cache-Control', 'no-cache, must-revalidate');
+  res.type('html').send(STAFF_HTML);
+}
+
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
 // Drawn from the ID alone and versioned in its URL, so it can be cached for good.
 app.get('/dog-silhouettes/:file', (req, res) => {
@@ -88,9 +120,11 @@ app.get('/dog-silhouettes/:file', (req, res) => {
 });
 // Cached dog photos — survive a dog's listing disappearing after adoption.
 app.use('/cached-images', express.static(IMAGES_DIR, { maxAge: '30d' }));
-app.get('/', sendIndex);
-// Bookmarkable shortcut straight into the QR scanner.
+app.get('/', sendRoot);
+// Bookmarkable shortcut straight into the QR scanner -- deliberately not
+// routed through sendRoot, so it always opens the scanner even for staff.
 app.get('/scan', sendIndex);
+app.get('/staff', sendStaff);
 
 // `asOf` freezes the count at a specific moment (a delisted dog's
 // removed_at) instead of always counting up to right now -- otherwise a
@@ -1179,14 +1213,19 @@ app.put('/api/manual-checkoffs', (req, res) => {
 // personalization: an 'adopted' row about a dog THIS user has walked gets
 // `personalHighlight: true` when they've opted into that (see
 // notification_prefs), so the UI can call it out for them specifically.
+// The event kinds the Updates feed shows. 'removed' (a plain delisting that
+// wasn't an adoption) is left out on purpose; see below.
+const UPDATE_KINDS = ['new_dog', 'adopted', 'returned'];
 app.get('/api/updates', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   const limit = clampLimit(req.query.limit, 100);
-  // Optional time window (the feed's Today / This week / Custom filter).
-  // Normalized through Date so only real timestamps reach the query.
-  const isoParam = (v) => { const d = v ? new Date(String(v)) : null; return d && !isNaN(d) ? d.toISOString() : null; };
-  const since = isoParam(req.query.since) || '';
-  const until = isoParam(req.query.until) || '9999';
+  // Optional filters from the feed's Today / This week and type chips.
+  // `since` is normalized through Date so only a real timestamp reaches the
+  // query; `kinds` keeps only the kinds the feed knows.
+  const sinceDate = req.query.since ? new Date(String(req.query.since)) : null;
+  const since = sinceDate && !isNaN(sinceDate) ? sinceDate.toISOString() : '';
+  const kinds = String(req.query.kinds || '').split(',').filter((k) => UPDATE_KINDS.includes(k));
+  const kindList = kinds.length ? kinds : UPDATE_KINDS;
   // Fetch more than asked before filtering by show_* prefs, so hiding a
   // category doesn't just leave someone with a short feed once they've
   // scrolled past however many of that kind happened to lead the results.
@@ -1200,10 +1239,10 @@ app.get('/api/updates', (req, res) => {
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
-    WHERE e.kind != 'removed' AND e.occurred_at >= ? AND e.occurred_at < ?
+    WHERE e.kind IN (${kindList.map(() => '?').join(', ')}) AND e.occurred_at >= ?
     ORDER BY e.occurred_at DESC, e.id DESC
     LIMIT ?
-  `).all(since, until, limit * 4);
+  `).all(...kindList, since, limit * 4);
   rows.forEach((r) => { if (r.dog_id) r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url); });
 
   let prefEnabled = false;
@@ -1219,8 +1258,9 @@ app.get('/api/updates', (req, res) => {
     favoriteDogIds = new Set(
       db.prepare('SELECT dog_id FROM favorite_dogs WHERE user_id = ?').all(userId).map((r) => r.dog_id)
     );
-    // A favorite's own news always shows, even in a category hidden here.
-    rows = rows.filter((r) => prefs[`show_${r.kind}`] !== false || favoriteDogIds.has(r.dog_id));
+    // A favorite's own news always shows, even in a category hidden here,
+    // and so does a kind picked on the feed's type chips (asked for outright).
+    if (!kinds.length) rows = rows.filter((r) => prefs[`show_${r.kind}`] !== false || favoriteDogIds.has(r.dog_id));
     const userRow = db.prepare('SELECT updates_last_seen_at FROM users WHERE id = ?').get(userId);
     lastSeenAt = userRow ? userRow.updates_last_seen_at : null;
   }
@@ -1864,6 +1904,10 @@ function enforceWalkLimits() {
 // Every 10 seconds, so length alerts arrive close to the minute.
 setInterval(() => { try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sweep failed:', err); } }, 10 * 1000);
 try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sweep failed:', err); }
+
+// Registered down here (not with the other .register() calls above) because
+// it needs enforceWalkLimits, which isn't defined until just above this line.
+staffDashboard.register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, ACTIVITY_VERBS, ACTIVITIES });
 
 // Scrape history is only useful for health checks; keep 90 days.
 function pruneOldRecords() {

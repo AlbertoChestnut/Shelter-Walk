@@ -34,3 +34,28 @@ test('fills quiet days and ignores events before tracking was complete', () => {
   assert.ok(days.every((d) => d.dateKey >= TRENDS_SINCE));
   assert.deepEqual(days.map((d) => d.listed), [10, 10, 10, 10]);
 });
+
+test('floor is listed minus foster on days with a foster count, a gap otherwise', () => {
+  const now = new Date('2026-10-03T16:00:00Z');
+  const events = [{ kind: 'new_dog', occurred_at: '2026-10-01T15:00:00Z' }];
+  const fosterByDay = new Map([['2026-10-01', 4], ['2026-10-03', 5]]);
+  const t = buildTrends(events, 30, now, fosterByDay);
+  assert.deepEqual(t.days.map((d) => d.floor), [26, null, 25]);
+  assert.equal(t.floorNow, 25);
+});
+
+test('recordDailyCounts keeps the latest count of each day', () => {
+  const Database = require('better-sqlite3');
+  const { recordDailyCounts } = require('../src/shelterTrends');
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE dogs (shelter_buddy_id INTEGER PRIMARY KEY, location TEXT, still_listed INTEGER, awaiting_listing INTEGER DEFAULT 0);
+    CREATE TABLE shelter_daily_counts (date_key TEXT PRIMARY KEY, listed INTEGER NOT NULL, in_foster INTEGER NOT NULL, recorded_at TEXT NOT NULL);`);
+  const ins = db.prepare('INSERT INTO dogs (shelter_buddy_id, location, still_listed, awaiting_listing) VALUES (?, ?, ?, ?)');
+  ins.run(1, 'Shelter', 1, 0); ins.run(2, 'In Foster', 1, 0); ins.run(3, 'In Foster', 0, 0); ins.run(4, 'Shelter', 0, 1);
+  recordDailyCounts(db, new Date('2026-10-02T20:00:00Z'));
+  ins.run(5, 'In Foster', 1, 0);
+  recordDailyCounts(db, new Date('2026-10-02T14:00:00Z')); // an older backfill doesn't overwrite
+  assert.deepEqual(db.prepare('SELECT date_key, listed, in_foster FROM shelter_daily_counts').all(), [{ date_key: '2026-10-02', listed: 2, in_foster: 1 }]);
+  recordDailyCounts(db, new Date('2026-10-02T22:00:00Z'));
+  assert.deepEqual(db.prepare('SELECT listed, in_foster FROM shelter_daily_counts').get(), { listed: 3, in_foster: 2 });
+});

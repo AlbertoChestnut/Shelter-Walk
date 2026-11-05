@@ -96,9 +96,8 @@
     availableScrollTop: 0,
     updatesScrollTop: 0,
     updatesHtml: null, // last rendered Updates feed, redrawn as-is on Back from a dog
-    updatesRange: 'all', // 'all' | 'today' | 'week' | 'custom' -- the feed's time filter
-    updatesFrom: '', // custom range, as <input type="datetime-local"> values (device time)
-    updatesTo: '',
+    updatesRange: 'all', // 'all' | 'today' | 'week' -- the feed's time filter
+    updatesKinds: new Set(), // event kinds picked on the feed's type chips (empty = every kind)
     savedFilters: [],
     statsView: 'summary',
     statsPresentOnly: true,
@@ -4126,21 +4125,28 @@
     const tile = (value, label, sub) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
     const first = days[0];
     const change = first ? data.listedNow - first.listed : 0;
+    const firstFloor = days.find((d) => d.floor != null);
+    const floorChange = firstFloor && data.floorNow != null ? data.floorNow - firstFloor.floor : null;
+    const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
     const shortDate = (key) => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
     const tableRows = [...days].reverse().map((d) => `
-      <tr><td>${esc(shortDate(d.dateKey))}</td><td>${d.listed}</td><td>${d.newDogs}</td><td>${d.returned}</td><td>${d.adopted}</td><td>${d.otherExits}</td></tr>`).join('');
+      <tr><td>${esc(shortDate(d.dateKey))}</td><td>${d.listed}</td><td>${d.floor == null ? '–' : d.floor}</td><td>${d.newDogs}</td><td>${d.returned}</td><td>${d.adopted}</td><td>${d.otherExits}</td></tr>`).join('');
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
       <div class="seg seg-small" role="radiogroup" aria-label="Time range">
         ${SHELTER_RANGES.map((r) => `<button type="button" class="seg-btn ${state.shelterRange === r.days ? 'on' : ''}" data-shelter-range="${r.days}" role="radio" aria-checked="${state.shelterRange === r.days}">${r.label}</button>`).join('')}
       </div>
-      <div class="stat-grid three">
-        ${tile(data.listedNow, 'Dogs listed now', first ? `${change > 0 ? '+' : ''}${change} since ${esc(shortDate(first.dateKey))}` : '')}
+      <div class="stat-grid">
+        ${tile(data.floorNow == null ? '–' : data.floorNow, 'On the floor now', floorChange != null ? `${signed(floorChange)} since ${esc(shortDate(firstFloor.dateKey))}` : '')}
+        ${tile(data.listedNow, 'Listed now', first ? `${signed(change)} since ${esc(shortDate(first.dateKey))}` : '')}
         ${tile(sum('broughtIn'), 'Brought in', `${perDay('broughtIn')} a day`)}
         ${tile(sum('adopted'), 'Adopted', `${perDay('adopted')} a day`)}
       </div>
-      <h2 class="section-heading">Dogs listed</h2>
-      <div class="card compact trend-card">${trendChartHtml(days, [{ key: 'listed', label: 'Dogs listed', cls: 'listed' }])}</div>
+      <h2 class="section-heading">Dogs at the shelter</h2>
+      <div class="card compact trend-card">${trendChartHtml(days, [
+        { key: 'listed', label: 'Listed', cls: 'listed' },
+        { key: 'floor', label: 'On the floor', cls: 'floor' }
+      ], { zoom: true })}</div>
       <h2 class="section-heading">In and out each day</h2>
       <div class="card compact trend-card">${trendChartHtml(days, [
         { key: 'broughtIn', label: 'Brought in', cls: 'in' },
@@ -4150,12 +4156,12 @@
         <summary class="small muted">Show as a table</summary>
         <div class="trend-table-scroll">
           <table class="trend-table">
-            <thead><tr><th>Day</th><th>Listed</th><th>New</th><th>Returned</th><th>Adopted</th><th>Other exits</th></tr></thead>
+            <thead><tr><th>Day</th><th>Listed</th><th>Floor</th><th>New</th><th>Returned</th><th>Adopted</th><th>Other exits</th></tr></thead>
             <tbody>${tableRows}</tbody>
           </table>
         </div>
       </details>
-      <p class="small muted center" style="margin-top:14px;">From the shelter's public listing, checked through the day. "Listed" counts every dog on the listing at day's end, including dogs in foster. "Brought in" is new dogs plus dogs returned. "Other exits" are dogs that left the listing without showing as adopted (transfers, returned to owner and so on). Tracking starts ${esc(shortDate(data.days[0] ? data.days[0].dateKey : ''))}.</p>`;
+      <p class="small muted center" style="margin-top:14px;">From the shelter's public listing, checked through the day. "Listed" counts every dog on the listing at day's end, including dogs in foster; "on the floor" leaves out the ones in foster. Gaps are days with no foster count on record. "Brought in" is new dogs plus dogs returned. "Other exits" are dogs that left the listing without showing as adopted (transfers, returned to owner and so on). Tracking starts ${esc(shortDate(data.days[0] ? data.days[0].dateKey : ''))}.</p>`;
     wireStatsScopeSwitch();
     appEl.querySelectorAll('[data-shelter-range]').forEach((b) => b.addEventListener('click', () => {
       state.shelterRange = Number(b.dataset.shelterRange);
@@ -4167,17 +4173,18 @@
   // A small hand-drawn SVG line chart over days (one y-axis, starting at 0
   // for counts). series: [{ key, label, cls }]; cls picks the line color in
   // style.css. Hover/tap shows every series' value for that day.
-  function trendChartHtml(days, series) {
+  function trendChartHtml(days, series, { zoom = false } = {}) {
     if (!days.length) return `<p class="small muted" style="margin:0;">Nothing to show yet.</p>`;
     // Drawn at the screen's real width so text stays its normal size.
     const W = Math.max(280, Math.round((appEl.clientWidth || 360) - 34)), H = 200, padL = 34, padR = 10, padT = 10, padB = 24;
-    const max = Math.max(1, ...days.flatMap((d) => series.map((s) => d[s.key])));
-    // Count charts start at zero; the listing chart zooms to its range so day
-    // to day changes are visible.
-    const isLevel = series.length === 1 && series[0].key === 'listed';
-    const minRaw = isLevel ? Math.min(...days.map((d) => d.listed)) : 0;
+    // null values (no data that day) leave a gap in their line.
+    const values = days.flatMap((d) => series.map((s) => d[s.key])).filter((v) => v != null);
+    const max = Math.max(1, ...values);
+    // Count charts start at zero; the dogs-at-the-shelter chart zooms to its
+    // range so day to day changes are visible.
+    const minRaw = zoom ? Math.min(...values) : 0;
     const step = niceStep((max - minRaw) / 4 || 1);
-    const yMin = isLevel ? Math.max(0, Math.floor((minRaw - step / 2) / step) * step) : 0;
+    const yMin = zoom ? Math.max(0, Math.floor((minRaw - step / 2) / step) * step) : 0;
     const yMax = Math.ceil(max / step) * step || step;
     const x = (i) => padL + (days.length === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (days.length - 1));
     const y = (v) => padT + (H - padT - padB) * (1 - (v - yMin) / ((yMax - yMin) || 1));
@@ -4189,10 +4196,19 @@
     const labelEvery = Math.max(1, Math.ceil(days.length / 5));
     const xLabels = days.map((d, i) => ((i % labelEvery === 0 && x(days.length - 1) - x(i) >= 48) || i === days.length - 1)
       ? `<text class="trend-axis" x="${x(i)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === days.length - 1 ? 'end' : 'middle'}">${esc(shortDayLabel(d.dateKey))}</text>` : '').join('');
-    const lines = series.map((s) => `<polyline class="trend-line ${s.cls}" points="${days.map((d, i) => `${x(i).toFixed(1)},${y(d[s.key]).toFixed(1)}`).join(' ')}" />`).join('');
+    const lines = series.map((s) => {
+      const runs = [[]];
+      days.forEach((d, i) => {
+        if (d[s.key] == null) { if (runs[runs.length - 1].length) runs.push([]); return; }
+        runs[runs.length - 1].push([x(i), y(d[s.key])]);
+      });
+      return runs.filter((r) => r.length).map((r) => (r.length === 1
+        ? `<circle class="trend-point ${s.cls}" r="2.5" cx="${r[0][0].toFixed(1)}" cy="${r[0][1].toFixed(1)}" />`
+        : `<polyline class="trend-line ${s.cls}" points="${r.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(' ')}" />`)).join('');
+    }).join('');
     const legend = series.length > 1
       ? `<div class="trend-legend">${series.map((s) => `<span><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}</span>`).join('')}</div>` : '';
-    const geom = { W, padL, padR, n: days.length, series, ys: days.map((d) => series.map((s) => y(d[s.key]))), xs: days.map((d, i) => x(i)) };
+    const geom = { W, padL, padR, n: days.length, series, ys: days.map((d) => series.map((s) => (d[s.key] == null ? null : y(d[s.key])))), xs: days.map((d, i) => x(i)) };
     return `${legend}
       <div class="trend-chart" data-geom='${esc(JSON.stringify(geom))}'>
         <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(series.map((s) => s.label).join(' and '))} by day">
@@ -4226,9 +4242,9 @@
         g.xs.forEach((xv, k) => { if (Math.abs(xv - vx) < Math.abs(g.xs[i] - vx)) i = k; });
         cursor.setAttribute('x1', g.xs[i]); cursor.setAttribute('x2', g.xs[i]);
         cursor.classList.remove('hidden');
-        dots.forEach((dot, k) => { dot.setAttribute('cx', g.xs[i]); dot.setAttribute('cy', g.ys[i][k]); dot.classList.remove('hidden'); });
+        dots.forEach((dot, k) => { dot.setAttribute('cx', g.xs[i]); dot.setAttribute('cy', g.ys[i][k] ?? 0); dot.classList.toggle('hidden', g.ys[i][k] == null); });
         const d = days[i];
-        tip.innerHTML = `<strong>${esc(fmtDay(d.dateKey))}</strong>${g.series.map((s) => `<div><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}: <strong>${d[s.key]}</strong></div>`).join('')}`
+        tip.innerHTML = `<strong>${esc(fmtDay(d.dateKey))}</strong>${g.series.map((s) => `<div><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}: <strong>${d[s.key] == null ? '–' : d[s.key]}</strong></div>`).join('')}`
           + (g.series.some((s) => s.key === 'broughtIn') ? `<div class="muted">${d.newDogs} new · ${d.returned} returned</div>` : '');
         tip.classList.remove('hidden');
         const px = (g.xs[i] / g.W) * r.width;
@@ -4670,24 +4686,20 @@
     };
   }
 
-  // The Updates time filter: [since, until) as Dates, null meaning open-ended.
-  // Today and This week go by the phone's own clock; a week starts Sunday.
-  const UPDATES_RANGES = [['all', 'All'], ['today', 'Today'], ['week', 'This week'], ['custom', 'Custom']];
-  function updatesWindow() {
+  // The Updates filters: when (All / Today / This week, by the phone's own
+  // clock, a week starting Sunday) and which kinds of event. Picking kinds is
+  // a quick report, e.g. every dog returned this week.
+  const UPDATES_RANGES = [['all', 'All'], ['today', 'Today'], ['week', 'This week']];
+  const UPDATES_KINDS = [['adopted', '🎉 Adopted'], ['new_dog', '🐶 New'], ['returned', '↩️ Returned']];
+  function updatesSince() {
+    if (state.updatesRange === 'all') return null;
     const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-    if (state.updatesRange === 'today') return { since: midnight, until: null };
-    if (state.updatesRange === 'week') {
-      const sunday = new Date(midnight); sunday.setDate(sunday.getDate() - sunday.getDay());
-      return { since: sunday, until: null };
-    }
-    if (state.updatesRange === 'custom') {
-      const at = (v) => (v ? new Date(v) : null); // datetime-local values parse as device time
-      return { since: at(state.updatesFrom), until: at(state.updatesTo) };
-    }
-    return { since: null, until: null };
+    if (state.updatesRange === 'week') midnight.setDate(midnight.getDate() - midnight.getDay());
+    return midnight;
   }
+  function updatesFiltered() { return state.updatesRange !== 'all' || state.updatesKinds.size > 0; }
   function updatesFilterHtml(rows) {
-    const w = updatesWindow();
+    const since = updatesSince();
     const n = (kind) => rows.filter((r) => r.kind === kind).length;
     const parts = [[n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
     return `
@@ -4695,14 +4707,10 @@
         <div class="seg seg-small" role="radiogroup" aria-label="Show updates from" style="margin:0;">
           ${UPDATES_RANGES.map(([key, label]) => `<button type="button" class="seg-btn ${state.updatesRange === key ? 'on' : ''}" data-updates-range="${key}" style="white-space:nowrap;padding:7px 4px;" role="radio" aria-checked="${state.updatesRange === key}">${label}</button>`).join('')}
         </div>
-        ${state.updatesRange === 'custom' ? `
-        <div class="updates-custom-range">
-          <label class="small muted" for="updatesFromInput">From</label>
-          <input type="datetime-local" id="updatesFromInput" value="${esc(state.updatesFrom)}" />
-          <label class="small muted" for="updatesToInput">To</label>
-          <input type="datetime-local" id="updatesToInput" value="${esc(state.updatesTo)}" />
-        </div>` : ''}
-        <p class="muted small result-count" style="margin:0;"><strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}${parts.length ? ` · ${parts.join(' · ')}` : ''}${state.updatesRange === 'week' ? ` · since ${esc(w.since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}${rows.length >= 150 ? ' (newest 150 shown)' : ''}</p>
+        <div class="marker-row" role="group" aria-label="Show only these kinds of update" style="gap:6px;flex-wrap:nowrap;">
+          ${UPDATES_KINDS.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${state.updatesKinds.has(key) ? 'active' : ''}" data-updates-kind="${key}" aria-pressed="${state.updatesKinds.has(key)}" style="width:auto;flex:1 1 0;min-height:36px;padding:6px 4px;font-size:0.85rem;white-space:nowrap;">${label}</button>`).join('')}
+        </div>
+        <p class="muted small result-count" style="margin:0;"><strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}${parts.length ? ` · ${parts.join(' · ')}` : ''}${state.updatesRange === 'week' ? ` · since ${esc(since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}${rows.length >= 150 ? ' (newest 150 shown)' : ''}</p>
       </div>`;
   }
   function wireUpdatesFilter() {
@@ -4712,17 +4720,20 @@
       state.updatesScrollTop = 0;
       renderUpdates();
     }));
-    [['updatesFromInput', 'updatesFrom'], ['updatesToInput', 'updatesTo']].forEach(([id, key]) => {
-      const input = document.getElementById(id);
-      if (input) input.addEventListener('change', () => { state[key] = input.value; renderUpdates(); });
-    });
+    appEl.querySelectorAll('[data-updates-kind]').forEach((b) => b.addEventListener('click', () => {
+      const kind = b.dataset.updatesKind;
+      if (state.updatesKinds.has(kind)) state.updatesKinds.delete(kind); else state.updatesKinds.add(kind);
+      state.updatesScrollTop = 0;
+      renderUpdates();
+    }));
   }
 
   async function renderUpdates() {
     appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
     const myTab = state.tab;
-    const w = updatesWindow();
-    const qs = (w.since ? `&since=${encodeURIComponent(w.since.toISOString())}` : '') + (w.until ? `&until=${encodeURIComponent(w.until.toISOString())}` : '');
+    const since = updatesSince();
+    const qs = (since ? `&since=${encodeURIComponent(since.toISOString())}` : '')
+      + (state.updatesKinds.size ? `&kinds=${[...state.updatesKinds].join(',')}` : '');
     let data;
     try {
       data = await api(`/api/updates?userId=${state.currentUser.id}&limit=150${qs}`);
@@ -4733,9 +4744,9 @@
     if (state.tab !== myTab) return;
     const rows = data.updates || [];
     if (!rows.length) {
-      appEl.innerHTML = state.updatesRange === 'all'
-        ? `<p class="empty-state">No updates yet.</p>`
-        : updatesFilterHtml(rows) + `<p class="empty-state">No updates in this time range.</p>`;
+      appEl.innerHTML = updatesFiltered()
+        ? updatesFilterHtml(rows) + `<p class="empty-state">No updates match these filters.</p>`
+        : `<p class="empty-state">No updates yet.</p>`;
       wireUpdatesFilter();
       return;
     }
@@ -4787,9 +4798,9 @@
     state.updatesHtml = appEl.innerHTML;
     wireDogActionButtons(appEl);
     wireUpdatesFilter();
-    // A custom range that stops in the past may be hiding newer unread
-    // updates, so it doesn't count as having seen them.
-    if (w.until && w.until < new Date()) return;
+    // A filtered view can leave unread updates out (older than today, or of
+    // another kind), so only the full feed counts as having seen them.
+    if (updatesFiltered()) return;
     // Mark as seen only after actually rendering the list (not just on
     // fetch) -- the rows just shown keep their already-computed `unread`
     // green border for this viewing, and only lose it on the NEXT visit.
@@ -5382,29 +5393,35 @@
 
   // Soft timing tip from the shelter's "Which dogs should I walk?" sign:
   // first walks in the morning, non-POO second walks mid-day, POO dogs'
-  // last walks after 4pm (POO asterisk close to 7pm). Only ever a nudge
-  // about a dog's 2nd walk; never blocks anything.
+  // last walks after 4pm (POO asterisk close to 7pm). Never blocks anything.
   function walkTimingHint(dog, walks) {
     const today = todayKey();
     const walksToday = (walks || []).filter((w) => w.started_at && dateKey(w.started_at) === today).length;
-    if (walksToday !== 1) return '';
     const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' })
       .formatToParts(new Date());
     const hour = Number(parts.find((p) => p.type === 'hour').value) + Number(parts.find((p) => p.type === 'minute').value) / 60;
     const poo = dog.pooStatus === 'poo' || dog.pooStatus === 'priority';
     const star = dog.pooStatus === 'priority';
+
+    // A POO dog gets a last walk after 4pm (close to 7pm for the asterisk
+    // ones) either way, whether this is its 1st or 2nd walk today -- so a
+    // mid-day slot spent on one is a non-POO dog that may miss its only
+    // walk of the day. Unlike the other branches below, this applies
+    // regardless of walksToday.
+    if (poo && hour >= 11 && hour < 16) {
+      return star
+        ? 'POO asterisk dogs still get a walk close to 7pm either way. If you can, save this mid-day slot for a non-POO dog instead -- otherwise they may not get a second walk today. A quick potty break is fine if that\'s all this one needs.'
+        : 'POO dogs still get a walk after 4pm either way. If you can, save this mid-day slot for a non-POO dog instead -- otherwise they may not get a second walk today. A quick potty break is fine if that\'s all this one needs.';
+    }
+
+    if (walksToday !== 1) return '';
     if (hour < 11) {
       if (star) return '';
       return poo
         ? 'This dog already has a walk logged today. Mornings are for first walks, and POO dogs\' second walk is best after 4pm, so they go out late.'
         : 'This dog already has a walk logged today. Mornings are for first walks; non-POO second walks are best mid-day (11am to 4pm).';
     }
-    if (hour < 16) {
-      if (!poo) return '';
-      return star
-        ? 'Consider waiting: a POO asterisk dog\'s last walk is best close to 7pm. A quick potty break now is fine.'
-        : 'Consider waiting: POO dogs\' last walk is best after 4pm. A quick potty break now is fine.';
-    }
+    if (hour < 16) return ''; // non-POO 2nd walk now is ideal; the POO case is handled above
     if (!poo) return 'Evenings are for POO dogs\' last walks. If any POO dogs still need theirs, consider walking them first.';
     if (star && hour < 18) return 'A POO asterisk dog\'s last walk is best close to 7pm. POO dogs with only 1 walk come first.';
     return '';

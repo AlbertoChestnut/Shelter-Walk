@@ -26,204 +26,25 @@ function sniffImage(buf) {
   return null;
 }
 
-const STICKER = (name) => `/wiki/stickers/${name}.svg`;
-
-// Demo content, seeded once (never re-seeded after that, so deleting or
-// rewriting a section sticks). Staff should edit these to match real
-// shelter policy -- the sticker meanings mirror the app's own marker names.
-function demoSections() {
-  const sticker = (file, title, text) => `- ![${title}](${STICKER(file)}) **${title}**: ${text}`;
-  return [
-    {
-      icon: '🏷️',
-      title: 'Sticker meanings',
-      body: [
-        '> Demo content. Staff can edit this section (tap Edit) to match shelter policy.',
-        '',
-        'Kennel cards and the app show small stickers for each dog. Tap any dog\'s stickers in the app to see what they mean.',
-        '',
-        '## Behavior stickers (blue)',
-        'A blue sticker is a heads-up about something to plan for. It is not a reason to skip a dog, just a reason to be prepared.',
-        '',
-        sticker('blue_c', 'C: Difficult to collar', 'may dodge or resist having a collar or leash put on. Go slowly, stay calm, and ask staff if you need a hand.'),
-        sticker('blue_d', 'D: Door dasher', 'tends to bolt through doors and gates. Keep the dog controlled at every doorway.'),
-        sticker('blue_e', 'E: Energetic', 'lots of energy. Expect a strong, fast walk and plenty of enthusiasm.'),
-        sticker('blue_h', 'H: Humpy', 'may try to mount people or other dogs when excited. Redirect calmly.'),
-        sticker('blue_j', 'J: Jumpy', 'jumps up on people. Turn away and reward four paws on the floor.'),
-        sticker('blue_m', 'M: Mouthy', 'uses their mouth a lot when excited or playing. Keep treats and toys handy to redirect.'),
-        sticker('blue_p', 'P: Puller', 'pulls hard on the leash. A firm grip and steady pace help. Newer volunteers should ask about equipment.'),
-        sticker('blue_q', 'Q: Quirky', 'has a quirk worth knowing about. Check the notes from past walks for specifics.'),
-        sticker('blue_r', 'R: Reactive', 'may react to other dogs, people, or sounds. Give other dogs plenty of space.'),
-        sticker('blue_s', 'S: Shy / shutdown', 'can be shy or freeze up. Move gently, let them set the pace, and do not force interaction.'),
-        sticker('blue_evo', 'EVO: Experienced volunteers only', 'only walked by volunteers at the Experienced level. The app blocks everyone else from starting a walk with these dogs.'),
-        '',
-        '## Yellow stickers',
-        sticker('poo', 'POO', 'Potty Outside Only. This dog should go outside to eliminate rather than in the play yards.'),
-        sticker('poo_priority', 'POO priority (asterisk)', 'high priority potty dog. First one out in the morning and last one out in the evening.'),
-        sticker('pb', 'PB: Potty break OK', 'a short, potty-focused walk only. Get them out, let them go, bring them back.'),
-        '',
-        '## Other indicators',
-        sticker('star', 'Gold star', 'good for beginners. A great first choice if you are new.'),
-        sticker('star_pending', 'Grey star', 'normally a beginner-friendly dog, but greyed out because someone has started adopting them, so beginners cannot walk them right now.'),
-        sticker('adopted', 'Adopted (purple)', 'someone has started the adoption process ("I\'m getting adopted!" on the shelter website). Beginners cannot walk these dogs; Established and Experienced volunteers can.'),
-        '- 🔄 **Returned icon**: shows up next to a dog\'s days-in-shelter count when they have been returned to the shelter before. Tap it to see a breakdown of their stay(s), going back up to 6 months.',
-        '',
-        '**App-only, not on the kennel card:** the grey star and the 🔄 returned icon are things the app itself works out and shows you - they are never printed on the dog\'s physical kennel card. Every other sticker above (the blue letters, POO, PB, gold star, purple adopted) matches a real sticker staff put on the card.'
-      ].join('\n')
-    },
-    {
-      icon: '🌱',
-      title: 'Tips for new volunteers',
-      body: [
-        '> Demo content. Staff can edit this section.',
-        '',
-        '## Picking your first dogs',
-        '- Look for the **gold star**. Those dogs are the best fit for new walkers.',
-        '- Use the **Beginner** preset in the Filters panel to hide anything with behavior stickers.',
-        '- The Available list shows a green **Eligible** badge when a dog is cleared for your level.',
-        '',
-        '## Before you leave the kennel',
-        '1. Read the sticker meanings for that dog (tap their stickers).',
-        '2. Skim the notes from past walks. Other volunteers leave useful tips.',
-        '3. Write the check-out time on the kennel card.',
-        '',
-        '## During the walk',
-        '- Keep a firm grip on the leash and stay aware of your surroundings.',
-        '- Give other dogs space, especially dogs with an **R** sticker.',
-        '- Keep the walk to the amount of time the dog needs, not the amount of time you have.',
-        '',
-        '## After the walk',
-        '- Return the dog to the **same kennel** you took them from.',
-        '- Add a short note about how it went. It helps the next volunteer.',
-        '- Wash your hands and thank the dog.'
-      ].join('\n')
-    },
-    {
-      icon: '🐕',
-      title: 'Experience levels',
-      body: [
-        '> Demo content. Staff can edit this section.',
-        '',
-        'Your level controls which dogs the app lets you walk. Change it any time from the gear icon (Settings).',
-        '',
-        '## Beginner',
-        'Less than 20 hours of volunteering.',
-        '- Dogs must have been in the shelter at least 15 days.',
-        '- No behavior (blue) stickers, no PB dogs, no dogs that are pending adoption.',
-        '',
-        '## Established',
-        '20 hours or more.',
-        '- Dogs must have been in the shelter at least 7 days.',
-        '- Behavior stickers, PB dogs, and pending-adoption dogs are OK. EVO dogs are not.',
-        '',
-        '## Experienced Volunteer',
-        '1 year and 100 hours of service.',
-        '- Everything above, including EVO dogs.',
-        '',
-        'Puppies under 6 months old can never be walked, at any level.'
-      ].join('\n')
-    },
-    {
-      icon: '📱',
-      title: 'Using Shelter Walk',
-      body: [
-        '> Demo content. Staff can edit this section.',
-        '',
-        '## Starting a walk',
-        '1. Open the **Available** tab, or tap **Scan** and scan the QR code on the kennel.',
-        '2. Tap **Walk / Edit** on the dog, check the details, then tap **Start Walk**.',
-        '3. The timer screen shows the check-out time and where to return the dog.',
-        '',
-        '## New kennel cards (no details yet)',
-        "Sometimes the shelter prints a kennel card before the dog is in its online listing, and brand-new arrivals may not have a name yet. Scanning one of those cards shows **📋 New kennel card** with the card's Animal ID and a drawn placeholder picture.",
-        '',
-        'You can still walk them:',
-        "1. Check the kennel card yourself first: puppies under 6 months old can't be walked, and make sure your level is cleared for any stickers on the card.",
-        '2. Pick the kennel letter and start as usual.',
-        "3. The walk is kept under the card's Animal ID and added to the dog's record as soon as the shelter lists them. The app checks for new dogs every 30 minutes.",
-        '',
-        '## Finishing a walk',
-        '1. Tap **End Walk**, add a note if you like, then **Save & Finish**. The walk ends when you tap End Walk, not when you save.',
-        '2. Started by mistake? Tap **Cancel Walk** and nothing is recorded.',
-        '',
-        '## Time limit',
-        'Walks **stop automatically after 30 minutes** so a forgotten End Walk never ties up a dog. Still walking? Tap **+10 min** on the walk screen. If it stops anyway, the app shows the end screen and asks when the walk really ended: **Just now**, at the time limit, or **Pick a time**. An "Auto-stopped" badge marks these walks.',
-        '',
-        '## The tabs',
-        '- **Available**: every dog you can walk, with filters and sorting.',
-        '- **Scan**: scan a kennel QR code, or see your walk in progress.',
-        '- **Stats**: how today went, and your lifetime totals.',
-        '- **Updates**: new dogs, returned dogs, and adoptions.',
-        '',
-        '## Good to know',
-        '- Tap a dog\'s photo for a full-size view.',
-        '- Install the app to your Home Screen for the best experience (and for notifications on iPhone).',
-        '- Turn on notifications in Settings to get a reminder of where to return your dog.'
-      ].join('\n')
-    },
-    {
-      icon: '☎️',
-      title: 'Contacts and shelter info',
-      body: [
-        '> Demo content. Replace with your real contacts, hours, and policies.',
-        '',
-        '## Who to ask',
-        '- **Volunteer coordinator**: (add name and number)',
-        '- **Front desk**: (add number)',
-        '',
-        '## Hours',
-        '- Dogs can be walked from 7am to 7:15pm. The app stops any walk still going at 7:15pm.',
-        '- Add the shelter\'s closed days here.',
-        '',
-        '## Emergencies',
-        '- Add what to do if a dog is hurt, gets loose, or a volunteer needs help.'
-      ].join('\n')
-    }
-  ];
+// Starter content, seeded once (never re-seeded after that, so deleting or
+// rewriting a section sticks). The shelter's real starter text is in
+// wikiSeed.js, which isn't in the public repo; without it the Guide starts
+// with one generic section for staff to replace.
+let seedContent;
+try {
+  seedContent = require('./wikiSeed');
+} catch (e) {
+  if (e.code !== 'MODULE_NOT_FOUND') throw e;
+  seedContent = {
+    demoSections: () => [{
+      icon: '📖',
+      title: 'Welcome',
+      body: 'Staff can add sections here: what the kennel stickers mean, tips for new volunteers, contacts, and shelter policies.'
+    }],
+    addedSections: () => []
+  };
 }
-
-// Sections added after the first seed. Each is inserted once (at the end)
-// on databases that were already seeded, tracked by its own app_meta key,
-// so later edits or deletions by staff still stick.
-function addedSections() {
-  return [
-    {
-      key: 'wiki_added_which_dogs',
-      icon: '🗓️',
-      title: 'Which dogs should I walk?',
-      body: [
-        '**Goal:** every dog gets 2 or more walks a day if possible.',
-        '',
-        '## Morning (7:00am to 11:00am)',
-        '1. POO asterisk',
-        '2. POO',
-        '3. Non-POO',
-        '4. POO asterisk (2nd walks)',
-        '',
-        '## Mid-day (11:00am to 4:00pm)',
-        '1. Non-POO (2nd walks)',
-        '',
-        '## Afternoon / evening (4:00pm to 7:00pm)',
-        '1. POO with 1 walk',
-        '2. POO with an early 2nd walk',
-        '3. POO asterisk (close to 7:00pm)',
-        '4. Non-POO (2nd walks, if time)',
-        '5. Non-POO with an early 2nd walk (if time)',
-        '',
-        '## POO dog timeline',
-        '- **7am:** POO dogs out first, then non-POO for first walks.',
-        '- **12pm:** finish first walks for all. Begin second walks, starting with non-POOs, then POOs.',
-        '- **4pm:** focus on POO dogs\' last walks.',
-        '',
-        'These are general guidelines and are flexible depending on the needs of the day. If possible, POO dogs should get a potty break mid-day.',
-        '',
-        'The app shows a small timing tip on the walk screen when a POO dog\'s walk might be better saved for later. It\'s only a suggestion, never a block.',
-        '',
-        'More info: see "Who do I walk?" in the Volunteers Facebook group.'
-      ].join('\n')
-    }
-  ];
-}
+const { demoSections, addedSections } = seedContent;
 
 function register(app, { db, resolveAuthedUser }) {
   const seeded = db.prepare("SELECT value FROM app_meta WHERE key = 'wiki_seeded'").get();
@@ -235,6 +56,15 @@ function register(app, { db, resolveAuthedUser }) {
     db.transaction(() => {
       demoSections().forEach((s, i) => insert.run(s.title, s.icon, s.body, i + 1, now, now, 'demo'));
       db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('wiki_seeded', '1')").run();
+    })();
+  }
+  // "Using Shelter Walk" was folded into the tutorial page (/tutorial.html),
+  // which the Guide shows first as "How to use Shelter Walk". Removed once,
+  // so staff can still add a section with that title later.
+  if (!db.prepare("SELECT value FROM app_meta WHERE key = 'wiki_removed_using_app'").get()) {
+    db.transaction(() => {
+      db.prepare("DELETE FROM wiki_sections WHERE title = 'Using Shelter Walk'").run();
+      db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('wiki_removed_using_app', '1')").run();
     })();
   }
   for (const s of addedSections()) {

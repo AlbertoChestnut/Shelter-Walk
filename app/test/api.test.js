@@ -100,7 +100,7 @@ test('a completed walk counts in stats; a cancelled one does not', async () => {
 test('Guide: everyone reads, only editors write, images are validated', async () => {
   const list = await call('GET', '/api/wiki');
   assert.equal(list.status, 200);
-  assert.ok(list.json.sections.length >= 5, 'demo sections are seeded');
+  assert.ok(list.json.sections.length >= 1, 'starter sections are seeded');
   assert.equal(list.json.canEdit, false);
   assert.equal((await call('POST', '/api/wiki', { body: { title: 'x' } })).status, 403);
 

@@ -1,11 +1,16 @@
-// Walking hours at the shelter: nobody can walk a dog before 7am or after
-// 7:15pm, shelter time. Starting a walk, logging one by hand, and editing
-// a walk's times are all held to this window, and a walk still running at
-// closing time stops by itself then.
+// Walking hours at the shelter: by default nobody can walk a dog before 7am
+// or after 7pm, shelter time. Starting a walk, logging one by hand, and
+// editing a walk's times are all held to the day's window, and a walk still
+// running at closing time stops by itself then.
 //
-// WALK_HOURS ("HH:MM-HH:MM") overrides the window. "00:00-24:00" means no
-// walking-hours limit at all (the API tests use it so they pass at any time,
-// including walks that run past midnight).
+// Staff can change the hours (shelterSchedule.js): usual hours per weekday,
+// and single days that are closed or run different hours. setScheduleSource
+// plugs that in; a day it says nothing about uses the default window.
+//
+// WALK_HOURS ("HH:MM-HH:MM") overrides the default window. "00:00-24:00"
+// means no walking-hours limit at all (the API tests use it so they pass at
+// any time, including walks that run past midnight); a day staff closed is
+// still closed then.
 const SHELTER_TZ = 'America/New_York';
 
 function parseHours(spec) {
@@ -15,7 +20,7 @@ function parseHours(spec) {
   const close = Number(m[3]) * 60 + Number(m[4]);
   return open < close && close <= 24 * 60 ? { open, close } : null;
 }
-const { open: OPEN_MINUTES, close: CLOSE_MINUTES } = parseHours(process.env.WALK_HOURS) || parseHours('07:00-19:15');
+const { open: OPEN_MINUTES, close: CLOSE_MINUTES } = parseHours(process.env.WALK_HOURS) || parseHours('07:00-19:00');
 const NO_LIMIT = OPEN_MINUTES === 0 && CLOSE_MINUTES === 24 * 60;
 
 const partsFmt = new Intl.DateTimeFormat('en-US', {
@@ -38,11 +43,41 @@ function shelterTimeToDate(y, m, d, minutes) {
   return new Date(guess - offsetMs);
 }
 
-// Opening and closing instants for the shelter day that `date` falls on.
+// (dateKey, dayOfWeek) -> null, or { open, close } in minutes past midnight
+// and/or { closed, note } for that shelter day.
+let scheduleSource = null;
+function setScheduleSource(fn) { scheduleSource = fn; }
+
+const pad2 = (n) => String(n).padStart(2, '0');
+function dayHours(y, m, d) {
+  const dateKey = `${y}-${pad2(m)}-${pad2(d)}`;
+  const staff = (scheduleSource && scheduleSource(dateKey, new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay())) || {};
+  return {
+    dateKey,
+    open: Number.isInteger(staff.open) ? staff.open : OPEN_MINUTES,
+    close: Number.isInteger(staff.close) ? staff.close : CLOSE_MINUTES,
+    closed: !!staff.closed,
+    note: staff.note || ''
+  };
+}
+
+// Opening and closing instants for the shelter day that `date` falls on,
+// whether staff closed it, and their note for the day. On a closed day the
+// times are still filled in, so a walk already out when staff close the
+// shelter keeps its usual end time; new walks are refused (walkHoursError).
 function walkWindow(date) {
-  if (NO_LIMIT) return { opensAt: new Date(0), closesAt: new Date(8.64e15) };
   const c = shelterClock(date);
-  return { opensAt: shelterTimeToDate(c.y, c.m, c.d, OPEN_MINUTES), closesAt: shelterTimeToDate(c.y, c.m, c.d, CLOSE_MINUTES) };
+  const h = dayHours(c.y, c.m, c.d);
+  const base = { dateKey: h.dateKey, closed: h.closed, note: h.note };
+  if (NO_LIMIT) return { ...base, opensAt: new Date(0), closesAt: new Date(8.64e15), openLabel: OPEN_LABEL, closeLabel: CLOSE_LABEL, hoursLabel: HOURS_LABEL };
+  return {
+    ...base,
+    opensAt: shelterTimeToDate(c.y, c.m, c.d, h.open),
+    closesAt: shelterTimeToDate(c.y, c.m, c.d, h.close),
+    openLabel: fmtMinutes(h.open),
+    closeLabel: fmtMinutes(h.close),
+    hoursLabel: `${fmtMinutes(h.open)} to ${fmtMinutes(h.close)}`
+  };
 }
 
 function fmtMinutes(total) {
@@ -60,10 +95,14 @@ const HOURS_LABEL = `${OPEN_LABEL} to ${CLOSE_LABEL}`;
 function walkHoursError(startedAt, endedAt) {
   const start = new Date(startedAt);
   if (Number.isNaN(start.getTime())) return 'That start time is not a valid time.';
-  const { opensAt, closesAt } = walkWindow(start);
-  if (start < opensAt || start >= closesAt) return `Walks can only happen from ${HOURS_LABEL}.`;
-  if (endedAt != null && new Date(endedAt) > closesAt) return `Walks end by ${CLOSE_LABEL}, so the end time can't be later than that.`;
+  const w = walkWindow(start);
+  if (w.closed) return `The shelter is closed that day${w.note ? ` (${w.note})` : ''}, so there are no walks.`;
+  if (start < w.opensAt || start >= w.closesAt) return `Walks can only happen from ${w.hoursLabel}.`;
+  if (endedAt != null && new Date(endedAt) > w.closesAt) return `Walks end by ${w.closeLabel}, so the end time can't be later than that.`;
   return null;
 }
 
-module.exports = { walkWindow, walkHoursError, OPEN_LABEL, CLOSE_LABEL, HOURS_LABEL };
+module.exports = {
+  walkWindow, walkHoursError, setScheduleSource, shelterClock, fmtMinutes, parseHours,
+  OPEN_MINUTES, CLOSE_MINUTES, OPEN_LABEL, CLOSE_LABEL, HOURS_LABEL
+};

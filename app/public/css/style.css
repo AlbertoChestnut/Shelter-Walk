@@ -244,6 +244,7 @@ body.sheet-open main#app {
    is called out with its own text badge instead, so an old, already-seen
    adoption never looks indistinguishable from something actually new. */
 .update-unread { border-color: var(--green); border-width: 2px; }
+.update-alert { border-left: 5px solid var(--amber); }
 
 /* Scan-a-dog page only: a little translucent (not fully opaque like normal
    cards) so the caution/EVO/PB backgrounds behind them stay noticeable

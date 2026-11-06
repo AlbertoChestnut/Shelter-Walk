@@ -17,6 +17,7 @@
   <nav class="section-tabs">
     <button class="tab-btn active" data-section="live">Live board</button>
     <button class="tab-btn" data-section="reports">Reports</button>
+    <button class="tab-btn" data-section="hours">Hours &amp; alerts</button>
   </nav>
   <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
   <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
@@ -106,6 +107,57 @@
       Download: <a id="exportCsv" href="#">CSV</a> · <a id="exportXlsx" href="#">Excel</a> · <a id="exportPdf" href="#">PDF</a>
     </div>
     <div id="reportOutput"></div>
+  </section>
+
+  <section id="hoursSection" class="panel hidden">
+    <p id="hoursToday" class="hours-today"></p>
+    <div class="hours-grid">
+      <div class="hours-card">
+        <h2>📢 Send a shelter alert</h2>
+        <p class="muted small">Goes to everyone's phone right away (unless they turned shelter alerts off) and shows in the app's Updates tab under Alerts.</p>
+        <form id="alertForm" class="hours-form">
+          <label>Headline <input type="text" id="alertTitle" maxlength="80" placeholder="e.g. Shelter closed today" required /></label>
+          <label>Message <textarea id="alertBody" maxlength="500" rows="3" placeholder="e.g. A water main broke. No walks today, sorry! We'll post when we reopen."></textarea></label>
+          <div class="form-actions"><button type="submit" class="primary-btn">Send alert</button><span id="alertStatus" class="small muted"></span></div>
+        </form>
+        <h3>Recent alerts</h3>
+        <ul id="alertList" class="hours-list"></ul>
+      </div>
+
+      <div class="hours-card">
+        <h2>📅 Special days</h2>
+        <p class="muted small">A holiday, a closure, or a day with different hours. Volunteers who open the app that day see a notice right away.</p>
+        <form id="specialForm" class="hours-form">
+          <label>Date <input type="date" id="specialDate" required /></label>
+          <fieldset class="mode-pick">
+            <label><input type="radio" name="specialMode" value="closed" checked /> Closed all day</label>
+            <label><input type="radio" name="specialMode" value="hours" /> Different hours</label>
+            <label><input type="radio" name="specialMode" value="note" /> Usual hours, just a note</label>
+          </fieldset>
+          <div id="specialTimes" class="time-row hidden">
+            <label>Opens <input type="time" id="specialOpen" value="07:00" /></label>
+            <label>Walks end <input type="time" id="specialClose" value="19:00" /></label>
+          </div>
+          <label>Note for volunteers <input type="text" id="specialNote" maxlength="200" placeholder="e.g. Thanksgiving, emergency renovation, no volunteers today" /></label>
+          <label class="check"><input type="checkbox" id="specialNotify" /> Also send a shelter alert to everyone now</label>
+          <div class="form-actions"><button type="submit" class="primary-btn">Save day</button><span id="specialStatus" class="small muted"></span></div>
+        </form>
+        <h3>Coming up</h3>
+        <ul id="specialList" class="hours-list"></ul>
+      </div>
+
+      <div class="hours-card">
+        <h2>🕒 Usual weekly hours</h2>
+        <p class="muted small">When walks can start, and when any walk still out stops by itself.</p>
+        <form id="weeklyForm">
+          <table class="weekly-table">
+            <thead><tr><th>Day</th><th>Opens</th><th>Walks end</th><th>Closed</th></tr></thead>
+            <tbody id="weeklyRows"></tbody>
+          </table>
+          <div class="form-actions"><button type="submit" class="primary-btn">Save weekly hours</button><span id="weeklyStatus" class="small muted"></span></div>
+        </form>
+      </div>
+    </div>
   </section>
 </main>
 

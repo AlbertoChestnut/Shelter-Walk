@@ -11,6 +11,7 @@ const wiki = require('./wiki');
 const impact = require('./impact');
 const shelterTrends = require('./shelterTrends');
 const staffDashboard = require('./staffDashboard');
+const shelterSchedule = require('./shelterSchedule');
 const notes = require('./notes');
 const feedback = require('./feedback');
 const account = require('./account');
@@ -478,12 +479,24 @@ function resolveAuthedUser(req) {
         id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false,
         onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk'
       };
+      notifyAdmins({ title: '👋 New account', body: `${name} just opened Shelter Walk for the first time.`, tag: `signup-${row.id}` });
     }
   }
   return {
     ...row, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit,
     onboardingCompleted: !!row.onboardingCompleted
   };
+}
+
+// Admins (privileged accounts) hear when someone new joins, unless they
+// turned new_signups off. Both notices for one person share a tag, so
+// "finished setting up" replaces "new account" instead of stacking.
+function notifyAdmins(payload) {
+  const admins = db.prepare(`
+    SELECT id FROM users u WHERE is_privileged = 1
+      AND NOT EXISTS (SELECT 1 FROM notification_prefs p WHERE p.user_id = u.id AND p.pref_key = 'new_signups' AND p.enabled = 0)
+  `).all();
+  for (const { id } of admins) push.sendPushToUser(id, { url: '/', ...payload }).catch(() => {});
 }
 
 // ---- Who is asking: always the signed-in account, never a request field ----
@@ -646,8 +659,12 @@ app.get('/api/me/export', (req, res) => {
 // before this sequence existed but still hasn't seen the rest of it.
 app.post('/api/users/:id/onboarding-complete', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const info = db.prepare('UPDATE users SET onboarding_completed = 1 WHERE id = ?').run(id);
-  if (info.changes === 0) return res.status(404).json({ error: 'User not found' });
+  const user = db.prepare('SELECT name, onboarding_completed FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  db.prepare('UPDATE users SET onboarding_completed = 1 WHERE id = ?').run(id);
+  if (!user.onboarding_completed) {
+    notifyAdmins({ title: '✅ Finished setting up', body: `${user.name} finished onboarding and is ready to walk.`, tag: `signup-${id}` });
+  }
   res.json({ id, onboardingCompleted: true });
 });
 
@@ -660,7 +677,12 @@ app.post('/api/users/:id/onboarding-complete', (req, res) => {
 //   removed" posts can turn just that off without losing the rest.
 // favorite_* are the hearted-dog notices (see scraper.js), separate from
 // adopted_walked_dog so someone can hear about just their favorites.
+// Two pushes are on unless turned off: shelter_alerts (urgent news from
+// staff, shelterSchedule.js) and new_signups (only ever sent to privileged
+// accounts: someone new joined the app).
 const PREF_DEFAULTS = {
+  shelter_alerts: true,
+  new_signups: true,
   adopted_walked_dog: false,
   walk_started: false,
   favorite_adopted: false,
@@ -1215,7 +1237,7 @@ app.put('/api/manual-checkoffs', (req, res) => {
 // notification_prefs), so the UI can call it out for them specifically.
 // The event kinds the Updates feed shows. 'removed' (a plain delisting that
 // wasn't an adoption) is left out on purpose; see below.
-const UPDATE_KINDS = ['new_dog', 'adopted', 'returned'];
+const UPDATE_KINDS = ['new_dog', 'adopted', 'returned', 'alert'];
 app.get('/api/updates', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   const limit = clampLimit(req.query.limit, 100);
@@ -1433,8 +1455,8 @@ app.post('/api/walks/:id/extend', (req, res) => {
   if (walk.activity === 'daycation') {
     return res.status(409).json({ error: `Daycations already run up to ${DAYCATION_MINUTES / 60} hours, so there's no time to add.` });
   }
-  if (walkStopsAt(walk) === walkHours.walkWindow(walk.started_at).closesAt.toISOString()) {
-    return res.status(409).json({ error: `Walks end at ${walkHours.CLOSE_LABEL}, so this one can't go any longer.` });
+  if (new Date(walkStopsAt(walk)).getTime() === walkClosesMs(walk)) {
+    return res.status(409).json({ error: `Walks end at ${walkHours.walkWindow(walk.started_at).closeLabel}, so this one can't go any longer.` });
   }
   if (walkLimitMinutes(walk) + EXTEND_MINUTES > MAX_TOTAL_MINUTES) {
     return res.status(409).json({ error: `Walks can be extended up to ${MAX_TOTAL_MINUTES / 60} hours in total.` });
@@ -1481,7 +1503,7 @@ app.put('/api/walks/:id/end', (req, res) => {
     recordedEnd = endedAt;
   } else {
     const daycation = walk.activity === 'daycation';
-    const closesMs = daycation ? Infinity : walkHours.walkWindow(walk.started_at).closesAt.getTime();
+    const closesMs = daycation ? Infinity : walkClosesMs(walk);
     const maxMinutes = daycation ? DAYCATION_MINUTES : MAX_TOTAL_MINUTES;
     const latest = Math.min(now, new Date(walk.started_at).getTime() + maxMinutes * 60000, closesMs);
     // A walk can't run past closing, so "just now" (or any time) after it
@@ -1796,14 +1818,25 @@ const WRAP_UP_HOURS = 12;
 // isn't stopped at closing time (it still has to start during walking hours).
 const DAYCATION_MINUTES = 12 * 60;
 const walkLimitMinutes = (w) => (w.activity === 'daycation' ? DAYCATION_MINUTES : AUTO_STOP_MINUTES + (w.extend_minutes || 0));
-// Whichever comes first: the time limit, or closing time for walks (7:15pm).
+// Closing time for the walk's day, in ms. Staff can move a day's closing
+// time while walks are out; one that started after the new closing time
+// isn't held to it (it would otherwise stop before it began).
+const walkClosesMs = (w) => {
+  const closesMs = walkHours.walkWindow(w.started_at).closesAt.getTime();
+  return closesMs > new Date(w.started_at).getTime() ? closesMs : Infinity;
+};
+// Whichever comes first: the time limit, or closing time for walks (7pm
+// unless staff set other hours).
 const walkStopsAt = (w) => {
   const limitMs = new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000;
   if (w.activity === 'daycation') return new Date(limitMs).toISOString();
-  return new Date(Math.min(limitMs, walkHours.walkWindow(w.started_at).closesAt.getTime())).toISOString();
+  return new Date(Math.min(limitMs, walkClosesMs(w))).toISOString();
 };
 // Closing time for the walk's day, or null for a daycation (not held to it).
-const closesAtFor = (w) => (w.activity === 'daycation' ? null : walkHours.walkWindow(w.started_at).closesAt.toISOString());
+const closesAtFor = (w) => {
+  const closesMs = w.activity === 'daycation' ? Infinity : walkClosesMs(w);
+  return closesMs === Infinity ? null : new Date(closesMs).toISOString();
+};
 // Walking-hours check for a start/end pair; a daycation only has to start
 // during walking hours.
 const walkHoursErrorFor = (activity, startedAt, endedAt) =>
@@ -1871,7 +1904,7 @@ function enforceWalkLimits() {
     }
     if (now >= stopsAt) {
       const seconds = Math.round((stopsAt - startedMs) / 1000);
-      const atClosing = w.activity !== 'daycation' && stopsAt === walkHours.walkWindow(w.started_at).closesAt.getTime();
+      const atClosing = w.activity !== 'daycation' && stopsAt === walkClosesMs(w);
       db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
         .run(new Date(stopsAt).toISOString(), seconds, w.id);
       console.warn(`[server] auto-stopped walk ${w.id} after ${Math.round(seconds / 60)} min${atClosing ? ' (closing time)' : ''}`);
@@ -1879,7 +1912,7 @@ function enforceWalkLimits() {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || 'Your walk'}: stopped automatically`,
           body: atClosing
-            ? `Walks end at ${walkHours.CLOSE_LABEL}. Open the app to say when it really ended.`
+            ? `Walks end at ${walkHours.walkWindow(w.started_at).closeLabel}. Open the app to say when it really ended.`
             : w.activity === 'daycation'
               ? `Daycations stop after ${DAYCATION_MINUTES / 60} hours. Open the app to say when it really ended.`
               : `Walks stop after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
@@ -1908,6 +1941,7 @@ try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sw
 // Registered down here (not with the other .register() calls above) because
 // it needs enforceWalkLimits, which isn't defined until just above this line.
 staffDashboard.register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, ACTIVITY_VERBS, ACTIVITIES });
+shelterSchedule.register(app, { db, push });
 
 // Scrape history is only useful for health checks; keep 90 days.
 function pruneOldRecords() {

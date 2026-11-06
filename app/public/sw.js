@@ -2,7 +2,7 @@
 // is often spotty, so the app should still show the last-known data (with
 // the page's own "Offline" banner) instead of going blank on a dropped
 // connection.
-const CACHE_NAME = 'shelter-walk-v6';
+const CACHE_NAME = 'shelter-walk-v7';
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
@@ -249,6 +249,8 @@ self.addEventListener('notificationclick', (event) => {
       { type: 'end-walk', walkId: data.walkId, at }));
   } else if (data.page === 'feedback') {
     event.waitUntil(openApp(url, { type: 'open-feedback' }));
+  } else if (data.page === 'updates') {
+    event.waitUntil(openApp(url, { type: 'open-updates' }));
   } else {
     event.waitUntil(openApp(url));
   }

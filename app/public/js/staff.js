@@ -95,6 +95,8 @@
       const section = btn.dataset.section;
       document.getElementById('liveSection').classList.toggle('hidden', section !== 'live');
       document.getElementById('reportsSection').classList.toggle('hidden', section !== 'reports');
+      document.getElementById('hoursSection').classList.toggle('hidden', section !== 'hours');
+      if (section === 'hours') loadSchedule();
       if (section === 'live') fitToScreen();
       else resetZoom();
     });
@@ -175,7 +177,7 @@
     return `${h - 12}p`;
   }
 
-  // The shelter only ever lets a walk/activity start from 7am to ~7:15pm
+  // The shelter only ever lets a walk/activity start from 7am to ~7pm
   // (walkHours.js), so hours outside that are always zero in practice --
   // showing all 24 just wastes most of the chart on a flat empty stretch.
   // Restricting the axis to the hours that can ever have data lets the real
@@ -655,4 +657,149 @@
   loadDogsList();
   loadSavedReportsList();
   refreshReport();
+
+  // ==================== Hours & alerts ====================
+  // Usual weekly hours, special days (closed / other hours / a note) and
+  // shelter alerts. The server side is src/shelterSchedule.js.
+  const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  function setStatus(id, text, isError) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.style.color = isError ? 'var(--red)' : '';
+  }
+
+  function renderSchedule(data) {
+    const t = data.today;
+    document.getElementById('hoursToday').innerHTML = `<strong>Today (${escapeHtml(t.label)}):</strong> `
+      + (t.closed ? 'Closed' : `walks ${escapeHtml(t.hoursLabel)}`)
+      + (t.note ? ` · ${escapeHtml(t.note)}` : '');
+
+    document.getElementById('alertList').innerHTML = data.alerts.length
+      ? data.alerts.map((a) => `
+        <li>
+          <div><strong>${escapeHtml(a.title)}</strong>${a.body && a.body !== a.title ? `<div class="small">${escapeHtml(a.body)}</div>` : ''}
+          <div class="small muted">${escapeHtml(fmtWhen(a.occurredAt))}</div></div>
+          <button type="button" class="link-btn" data-delete-alert="${a.id}" title="Remove it from the Updates tab (a push already sent stays sent)">Remove</button>
+        </li>`).join('')
+      : '<li class="muted small">None yet.</li>';
+
+    document.getElementById('specialList').innerHTML = data.specialDays.length
+      ? data.specialDays.map((d) => `
+        <li>
+          <div><strong>${escapeHtml(d.label)}</strong> · ${d.closed ? '<span class="closed-tag">Closed</span>' : escapeHtml(d.hoursLabel)}
+          ${d.note ? `<div class="small">${escapeHtml(d.note)}</div>` : ''}</div>
+          <span class="row-actions">
+            <button type="button" class="link-btn" data-edit-day="${d.dateKey}">Edit</button>
+            <button type="button" class="link-btn" data-delete-day="${d.dateKey}">Remove</button>
+          </span>
+        </li>`).join('')
+      : '<li class="muted small">Nothing coming up. Every day uses the usual weekly hours.</li>';
+    hoursState.specialDays = data.specialDays;
+
+    document.getElementById('weeklyRows').innerHTML = data.weekly.map((d) => `
+      <tr data-dow="${d.dow}">
+        <td>${escapeHtml(d.label)}</td>
+        <td><input type="time" class="wk-open" value="${d.open}" ${d.closed ? 'disabled' : ''} aria-label="${escapeHtml(d.label)} opens" /></td>
+        <td><input type="time" class="wk-close" value="${d.close}" ${d.closed ? 'disabled' : ''} aria-label="${escapeHtml(d.label)} walks end" /></td>
+        <td><input type="checkbox" class="wk-closed" ${d.closed ? 'checked' : ''} aria-label="${escapeHtml(d.label)} closed" /></td>
+      </tr>`).join('');
+    document.querySelectorAll('#weeklyRows .wk-closed').forEach((box) => box.addEventListener('change', () => {
+      box.closest('tr').querySelectorAll('input[type="time"]').forEach((i) => { i.disabled = box.checked; });
+    }));
+  }
+  const hoursState = { specialDays: [] };
+
+  async function loadSchedule() {
+    try {
+      renderSchedule(await api('/api/staff/schedule'));
+    } catch (err) {
+      document.getElementById('hoursToday').textContent = `Couldn't load hours: ${err.message}`;
+    }
+  }
+
+  function specialMode() { return document.querySelector('input[name="specialMode"]:checked').value; }
+  function syncSpecialMode() {
+    document.getElementById('specialTimes').classList.toggle('hidden', specialMode() !== 'hours');
+  }
+  document.querySelectorAll('input[name="specialMode"]').forEach((r) => r.addEventListener('change', syncSpecialMode));
+  // The browser's own date (todayKey() above is UTC, a day ahead every evening).
+  const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  document.getElementById('specialDate').min = localToday();
+  document.getElementById('specialDate').value = localToday();
+
+  document.getElementById('alertForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('alertTitle').value.trim();
+    const body = document.getElementById('alertBody').value.trim();
+    if (!title) return;
+    if (!window.confirm(`Send "${title}" to every volunteer's phone now?`)) return;
+    setStatus('alertStatus', 'Sending…');
+    try {
+      const r = await api('/api/staff/alerts', { method: 'POST', body: JSON.stringify({ title, body }) });
+      document.getElementById('alertForm').reset();
+      setStatus('alertStatus', `Sent. Pushed to ${r.pushedTo} volunteer${r.pushedTo === 1 ? '' : 's'} with notifications on.`);
+      loadSchedule();
+    } catch (err) { setStatus('alertStatus', err.message, true); }
+  });
+
+  document.getElementById('specialForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('specialDate').value;
+    const payload = {
+      mode: specialMode(),
+      open: document.getElementById('specialOpen').value,
+      close: document.getElementById('specialClose').value,
+      note: document.getElementById('specialNote').value.trim(),
+      notify: document.getElementById('specialNotify').checked
+    };
+    if (payload.notify && !window.confirm('Also send a shelter alert about this day to every volunteer now?')) return;
+    setStatus('specialStatus', 'Saving…');
+    try {
+      const r = await api(`/api/staff/schedule/days/${encodeURIComponent(date)}`, { method: 'PUT', body: JSON.stringify(payload) });
+      document.getElementById('specialNote').value = '';
+      document.getElementById('specialNotify').checked = false;
+      setStatus('specialStatus', `Saved ${r.day.label}.${r.alert ? ` Alert sent to ${r.alert.pushedTo}.` : ''}`);
+      loadSchedule();
+    } catch (err) { setStatus('specialStatus', err.message, true); }
+  });
+
+  document.getElementById('weeklyForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const days = [...document.querySelectorAll('#weeklyRows tr')].map((tr) => ({
+      dow: Number(tr.dataset.dow),
+      open: tr.querySelector('.wk-open').value,
+      close: tr.querySelector('.wk-close').value,
+      closed: tr.querySelector('.wk-closed').checked
+    }));
+    setStatus('weeklyStatus', 'Saving…');
+    try {
+      await api('/api/staff/schedule/weekly', { method: 'PUT', body: JSON.stringify({ days }) });
+      setStatus('weeklyStatus', 'Saved.');
+      loadSchedule();
+    } catch (err) { setStatus('weeklyStatus', err.message, true); }
+  });
+
+  document.getElementById('hoursSection').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-delete-alert], button[data-delete-day], button[data-edit-day]');
+    if (!btn) return;
+    if (btn.dataset.editDay) {
+      const d = hoursState.specialDays.find((x) => x.dateKey === btn.dataset.editDay);
+      if (!d) return;
+      document.getElementById('specialDate').value = d.dateKey;
+      const mode = d.closed ? 'closed' : d.open ? 'hours' : 'note';
+      document.querySelector(`input[name="specialMode"][value="${mode}"]`).checked = true;
+      if (d.open) document.getElementById('specialOpen').value = d.open;
+      if (d.close) document.getElementById('specialClose').value = d.close;
+      document.getElementById('specialNote').value = d.note || '';
+      syncSpecialMode();
+      document.getElementById('specialDate').focus();
+      return;
+    }
+    const isAlert = !!btn.dataset.deleteAlert;
+    if (!window.confirm(isAlert ? 'Remove this alert from the Updates tab? (Phones that already got it keep the notification.)' : 'Remove this special day? It goes back to the usual hours.')) return;
+    try {
+      await api(isAlert ? `/api/staff/alerts/${btn.dataset.deleteAlert}` : `/api/staff/schedule/days/${btn.dataset.deleteDay}`, { method: 'DELETE' });
+      loadSchedule();
+    } catch (err) { window.alert(err.message); }
+  });
 })();

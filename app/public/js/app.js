@@ -1950,6 +1950,10 @@
         <h2>Stay in the loop?</h2>
         <p class="muted small">Optional. Get a notification on this device, even when the app is closed. You can change these any time in Settings.</p>
         <label class="small checkbox-row">
+          <input type="checkbox" id="onboardingPrefAlerts" checked />
+          <span>Urgent shelter alerts from staff, like the shelter closing unexpectedly</span>
+        </label>
+        <label class="small checkbox-row">
           <input type="checkbox" id="onboardingPrefAdopted" />
           <span>Tell me when a dog I've walked is adopted</span>
         </label>
@@ -1969,10 +1973,12 @@
         if (warned) { runOnboardingStep('info'); return; }
         const wantsAdopted = document.getElementById('onboardingPrefAdopted').checked;
         const wantsWalkStarted = document.getElementById('onboardingPrefWalkStarted').checked;
+        const wantsAlerts = document.getElementById('onboardingPrefAlerts').checked;
         btn.disabled = true;
+        await saveNotificationPref('shelter_alerts', wantsAlerts);
         await saveNotificationPref('adopted_walked_dog', wantsAdopted);
         await saveNotificationPref('walk_started', wantsWalkStarted);
-        if ((wantsAdopted || wantsWalkStarted) && !(await ensurePushSubscribed())) {
+        if ((wantsAlerts || wantsAdopted || wantsWalkStarted) && !(await ensurePushSubscribed())) {
           // Their choices are saved, but this device can't receive them yet:
           // say so instead of letting them believe it's working.
           warned = true;
@@ -2103,6 +2109,9 @@
     document.getElementById('refreshDataSection').classList.toggle('hidden', !(state.currentUser.isStaff || state.currentUser.isPrivileged));
     try {
       const { prefs } = await api(`/api/users/${state.currentUser.id}/notification-prefs`);
+      document.getElementById('settingsPrefShelterAlerts').checked = prefs.shelter_alerts !== false;
+      document.getElementById('settingsPrefNewSignups').checked = prefs.new_signups !== false;
+      document.getElementById('settingsNewSignupsRow').classList.toggle('hidden', !state.currentUser.isPrivileged);
       document.getElementById('settingsPrefAdopted').checked = !!prefs.adopted_walked_dog;
       document.getElementById('settingsPrefWalkStarted').checked = !!prefs.walk_started;
       FAVORITE_PREFS.forEach(([inputId, key]) => { document.getElementById(inputId).checked = !!prefs[key]; });
@@ -2146,13 +2155,17 @@
       state.currentUser.defaultActivity = updated.defaultActivity;
       const wantsAdopted = document.getElementById('settingsPrefAdopted').checked;
       const wantsWalkStarted = document.getElementById('settingsPrefWalkStarted').checked;
+      const wantsAlerts = document.getElementById('settingsPrefShelterAlerts').checked;
+      const wantsSignups = state.currentUser.isPrivileged && document.getElementById('settingsPrefNewSignups').checked;
+      await saveNotificationPref('shelter_alerts', wantsAlerts, true);
+      if (state.currentUser.isPrivileged) await saveNotificationPref('new_signups', wantsSignups, true);
       await saveNotificationPref('adopted_walked_dog', wantsAdopted, true);
       await saveNotificationPref('walk_started', wantsWalkStarted, true);
       const favoritePrefs = FAVORITE_PREFS.map(([inputId, key]) => [key, document.getElementById(inputId).checked]);
       for (const [key, on] of favoritePrefs) await saveNotificationPref(key, on, true);
       await api(`/api/users/${state.currentUser.id}/walk-alerts`, { method: 'PUT', body: JSON.stringify({ minutes: walkAlerts.minutes }) });
       let pushProblem = false;
-      if (wantsAdopted || wantsWalkStarted || favoritePrefs.some(([, on]) => on) || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
+      if (wantsAlerts || wantsSignups || wantsAdopted || wantsWalkStarted || favoritePrefs.some(([, on]) => on) || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
       await saveNotificationPref('show_new_dog', document.getElementById('settingsShowNewDog').checked, true);
       await saveNotificationPref('show_adopted', document.getElementById('settingsShowAdopted').checked, true);
       await saveNotificationPref('show_returned', document.getElementById('settingsShowReturned').checked, true);
@@ -4697,6 +4710,7 @@
     // all -- pulled for vet work, a hold, a data hiccup -- and is simply
     // back on the floor (🐾, new -- good news, not a medical-alarm icon).
     if (kind === 'returned') return detail === 'adopted_return' ? '↩️' : '🐾';
+    if (kind === 'alert') return '📢'; // a shelter alert from staff
     return '📣'; // 'removed', or anything future/unrecognized
   }
 
@@ -4714,7 +4728,7 @@
   // clock, a week starting Sunday) and which kinds of event. Picking kinds is
   // a quick report, e.g. every dog returned this week.
   const UPDATES_RANGES = [['all', 'All'], ['today', 'Today'], ['week', 'This week']];
-  const UPDATES_KINDS = [['adopted', '🎉 Adopted'], ['new_dog', '🐶 New'], ['returned', '↩️ Returned']];
+  const UPDATES_KINDS = [['alert', '📢 Alerts'], ['adopted', '🎉 Adopted'], ['new_dog', '🐶 New'], ['returned', '↩️ Returned']];
   function updatesSince() {
     if (state.updatesRange === 'all') return null;
     const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
@@ -4725,14 +4739,14 @@
   function updatesFilterHtml(rows) {
     const since = updatesSince();
     const n = (kind) => rows.filter((r) => r.kind === kind).length;
-    const parts = [[n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
+    const parts = [[n('alert'), n('alert') === 1 ? 'alert' : 'alerts'], [n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
     return `
       <div class="card compact stack" style="gap:6px;margin-bottom:10px;">
         <div class="seg seg-small" role="radiogroup" aria-label="Show updates from" style="margin:0;">
           ${UPDATES_RANGES.map(([key, label]) => `<button type="button" class="seg-btn ${state.updatesRange === key ? 'on' : ''}" data-updates-range="${key}" style="white-space:nowrap;padding:7px 4px;" role="radio" aria-checked="${state.updatesRange === key}">${label}</button>`).join('')}
         </div>
-        <div class="marker-row" role="group" aria-label="Show only these kinds of update" style="gap:6px;flex-wrap:nowrap;">
-          ${UPDATES_KINDS.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${state.updatesKinds.has(key) ? 'active' : ''}" data-updates-kind="${key}" aria-pressed="${state.updatesKinds.has(key)}" style="width:auto;flex:1 1 0;min-height:36px;padding:6px 4px;font-size:0.85rem;white-space:nowrap;">${label}</button>`).join('')}
+        <div class="marker-row" role="group" aria-label="Show only these kinds of update" style="gap:6px;flex-wrap:wrap;">
+          ${UPDATES_KINDS.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${state.updatesKinds.has(key) ? 'active' : ''}" data-updates-kind="${key}" aria-pressed="${state.updatesKinds.has(key)}" style="width:auto;flex:1 1 auto;min-height:36px;padding:6px 6px;font-size:0.85rem;white-space:nowrap;">${label}</button>`).join('')}
         </div>
         <p class="muted small result-count" style="margin:0;"><strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}${parts.length ? ` · ${parts.join(' · ')}` : ''}${state.updatesRange === 'week' ? ` · since ${esc(since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}${rows.length >= 150 ? ' (newest 150 shown)' : ''}</p>
       </div>`;
@@ -4785,6 +4799,7 @@
     // unread, which made an old, already-seen adoption look indistinguishable
     // from something genuinely new.
     function updateCardHtml(r) {
+      if (r.kind === 'alert') return alertCardHtml(r);
       return `
       <div class="card compact${r.unread ? ' update-unread' : ''}"${r.dog_id && (r.kind === 'new_dog' || r.kind === 'returned') ? ` data-id="${r.dog_id}"` : ''}>
         <div class="dog-card">
@@ -4807,6 +4822,15 @@
         <div class="row" style="margin-top:6px;">
           <button class="btn small-btn view-profile-btn" data-id="${r.dog_id}">View cached profile</button>
         </div>` : ''}
+      </div>`;
+    }
+    // A shelter alert from staff: no dog, a headline and the message itself.
+    function alertCardHtml(r) {
+      return `
+      <div class="card compact update-alert${r.unread ? ' update-unread' : ''}">
+        <p class="dog-name" style="margin:0;">📢 ${esc(r.title || 'Shelter alert')}</p>
+        ${r.detail && r.detail !== r.title ? `<p class="small" style="margin:6px 0 0;white-space:pre-line;">${esc(r.detail)}</p>` : ''}
+        <p class="dog-meta" style="margin:6px 0 0;">Shelter alert · ${fmtDate(r.occurred_at)}</p>
       </div>`;
     }
     const unreadRows = rows.filter((r) => r.unread);
@@ -4866,20 +4890,11 @@
     updateUpdatesBadge();
   }
 
-  // If someone has turned off every category the Updates feed can show,
-  // there's nothing it will ever display -- the tab itself disappears from
-  // the nav bar rather than sitting there as a permanently-empty dead end.
-  // Re-checked after every Settings save, so turning any category back on
-  // brings it straight back.
-  async function refreshUpdatesTabVisibility() {
+  // The Updates tab used to disappear when every dog category was turned
+  // off. Shelter alerts always show there now, so it always stays.
+  function refreshUpdatesTabVisibility() {
     const tabBtn = document.querySelector('.tab-btn[data-tab="updates"]');
-    if (!tabBtn) return;
-    let anyShown = true;
-    try {
-      const { prefs } = await api(`/api/users/${state.currentUser.id}/notification-prefs`);
-      anyShown = prefs.show_new_dog !== false || prefs.show_adopted !== false || prefs.show_returned !== false;
-    } catch (err) { /* leave the tab as it was on a failed check */ return; }
-    tabBtn.classList.toggle('hidden', !anyShown);
+    if (tabBtn) tabBtn.classList.remove('hidden');
   }
 
 
@@ -6012,7 +6027,7 @@
     const wrapUp = !!w.wrapUpEndedAt;
     const tappedAt = w.endTappedAt || new Date().toISOString();
     const startedMs = new Date(w.startedAt).getTime();
-    // Walks end by closing time (7:15pm), so nothing later can be picked.
+    // Walks end by closing time (7pm), so nothing later can be picked.
     const closesMs = w.closesAt ? new Date(w.closesAt).getTime() : Infinity;
     const maxHours = maxActivityHours(w.activity);
     const latestMs = () => Math.min(Date.now(), startedMs + maxHours * 3600000, closesMs);
@@ -6179,6 +6194,7 @@
       const msg = event.data || {};
       if (msg.type === 'end-walk') endWalkFromNotification(msg.walkId, msg.at);
       if (msg.type === 'open-feedback') openFeedbackInbox();
+      if (msg.type === 'open-updates' && state.currentUser && !activeWalkDogId()) switchTab('updates');
       if (msg.type === 'walk-extended' && state.walk.phase === 'active' && String(state.walk.walkId) === String(msg.walkId)) {
         state.walk.stopsAt = msg.stopsAt;
       }
@@ -6189,13 +6205,16 @@
   const launchParams = new URLSearchParams(window.location.search);
   const pendingEnd = launchParams.get('endWalk') ? { walkId: launchParams.get('endWalk'), at: launchParams.get('at') } : null;
   const pendingFeedbackInbox = launchParams.get('open') === 'feedback';
+  const pendingUpdates = launchParams.get('open') === 'updates';
   if (window.location.search) history.replaceState(history.state, '', window.location.pathname);
 
   // ---------- Init ----------
   // Runs once a user is known (either restored from localStorage or just
   // picked) — resumes an in-progress walk of THEIRS if any, else honors the
   // /scan shortcut, else renders normally.
+  let dayNotice = Promise.resolve(false);
   async function completeInit() {
+    dayNotice = showShelterDayNotice();
     refreshUpdatesBadge();
     refreshUpdatesTabVisibility();
     try {
@@ -6244,9 +6263,60 @@
       return;
     }
 
-    render();
-    if (pendingFeedbackInbox) openFeedbackInbox();
-    else maybeOfferLevelUp(state.currentUser.levelUpOffer);
+    if (pendingUpdates) switchTab('updates');
+    else render();
+    if (pendingFeedbackInbox) { openFeedbackInbox(); return; }
+    // One popup at a time: the day's hours notice first, then the shelter
+    // alerts offer, then a level-up offer.
+    if (await dayNotice) return;
+    if (await offerShelterAlerts()) return;
+    maybeOfferLevelUp(state.currentUser.levelUpOffer);
+  }
+
+  // ---------- Today's hours ----------
+  // Staff can close the shelter for a day or change its hours (staff
+  // dashboard, Hours & alerts). Opening the app on such a day says so right
+  // away, once per day per change on this device (the same notice again
+  // after it's been seen would just be in the way). Resolves true if it
+  // showed something.
+  const DAY_NOTICE_KEY = 'dogwalk_day_notice';
+  async function showShelterDayNotice() {
+    let data;
+    try { data = await api('/api/shelter/today'); } catch (err) { return false; }
+    const t = data.today;
+    state.shelterToday = t;
+    if (!t || !t.special) return false;
+    const seenKey = `${t.dateKey}|${t.closed}|${t.hoursLabel}|${t.note}`;
+    try { if (localStorage.getItem(DAY_NOTICE_KEY) === seenKey) return false; } catch (err) { /* show it */ }
+    const title = t.closed ? '🚫 The shelter is closed today' : '🕒 Today is different';
+    const lines = [];
+    if (t.closed) lines.push('There are no dog walks today.');
+    else lines.push(`Walks today: ${t.hoursLabel}.`);
+    if (t.note) lines.push(t.note);
+    await appAlert(lines.join('\n\n'), title);
+    try { localStorage.setItem(DAY_NOTICE_KEY, seenKey); } catch (err) { /* fine */ }
+    return true;
+  }
+
+  // ---------- Shelter alerts on by default ----------
+  // shelter_alerts is on for everyone unless they turn it off, but a phone
+  // only gets pushes once it allows notifications. Already allowed: quietly
+  // make sure this device is subscribed. Not asked yet: ask once per device,
+  // and leave it to Settings after that. Resolves true if it asked.
+  const ALERTS_ASKED_KEY = 'dogwalk_alerts_asked';
+  async function offerShelterAlerts() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !window.Notification) return false;
+    if (Notification.permission === 'denied') return false;
+    let prefs;
+    try { ({ prefs } = await api(`/api/users/${state.currentUser.id}/notification-prefs`)); } catch (err) { return false; }
+    if (prefs.shelter_alerts === false) return false;
+    if (Notification.permission === 'granted') { ensurePushSubscribed(); return false; }
+    try { if (localStorage.getItem(ALERTS_ASKED_KEY)) return false; localStorage.setItem(ALERTS_ASKED_KEY, '1'); } catch (err) { return false; }
+    const yes = await appConfirm('Staff use shelter alerts for urgent news, like the shelter closing unexpectedly. You can turn them off any time in Settings.', {
+      title: '📢 Get shelter alerts?', confirmText: 'Turn on', cancelText: 'Not now'
+    });
+    if (yes && !(await ensurePushSubscribed())) appAlert(pushProblemMessage(), 'Alerts not on yet');
+    return true;
   }
 
   // ---------- Offline banner ----------
@@ -6265,6 +6335,8 @@
     if (!state.currentUser || !lastBackgroundedAt || Date.now() - lastBackgroundedAt < 3 * 60 * 1000) return;
     lastBackgroundedAt = 0;
     refreshUpdatesBadge();
+    // The app can stay open across days, or staff can close today while it's open.
+    if (!document.querySelector('#appDialog:not(.hidden)')) showShelterDayNotice();
     // Only re-render read-only list screens, and never underneath an open
     // sheet/popup/dialog or in the middle of a walk.
     const busy = document.querySelector('.popup-overlay:not(.hidden), .sheet:not(.hidden), .image-lightbox:not(.hidden)');

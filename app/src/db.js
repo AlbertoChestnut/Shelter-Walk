@@ -540,6 +540,27 @@ db.exec(`
   );
 `);
 
+// Staff-set walking hours (see shelterSchedule.js). One row per weekday
+// (0 = Sunday) for the usual week, and one per date that's different:
+// closed, other hours, or just a note (null times = that weekday's hours).
+// Times are minutes past midnight, shelter time.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shelter_weekly_hours (
+    dow INTEGER PRIMARY KEY,
+    open_minutes INTEGER NOT NULL,
+    close_minutes INTEGER NOT NULL,
+    closed INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS shelter_special_days (
+    date_key TEXT PRIMARY KEY,
+    closed INTEGER NOT NULL DEFAULT 0,
+    open_minutes INTEGER,
+    close_minutes INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  );
+`);
+
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_walks_dog ON walks(dog_id, ended_at);

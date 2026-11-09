@@ -167,7 +167,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   // Every note matching the filters, newest first, with
   // names for every dog involved. from/to are YYYY-MM-DD (inclusive); q
   // matches the dog's name, the note (tags read as names) or who signed it.
-  const nameRow = db.prepare('SELECT shelter_buddy_id AS id, name, kennel_location AS kennelLocation, still_listed AS stillListed FROM dogs WHERE shelter_buddy_id = ?');
+  const nameRow = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation, still_listed AS stillListed FROM dogs WHERE shelter_buddy_id = ?');
   function allNotes(req, { from, to, q, dog } = {}) {
     const where = [];
     const args = [];
@@ -180,6 +180,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
     const dogFor = (id) => {
       if (!(id in dogs)) {
         const d = nameRow.get(id);
+        if (d && cachedPhotoUrl) d.photoUrl = cachedPhotoUrl(d.id, d.photoUrl);
         dogs[id] = d ? { ...d, stillListed: !!d.stillListed } : null;
       }
       return dogs[id];

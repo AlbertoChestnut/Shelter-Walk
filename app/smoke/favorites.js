@@ -48,7 +48,6 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.check('#settingsPrefFavAdopted'); await p.check('#settingsPrefFavPending');
     await p.locator('#settingsPrefFavReturned').scrollIntoViewIfNeeded();
     await p.screenshot({ path: '/tmp/_fav4.png' });
-    await p.click('#saveSettingsBtn');
     await p.waitForTimeout(800);
     const { prefs } = await (await fetch(`${base}/api/users/${me.id}/notification-prefs`, { headers: { 'x-auth-email': EMAIL } })).json();
     ok(prefs.favorite_adopted && prefs.favorite_pending && !prefs.favorite_returned, 'favorite notification settings save');

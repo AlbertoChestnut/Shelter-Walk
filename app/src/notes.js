@@ -46,12 +46,15 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   // whiteboard with no owner, so not even their writer gets them marked.
   app.get('/api/notes', (req, res) => {
     const mine = req.query.scope === 'mine';
+    // A note left at the end of a session is tagged by what the session
+    // actually was -- play group gets its own kind instead of being folded
+    // into "walk" (every other activity still reads as a walk here).
     const rows = mine ? db.prepare(`
       SELECT n.dog_id AS dogId, 'private' AS kind, n.id, n.body, n.updated_at AS at
       FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
       WHERE d.still_listed = 1 AND n.visibility = 'private' AND n.user_id = ?
       UNION ALL
-      SELECT w.dog_id, 'walk', NULL, w.notes, w.started_at
+      SELECT w.dog_id, CASE w.activity WHEN 'playgroup' THEN 'playgroup' ELSE 'walk' END, NULL, w.notes, w.started_at
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE d.still_listed = 1 AND w.user_id = ? AND w.notes IS NOT NULL AND w.notes != '' AND w.ended_at IS NOT NULL
       ORDER BY at DESC
@@ -61,12 +64,15 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
       FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
       WHERE d.still_listed = 1 AND (n.visibility = 'public' OR n.user_id = ?)
       UNION ALL
-      SELECT w.dog_id, 'walk', NULL, w.notes, w.started_at
+      SELECT w.dog_id, CASE w.activity WHEN 'playgroup' THEN 'playgroup' ELSE 'walk' END, NULL, w.notes, w.started_at
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE d.still_listed = 1 AND w.notes IS NOT NULL AND w.notes != '' AND w.ended_at IS NOT NULL
       ORDER BY at DESC
     `).all(req.me.id);
-    const dogInfo = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation, previous_names AS previousNames FROM dogs WHERE shelter_buddy_id = ?');
+    // species travels with the dog so the app can word a note by what that
+    // dog actually is (a walk vs. a play session), never by the asker's
+    // current Settings preference.
+    const dogInfo = db.prepare('SELECT shelter_buddy_id AS id, name, species, photo_url AS photoUrl, kennel_location AS kennelLocation, previous_names AS previousNames FROM dogs WHERE shelter_buddy_id = ?');
     const byDog = new Map();
     for (const r of rows) {
       if (!byDog.has(r.dogId)) {

@@ -31,11 +31,35 @@ function localParts(iso) {
   return { dateKey: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
 }
 
-function tally() { return { walks: 0, seconds: 0, dogs: new Set() }; }
-function add(t, row) { t.walks += 1; t.seconds += row.duration_seconds || 0; t.dogs.add(row.dog_id); }
-function out(t) { return { walks: t.walks, dogs: t.dogs.size, seconds: t.seconds }; }
+function tally() { return { walks: 0, seconds: 0, dogs: new Set(), walkCount: 0, walkSeconds: 0, activities: new Map() }; }
+function add(t, row) {
+  t.walks += 1;
+  t.seconds += row.duration_seconds || 0;
+  t.dogs.add(row.dog_id);
+  const activity = row.activity || 'walk';
+  if (activity === 'walk') { t.walkCount += 1; t.walkSeconds += row.duration_seconds || 0; }
+  if (!t.activities.has(activity)) t.activities.set(activity, { count: 0, totalSeconds: 0 });
+  const a = t.activities.get(activity);
+  a.count += 1;
+  a.totalSeconds += row.duration_seconds || 0;
+}
+// Averaging duration across every kind of interaction lumps a 10-minute
+// cuddle in with a 12-hour daycation, so this is walk-only whenever there are
+// any walks in the period, falling back to the overall average otherwise.
+function avgOf(t) { return t.walkCount > 0 ? t.walkSeconds / t.walkCount : (t.walks ? t.seconds / t.walks : 0); }
+function out(t) { return { walks: t.walks, dogs: t.dogs.size, seconds: t.seconds, avgSeconds: avgOf(t) }; }
+// Per-activity counts, same MIN_CELL suppression as days/sessions get: an
+// activity type a lone volunteer did a handful of times can't be pinned on
+// them, so it's left out of the breakdown (it still counts in the totals).
+function byActivityOf(t) {
+  return [...t.activities.entries()]
+    .map(([activity, a]) => ({ activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.count ? a.totalSeconds / a.count : 0 }))
+    .filter((a) => a.count >= MIN_CELL)
+    .sort((a, b) => b.count - a.count);
+}
 
-// rows: [{ dog_id, started_at, duration_seconds }] -- deliberately nothing else.
+// rows: [{ dog_id, started_at, duration_seconds, activity }] -- deliberately
+// nothing that could identify who logged them.
 function buildImpact(rows, allTime, now = new Date()) {
   const days = new Map();
   for (const row of rows) {
@@ -54,6 +78,7 @@ function buildImpact(rows, allTime, now = new Date()) {
     const entry = {
       dateKey,
       ...out(d.total),
+      byActivity: byActivityOf(d.total),
       sessions: d.sessions
         .map((t, i) => ({ label: SLOTS[i].label, ...out(t) }))
         .filter((s) => s.walks >= MIN_CELL)
@@ -72,12 +97,29 @@ function register(app, { db, cachedPhotoUrl }) {
     // Pad the window by a day so a UTC/local boundary never clips a day.
     const since = span === Infinity ? '' : new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
     const rows = db.prepare(
-      'SELECT dog_id, started_at, duration_seconds FROM walks WHERE ended_at IS NOT NULL AND started_at >= ?'
+      'SELECT dog_id, started_at, duration_seconds, activity FROM walks WHERE ended_at IS NOT NULL AND started_at >= ?'
     ).all(since);
     const totals = db.prepare(
       'SELECT COUNT(*) AS walks, COUNT(DISTINCT dog_id) AS dogs, COALESCE(SUM(duration_seconds), 0) AS seconds, MIN(started_at) AS since FROM walks WHERE ended_at IS NOT NULL'
     ).get();
-    const impact = buildImpact(rows, { walks: totals.walks, dogs: totals.dogs, seconds: totals.seconds, since: totals.since });
+    const walkOnlyTotals = db.prepare(
+      "SELECT COUNT(*) AS walkCount, COALESCE(SUM(duration_seconds), 0) AS walkSeconds FROM walks WHERE ended_at IS NOT NULL AND activity = 'walk'"
+    ).get();
+    const byActivityTotals = db.prepare(
+      'SELECT activity, COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE ended_at IS NOT NULL GROUP BY activity'
+    ).all();
+    const allTime = {
+      walks: totals.walks,
+      dogs: totals.dogs,
+      seconds: totals.seconds,
+      since: totals.since,
+      avgSeconds: walkOnlyTotals.walkCount > 0 ? walkOnlyTotals.walkSeconds / walkOnlyTotals.walkCount : (totals.walks ? totals.seconds / totals.walks : 0),
+      byActivity: byActivityTotals
+        .map((a) => ({ activity: a.activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.count ? a.totalSeconds / a.count : 0 }))
+        .filter((a) => a.count >= MIN_CELL)
+        .sort((a, b) => b.count - a.count)
+    };
+    const impact = buildImpact(rows, allTime);
     // Trim to the requested number of days after bucketing in local time.
     if (span !== Infinity) impact.days = impact.days.slice(0, span);
     res.json(impact);
@@ -100,7 +142,7 @@ function registerDay(app, { db, cachedPhotoUrl }) {
     const from = new Date(base - 36 * 3600 * 1000).toISOString();
     const to = new Date(base + 36 * 3600 * 1000).toISOString();
     const rows = db.prepare(`
-      SELECT w.dog_id, w.started_at, w.ended_at, w.duration_seconds, (w.user_id = ?) AS mine,
+      SELECT w.dog_id, w.started_at, w.ended_at, w.duration_seconds, w.activity, (w.user_id = ?) AS mine,
              d.name AS dog_name, d.photo_url, d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE w.ended_at IS NOT NULL AND w.started_at >= ? AND w.started_at < ?
@@ -123,6 +165,7 @@ function registerDay(app, { db, cachedPhotoUrl }) {
         startedAt: r.started_at,
         endedAt: r.ended_at,
         durationSeconds: r.duration_seconds,
+        activity: r.activity,
         mine: !!r.mine
       }))
     });

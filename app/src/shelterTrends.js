@@ -25,7 +25,12 @@ function nextDateKey(key) {
 
 // The dogs actually at the shelter are the listed ones minus those in foster.
 const FOSTER_LOCATION = 'In Foster';
-const LISTED_WHERE = 'still_listed = 1 AND awaiting_listing = 0';
+// Dogs only: the trends and the floor count are the dog side of the shelter
+// (cats arrived in the app 2026-11 and would make the old days look emptier).
+const LISTED_WHERE = "still_listed = 1 AND awaiting_listing = 0 AND species = 'dog'";
+// The same for shelter_events: leaves out events about a known cat (an event
+// whose animal row is gone stays in, as before cats).
+const DOG_EVENTS_WHERE = "dog_id NOT IN (SELECT shelter_buddy_id FROM dogs WHERE species != 'dog')";
 
 // events: [{ kind, occurred_at }] oldest first or not; listedNow: dogs listed
 // right now; fosterByDay: Map dateKey -> dogs in foster at that day's end
@@ -83,7 +88,7 @@ function recordDailyCounts(db, at = new Date()) {
 function register(app, { db }) {
   app.get('/api/shelter-trends', (req, res) => {
     const events = db.prepare(
-      "SELECT kind, occurred_at FROM shelter_events WHERE kind IN ('new_dog', 'returned', 'adopted', 'removed')"
+      `SELECT kind, occurred_at FROM shelter_events WHERE kind IN ('new_dog', 'returned', 'adopted', 'removed') AND ${DOG_EVENTS_WHERE}`
     ).all();
     const now = new Date();
     const live = currentCounts(db);
@@ -93,4 +98,4 @@ function register(app, { db }) {
   });
 }
 
-module.exports = { register, buildTrends, recordDailyCounts, dateKeyOf, TRENDS_SINCE };
+module.exports = { register, buildTrends, recordDailyCounts, dateKeyOf, TRENDS_SINCE, DOG_EVENTS_WHERE };

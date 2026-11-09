@@ -50,9 +50,16 @@
 <div id="settingsSheet" class="sheet hidden">
   <div class="sheet-inner">
     <h2>Settings</h2>
-    <label class="small muted" style="display:block;">Your experience level</label>
-    <div id="experienceLevelPicker" class="stack tight"></div>
+    <label class="small muted" style="display:block;">I volunteer with</label>
+    <p class="muted small" style="margin:4px 0 6px;">Your lists and Updates show these. Scanning works for any kennel card.</p>
+    <div id="speciesPrefPicker" class="marker-row" style="gap:6px;"></div>
     <hr />
+    <div id="levelSection">
+      <label class="small muted" style="display:block;">Your experience level<span id="levelDogsOnly" class="hidden"> (dogs)</span></label>
+      <p id="levelBothNote" class="muted small hidden" style="margin:4px 0 6px;">Levels are only for dogs. Any volunteer can visit any cat.</p>
+      <div id="experienceLevelPicker" class="stack tight"></div>
+      <hr />
+    </div>
     <label class="small muted" style="display:block;">Usual activity</label>
     <p class="muted small" style="margin:4px 0 6px;">The scan screen starts this one. You can still switch there.</p>
     <div id="defaultActivityPicker" class="marker-row activity-chips"></div>
@@ -60,6 +67,12 @@
     <label class="small muted" style="display:block;">Appearance</label>
     <div id="themePicker" class="stack tight"></div>
     <hr />
+    <div id="desktopViewSection" class="hidden">
+      <label class="small muted" for="desktopViewSelect" style="display:block;">On a computer, open</label>
+      <p class="muted small" style="margin:4px 0 6px;">The page you land on when you open the site on a computer. Phones always open the app.</p>
+      <select id="desktopViewSelect"></select>
+      <hr />
+    </div>
     <label class="small muted" style="display:block;">Notifications</label>
     <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
       <input type="checkbox" id="settingsPrefShelterAlerts" />
@@ -71,13 +84,13 @@
     </label>
     <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
       <input type="checkbox" id="settingsPrefAdopted" />
-      Notify me when a dog I've walked is adopted
+      Notify me when <span data-term="aAnimal">a dog</span> I've <span data-term="past">walked</span> is adopted
     </label>
     <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
       <input type="checkbox" id="settingsPrefWalkStarted" />
-      Notify me when I start a walk (dog + return location)
+      Notify me when I start <span data-term="aNoun">a walk</span> (<span data-term="animal">dog</span> + return location)
     </label>
-    <label class="small muted" style="display:block;margin-top:12px;">Your favorite dogs (tap ♡ on a dog)</label>
+    <label class="small muted" style="display:block;margin-top:12px;">Your favorite <span data-term="animals">dogs</span> (tap ♡ on one)</label>
     <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
       <input type="checkbox" id="settingsPrefFavAdopted" />
       Notify me when a favorite is adopted
@@ -90,11 +103,11 @@
       <input type="checkbox" id="settingsPrefFavReturned" />
       Notify me when a favorite comes back to the shelter
     </label>
-    <label class="small" style="display:block;margin-top:12px;">Alert me when a walk reaches (minutes)</label>
+    <label class="small" style="display:block;margin-top:12px;">Alert me when <span data-term="aNoun">a walk</span> reaches (minutes)</label>
     <div class="row walk-alert-inputs" style="gap:6px;margin-top:6px;">
-      <input type="number" id="settingsWalkAlert1" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="First walk alert, in minutes" />
-      <input type="number" id="settingsWalkAlert2" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Second walk alert, in minutes" />
-      <input type="number" id="settingsWalkAlert3" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Third walk alert, in minutes" />
+      <input type="number" id="settingsWalkAlert1" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="First length alert, in minutes" />
+      <input type="number" id="settingsWalkAlert2" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Second length alert, in minutes" />
+      <input type="number" id="settingsWalkAlert3" min="1" max="179" step="1" inputmode="numeric" placeholder="Off" aria-label="Third length alert, in minutes" />
     </div>
     <p class="muted small" style="margin-top:4px;">Up to 3, e.g. 7 and 10. Leave a box empty for no alert.</p>
     <p class="muted small" style="margin-top:6px;">On iPhone, this only works if you've added this app to your Home Screen first.</p>
@@ -114,8 +127,7 @@
       Dogs returned to the shelter
     </label>
     <div class="sheet-actions">
-      <button id="saveSettingsBtn" class="btn primary">Save</button>
-      <button id="closeSettingsBtn" class="btn">Cancel</button>
+      <button id="closeSettingsBtn" class="btn primary">Done</button>
     </div>
     <div id="refreshDataSection" class="hidden">
       <hr />
@@ -141,6 +153,22 @@
       <button type="button" id="closeMarkerInfoPopupBtn" class="btn">Close</button>
     </div>
   </div>
+</div>
+
+<!-- Play group notes: roomier than the other popups (entries run a few
+     sentences), opened from a dog's profile or during play group. -->
+<div id="playgroupPopup" class="popup-overlay hidden">
+  <div class="popup-card playgroup-card">
+    <div id="playgroupPopupContent"></div>
+    <div class="row" style="margin-top:14px;">
+      <button type="button" id="closePlaygroupPopupBtn" class="btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Full-screen editor for a play group note (see openPgEditor). -->
+<div id="pgEditorOverlay" class="popup-overlay pg-fs-overlay hidden">
+  <div id="pgEditorInner" class="pg-fs" role="dialog" aria-label="Play group note"></div>
 </div>
 
 <div id="imageLightbox" class="image-lightbox hidden">
@@ -170,6 +198,9 @@
         <button type="button" class="account-menu-row" data-page="privacy">
           <span>Privacy &amp; Data</span><span class="account-menu-chevron">›</span>
         </button>
+        <a class="account-menu-row" href="/playgroup" target="_blank" rel="noopener">
+          <span>🥎 Play group desk <span class="small muted">(for a computer)</span></span><span class="account-menu-chevron">›</span>
+        </a>
         <button type="button" class="account-menu-row" data-page="feedback">
           <span>Feedback &amp; bug reports</span><span class="account-menu-chevron">›</span>
         </button>
@@ -184,6 +215,7 @@
         </a>
       </div>
       <hr style="margin:18px 0;" />
+      <a id="staffDashLink" class="btn hidden" href="/staff" style="display:block; text-align:center; text-decoration:none; margin-bottom:8px;">Staff dashboard</a>
       <a id="adminPanelLink" class="btn hidden" href="https://login.shelterwalk.com/staff/" style="display:block; text-align:center; text-decoration:none;">Admin panel</a>
       <a id="signOutLink" class="btn" href="https://login.shelterwalk.com/accounts/logout/" style="display:block; text-align:center; text-decoration:none; margin-top:8px;">Sign out</a>
     </div>
@@ -200,16 +232,16 @@
     <div id="accountPagePrivacy" class="hidden">
       <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
       <h2>Privacy &amp; Data</h2>
-      <p class="small muted" style="margin-top:0;">Shelter Walk has no report, export, or admin view anywhere that lists who walked which dog, or that compares volunteers to each other. Combined stats are always anonymous, and shared tips are never signed. Once a walk is over, who did it is never shown to anyone - including staff - no matter what you choose below.</p>
+      <p class="small muted" style="margin-top:0;">Shelter Walk has no report, export, or admin view anywhere that lists who spent time with which animal, or that compares volunteers to each other. Combined stats are always anonymous, and shared tips are never signed. Once it's over, who did it is never shown to anyone - including staff - no matter what you choose below.</p>
       <button type="button" id="openPrivacyPolicyBtn" class="link-btn" style="display:block;margin:4px 0 0;padding:0;">Read our Privacy Policy</button>
       <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:14px;">
         <input type="checkbox" id="accountHideNameCheck" />
-        Hide my name from other volunteers while I'm actively walking a dog
+        Hide my name from other volunteers while I'm out with <span data-term="aAnimal">a dog</span>
       </label>
-      <p class="small muted" style="margin:4px 0 0;">Available shows "Being walked by a Volunteer" instead of your name. This is the only place your name ever appears while walking; it only matters while the walk is still in progress.</p>
+      <p class="small muted" style="margin:4px 0 0;">Available shows "a Volunteer" instead of your name on the "currently out" badge. This is the only place your name ever appears; it only matters while you're still out with them.</p>
       <button type="button" id="downloadMyDataBtn" class="btn" style="margin-top:14px;">Download my data</button>
       <p id="downloadMyDataStatus" class="small muted" style="margin:4px 0 0;min-height:1.2em;"></p>
-      <button type="button" id="deleteMyDataBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my walk data…</button>
+      <button type="button" id="deleteMyDataBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my <span data-term="noun">walk</span> data…</button>
       <button type="button" id="deleteAccountBtn" class="link-btn danger-link" style="display:block; margin:10px auto 0;">Delete my account…</button>
     </div>
 
@@ -266,6 +298,8 @@
 </div>
 
 <script src="/js/html5-qrcode.min.js"></script>
+<script src="/js/pg-tags.js"></script>
 <script src="/js/app.js"></script>
+<!-- MODULE_SCRIPTS -->
 </body>
 </html>

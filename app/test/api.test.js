@@ -97,6 +97,69 @@ test('a completed walk counts in stats; a cancelled one does not', async () => {
   assert.equal(stats.json.totals.totalWalks, 1);
 });
 
+test('stats break down by activity, and the average length is walk-only', async () => {
+  // A dedicated walker, so earlier tests' walks for the default user don't
+  // skew the exact averages this test checks.
+  const user = 'activitystats@example.com';
+  const userId = (await call('GET', '/api/me', { user })).json.id;
+  const now = Date.now();
+  // A short cuddle and a much longer walk -- averaging across both would be
+  // meaningless, so the average tile must come out exactly as long as the walk.
+  const cuddle = await call('POST', '/api/walks/manual', { user, body: {
+    dogId: 1, userId, activity: 'cuddle',
+    startedAt: new Date(now - 20 * 60000).toISOString(), endedAt: new Date(now - 10 * 60000).toISOString()
+  } });
+  assert.equal(cuddle.status, 200);
+  const walk = await call('POST', '/api/walks/manual', { user, body: {
+    dogId: 2, userId,
+    startedAt: new Date(now - 90 * 60000).toISOString(), endedAt: new Date(now - 60 * 60000).toISOString()
+  } });
+  assert.equal(walk.status, 200);
+
+  const stats = await call('GET', `/api/stats?userId=${userId}`, { user });
+  assert.equal(stats.status, 200);
+  assert.equal(stats.json.totals.avgSeconds, 1800, 'avg length ignores the cuddle entirely');
+  const byCuddle = stats.json.byActivity.find((a) => a.activity === 'cuddle');
+  const byWalk = stats.json.byActivity.find((a) => a.activity === 'walk');
+  assert.equal(byCuddle.count, 1);
+  assert.equal(byCuddle.totalSeconds, 600);
+  assert.equal(byWalk.count, 1);
+  assert.equal(byWalk.totalSeconds, 1800);
+
+  // The by-dog list can be filtered down to just one activity, for the "By
+  // Activity" drill-down -- only the cuddle's dog shows up, not the walk's.
+  const cuddleOnly = await call('GET', `/api/stats?userId=${userId}&activity=cuddle`, { user });
+  assert.equal(cuddleOnly.status, 200);
+  assert.ok(cuddleOnly.json.perDog.every((d) => d.id !== 2), "the walk's dog is excluded");
+  assert.equal(cuddleOnly.json.totals.totalWalks, byCuddle.count);
+
+  // An unknown activity is just ignored as a filter, not an error.
+  assert.equal((await call('GET', `/api/stats?userId=${userId}&activity=nap`, { user })).status, 200);
+});
+
+test('a note left at the end of a play group session is tagged "playgroup", not folded into "walk"', async () => {
+  const user = 'pgnotes@example.com';
+  const userId = (await call('GET', '/api/me', { user })).json.id;
+  const now = Date.now();
+  const pg = await call('POST', '/api/walks/manual', { user, body: {
+    dogId: 1, userId, activity: 'playgroup', notes: 'Did great with the group',
+    startedAt: new Date(now - 30 * 60000).toISOString(), endedAt: new Date(now - 10 * 60000).toISOString()
+  } });
+  assert.equal(pg.status, 200);
+  const walk = await call('POST', '/api/walks/manual', { user, body: {
+    dogId: 1, userId, notes: 'Pulled on leash a bit',
+    startedAt: new Date(now - 90 * 60000).toISOString(), endedAt: new Date(now - 60 * 60000).toISOString()
+  } });
+  assert.equal(walk.status, 200);
+
+  const mine = (await call('GET', '/api/notes?scope=mine', { user })).json.dogs.flatMap((g) => g.notes);
+  assert.ok(mine.some((n) => n.kind === 'playgroup' && n.body === 'Did great with the group'));
+  assert.ok(mine.some((n) => n.kind === 'walk' && n.body === 'Pulled on leash a bit'));
+
+  const all = (await call('GET', '/api/notes', { user })).json.dogs.flatMap((g) => g.notes);
+  assert.ok(all.some((n) => n.kind === 'playgroup' && n.body === 'Did great with the group'));
+});
+
 test('Guide: everyone reads, only editors write, images are validated', async () => {
   const list = await call('GET', '/api/wiki');
   assert.equal(list.status, 200);
@@ -128,7 +191,7 @@ test('a brand-new walker does not start with a pile of unread updates', async ()
   assert.equal((await call('GET', `/api/updates/unread-count?userId=${me.json.id}`)).json.count, 0);
 });
 
-test('walks stop automatically at 30 minutes, flagged, and can be extended before that', async () => {
+test('walks stop automatically at 45 minutes, flagged, and can be extended before that', async () => {
   // (The database seeds two default walkers, so real ids come from /api/me, not from counting.)
   const idOf = async (email) => (await call('GET', '/api/me', { user: email })).json.id;
   const [walkerId, secondId, thirdId] = [await idOf('walker@example.com'), await idOf('second@example.com'), await idOf('third@example.com')];
@@ -136,7 +199,7 @@ test('walks stop automatically at 30 minutes, flagged, and can be extended befor
   const now = Date.now();
   const insert = db.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (?, ?, ?)');
   const fresh = insert.run(1, walkerId, new Date(now - 5 * 60000).toISOString()).lastInsertRowid;      // 5 min in: still running
-  const nearEnd = insert.run(3, secondId, new Date(now - 29 * 60000).toISOString()).lastInsertRowid;    // 29 min in: about to stop
+  const nearEnd = insert.run(3, secondId, new Date(now - 44 * 60000).toISOString()).lastInsertRowid;    // 44 min in: about to stop
   const overdue = insert.run(2, thirdId, new Date(now - 90 * 60000).toISOString()).lastInsertRowid;    // forgotten for 90 min
   db.close();
   // A request that touches walk state runs the limit check right away.
@@ -149,14 +212,14 @@ test('walks stop automatically at 30 minutes, flagged, and can be extended befor
   assert.equal(rows[fresh].ended_at, null);
   assert.ok(rows[overdue].ended_at, 'the forgotten walk was stopped');
   assert.equal(rows[overdue].auto_stopped, 1, 'and flagged as automatic');
-  assert.equal(rows[overdue].duration_seconds, 1800, 'recorded as exactly the limit, not the 90 minutes it sat there');
-  assert.equal(new Date(rows[overdue].ended_at).getTime() - new Date(rows[overdue].started_at).getTime(), 30 * 60000);
+  assert.equal(rows[overdue].duration_seconds, 2700, 'recorded as exactly the limit, not the 90 minutes it sat there');
+  assert.equal(new Date(rows[overdue].ended_at).getTime() - new Date(rows[overdue].started_at).getTime(), 45 * 60000);
 
   // Extending: only the walker, only while running, and it pushes the deadline out.
   assert.equal((await call('POST', `/api/walks/${fresh}/extend`, { user: 'second@example.com' })).status, 403, 'not someone else\'s walk');
   const ext = await call('POST', `/api/walks/${fresh}/extend`);
   assert.equal(ext.status, 200);
-  assert.equal(new Date(ext.json.stopsAt).getTime() - new Date(rows[fresh].started_at).getTime(), 40 * 60000);
+  assert.equal(new Date(ext.json.stopsAt).getTime() - new Date(rows[fresh].started_at).getTime(), 55 * 60000);
   assert.equal((await call('POST', `/api/walks/${overdue}/extend`, { user: 'third@example.com' })).status, 409, 'too late to extend a stopped walk');
 
   // The walker wraps up a stopped walk once (no end time given keeps the
@@ -164,7 +227,7 @@ test('walks stop automatically at 30 minutes, flagged, and can be extended befor
   const late = await call('PUT', `/api/walks/${overdue}/end`, { user: 'third@example.com', body: { notes: 'x' } });
   assert.equal(late.status, 200);
   assert.equal(late.json.autoStopped, true);
-  assert.equal(late.json.durationSeconds, 1800);
+  assert.equal(late.json.durationSeconds, 2700);
   assert.equal(late.json.edited, false);
   const again = await call('PUT', `/api/walks/${overdue}/end`, { user: 'third@example.com', body: { notes: 'x' } });
   assert.equal(again.status, 409);
@@ -197,7 +260,7 @@ test('ending a walk by hand uses the moment End Walk was tapped', async () => {
 
   // End was tapped before the limit, but it ran out while notes were typed:
   // ended by hand at the tapped time, not flagged as auto-stopped.
-  const slow = insertWalk(31);
+  const slow = insertWalk(46);
   await call('GET', '/api/walks/active', { user });
   assert.equal(read(slow).auto_stopped, 1);
   const slowTapped = new Date(now - 2 * 60000).toISOString();
@@ -340,6 +403,34 @@ test('PB clears the days-in-shelter wait, but only for levels allowed PB dogs', 
   assert.equal('pbEarlyExpired' in pbNewEst, false);
 });
 
+test('a dog not cleared for this level cannot be walked at all -- a hard rule enforced server-side, not just a UI nag', async () => {
+  const established = 'established.walker@example.com';
+  const beginner = 'beginner.walker@example.com';
+  const estId = (await call('GET', '/api/me', { user: established })).json.id;
+  const begId = (await call('GET', '/api/me', { user: beginner })).json.id;
+
+  // 103 "PlainBrandNew" (from the test above): 0 days, no PB -- not
+  // eligible for anyone yet ('days'), and the walk is refused outright.
+  const blocked = await call('POST', '/api/walks/start', { user: established, body: { dogId: 103, userId: estId } });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.json.notEligibleReason, 'days');
+
+  // Marking PB clears the days wait for a level that allows PB dogs, and
+  // /api/walks/start reads the dog's current row, so this takes effect
+  // immediately -- a change that allows a walk is checked with its own
+  // effect already in place, not against the state from before it.
+  const marked = await call('PUT', '/api/dogs/103/markers', { user: established, body: { blueMarkers: [], pooStatus: 'none', starFlag: false, pbFlag: true } });
+  assert.equal(marked.status, 200);
+  const allowed = await call('POST', '/api/walks/start', { user: established, body: { dogId: 103, userId: estId } });
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.json));
+  assert.equal((await call('DELETE', `/api/walks/${allowed.json.walkId}`, { user: established })).status, 200);
+
+  // But a beginner still can't walk a PB dog at all, even now that it's PB.
+  const stillBlocked = await call('POST', '/api/walks/start', { user: beginner, body: { dogId: 103, userId: begId } });
+  assert.equal(stillBlocked.status, 403);
+  assert.equal(stillBlocked.json.notEligibleReason, 'pb_restricted');
+});
+
 test('the markers endpoint saves pbFlag and ignores the retired pbEarlyFlag', async () => {
   const r = await call('PUT', '/api/dogs/103/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: false, pbFlag: true, pbEarlyFlag: true } });
   assert.equal(r.status, 200);
@@ -350,6 +441,64 @@ test('the markers endpoint saves pbFlag and ignores the retired pbEarlyFlag', as
   assert.equal(row.pb_flag, 1);
   assert.equal(row.pb_early_flag, 0);
   db.close();
+});
+
+test('each sticker that actually changes gets its own timeline event, and the timeline can show or hide them', async () => {
+  const now = new Date().toISOString();
+  const seed = new Database(dbFile);
+  seed.prepare(`
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at)
+    VALUES (104, 'Sticky', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)
+  `).run(now, now);
+  seed.close();
+
+  // Turning on the star and PB in one request logs two events, not one.
+  const on = await call('PUT', '/api/dogs/104/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: true, pbFlag: true } });
+  assert.equal(on.status, 200);
+  // Sending the exact same state again is a no-op: nothing changed, nothing logged.
+  await call('PUT', '/api/dogs/104/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: true, pbFlag: true } });
+  const db = new Database(dbFile, { readonly: true });
+  const stickerEvents = db.prepare("SELECT kind, title, detail FROM shelter_events WHERE dog_id = 104 AND kind LIKE 'sticker_%' ORDER BY id").all();
+  assert.equal(stickerEvents.length, 2, 'one event each for star and pb, nothing for the repeat no-op call');
+  assert.deepEqual(stickerEvents.map((e) => e.detail).sort(), ['pb', 'star']);
+  assert.ok(stickerEvents.every((e) => e.kind === 'sticker_on'));
+  db.close();
+
+  // Turning PB back off the same day cancels out with the earlier "on" --
+  // the timeline should show neither. The star stayed on all day, so its
+  // lone "on" event still shows when stickers are included.
+  const off = await call('PUT', '/api/dogs/104/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: true, pbFlag: false } });
+  assert.equal(off.status, 200);
+
+  const history = await call('GET', '/api/dogs/104/stay-history');
+  assert.equal(history.status, 200);
+  assert.equal(history.json.stickerEvents.some((e) => e.detail === 'pb'), false, 'pb was turned on and off the same day -- collapsed out');
+  assert.equal(history.json.stickerEvents.filter((e) => e.detail === 'star').length, 1, 'star only ever turned on -- still shown');
+});
+
+test("a PB dog's sticker clears itself once they leave stray hold, with a timeline event explaining why", async () => {
+  const now = new Date().toISOString();
+  const db = new Database(dbFile);
+  db.prepare(`
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, tags, pb_flag)
+    VALUES (105, 'Sprung', 'Male', '3 Years', '2026-01-01T00:00:00', 1, ?, ?, ?, 1)
+  `).run(now, now, JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']));
+  db.close();
+  const before = (await call('GET', '/api/dogs/105', { user: 'established.walker@example.com' })).json.dog;
+  assert.equal(before.notEligibleReason, null, 'PB overrides the hold while it lasts');
+
+  // Directly simulating what the scraper does when a fresh scrape no longer
+  // lists the hold tag: clear pb_flag and log the same kind of event a
+  // manual toggle would, so this shows up on the timeline too.
+  const after = new Database(dbFile);
+  after.prepare("UPDATE dogs SET tags = ?, pb_flag = 0 WHERE shelter_buddy_id = 105").run(JSON.stringify(['Dog', 'Shelter']));
+  after.prepare("INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES ('sticker_auto_off', 105, 'PB: Potty break OK', 'pb', ?)").run(new Date().toISOString());
+  after.close();
+
+  const history = await call('GET', '/api/dogs/105/stay-history');
+  const pbEvent = history.json.stickerEvents.find((e) => e.detail === 'pb');
+  assert.ok(pbEvent, 'the auto-clear shows up on the timeline');
+  assert.equal(pbEvent.kind, 'sticker_auto_off');
 });
 
 test('kennel locations are just the wing letter, and many dogs can share one', async () => {
@@ -455,7 +604,7 @@ test('cuddle and matchmaking are timed like walks, switchable mid-session, and e
   assert.equal(all.find((w) => w.id === plain.json.id).activity, 'walk');
 });
 
-test('a daycation runs up to 12 hours: no +10 min, no 30 minute stop', async () => {
+test('a daycation runs up to 12 hours: no +10 min, no 45 minute stop', async () => {
   const user = 'daycation@example.com';
   const me = (await call('GET', '/api/me', { user })).json;
   const seed = new Database(dbFile);
@@ -482,7 +631,7 @@ test('a daycation runs up to 12 hours: no +10 min, no 30 minute stop', async () 
   backdate(id, 5);
   const toWalk = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'walk' } });
   assert.equal(toWalk.status, 200);
-  assert.equal(new Date(toWalk.json.stopsAt) - new Date(read(id).started_at), 30 * 60000, 'a walk gets the 30 minute limit back');
+  assert.equal(new Date(toWalk.json.stopsAt) - new Date(read(id).started_at), 45 * 60000, 'a walk gets the 45 minute limit back');
   const back = await call('PUT', `/api/walks/${id}`, { user, body: { activity: 'daycation' } });
   assert.equal(new Date(back.json.stopsAt) - new Date(read(id).started_at), 12 * 3600000);
 
@@ -496,6 +645,22 @@ test('a daycation runs up to 12 hours: no +10 min, no 30 minute stop', async () 
   const fine = await call('PUT', `/api/walks/${id}/end`, { user, body: { endedAt: new Date(Date.now() - 90 * 60000).toISOString() } });
   assert.equal(fine.status, 200);
   assert.equal(Math.round(fine.json.durationSeconds / 60), 11.5 * 60);
+
+  // Matchmaking: 60 minutes by default, +10 on top, and a switch to a walk
+  // past 45 minutes is refused like any other switch past the new limit.
+  const m = await call('POST', '/api/walks/start', { user, body: { dogId: 62, userId: me.id, activity: 'matchmaking' } });
+  assert.equal(m.status, 200);
+  assert.equal(m.json.autoStopMinutes, 60);
+  assert.equal(new Date(m.json.stopsAt) - new Date(m.json.startedAt), 60 * 60000, 'matchmaking stops after 60 minutes');
+  const mid = m.json.walkId;
+  backdate(mid, 50);
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.walk.id, mid, 'still going at 50 minutes');
+  assert.equal((await call('PUT', `/api/walks/${mid}`, { user, body: { activity: 'walk' } })).status, 409, 'too late to be a walk');
+  const ext = await call('POST', `/api/walks/${mid}/extend`, { user });
+  assert.equal(new Date(ext.json.stopsAt) - new Date(read(mid).started_at), 70 * 60000, '+10 on top of the 60');
+  backdate(mid, 75);
+  assert.equal((await call('GET', '/api/walks/active', { user })).json.walk, null, 'stopped at its limit');
+  assert.equal(read(mid).duration_seconds, 70 * 60);
 });
 
 test('the usual activity is saved in Settings and play group is an activity', async () => {
@@ -546,6 +711,23 @@ test('dogs on stray hold can only be walked when marked PB', async () => {
   const free = (await call('GET', '/api/dogs/72', { user })).json.dog;
   assert.equal(free.eligible, true);
   assert.equal(free.isStrayHold, false);
+});
+
+test('Alumni overrides a stray hold, not just the day threshold', async () => {
+  const user = 'strayhold-alumni@example.com';
+  const me = (await call('GET', '/api/me', { user })).json;
+  await call('PUT', `/api/users/${me.id}/settings`, { user, body: { experienceLevel: 'expert' } });
+  const db = new Database(dbFile);
+  const ts = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, tags, pb_flag, alumni_flag)
+    VALUES (73, 'HeldAlumni', 'Male', '3 Years', '2026-01-01T00:00:00', 1, ?, ?, ?, 0, 1)
+  `).run(ts, ts, JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']));
+  db.close();
+  const heldAlumni = (await call('GET', '/api/dogs/73', { user })).json.dog;
+  assert.equal(heldAlumni.isStrayHold, true);
+  assert.equal(heldAlumni.eligible, true, 'Alumni lifts the stray hold block entirely, not just the day threshold');
+  assert.equal(heldAlumni.notEligibleReason, null);
 });
 
 test('/uptime answers only ok or down, with no details', async () => {

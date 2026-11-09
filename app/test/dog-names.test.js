@@ -18,7 +18,8 @@ const realFetch = global.fetch;
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
   const json = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { 'content-type': 'application/json' } });
-  if (u.endsWith('/api/animals/adopt/') && opts.method === 'POST') return json({ data: listing });
+  // One listing per species; this fake shelter has no cats unless a test adds some.
+  if (u.endsWith('/api/animals/adopt/') && opts.method === 'POST') return json({ data: JSON.parse(opts.body).species === 'Dog' ? listing : [] });
   if (u.includes('/api/animals/adopted')) return json({ data: [] });
   if (u.includes('/api/photos/')) return json({ large: [] });
   if (/\/api\/animals\/adopt\/\d+$/.test(u)) return json({ primaryBreed: 'Mix', tags: [] });

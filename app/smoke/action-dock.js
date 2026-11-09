@@ -35,7 +35,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok((await p.locator('.avail-card[data-id="70"] .slot-box.filled').count()) === 1, 'shift box still filled for the logged walk');
     ok(/walked outside the app/.test(await p.textContent('#app')), 'list explains boxes are only walks logged in the app');
     const sorts = await p.$$eval('#availableSortSelect option', (os) => os.map((o) => o.value));
-    ok(!sorts.includes('lastWalked') && !sorts.includes('attention'), 'walk-count sorts are off the menu: ' + sorts.join(', '));
+    ok(sorts.includes('lastWalked') && !sorts.includes('attention'), '"longest since" is on the menu, the walk-count sort still is not: ' + sorts.join(', '));
+    ok((await p.$eval('#availableSortSelect', (s) => s.value)) === 'lastWalked', '"longest since a logged walk" is the default sort');
     await p.screenshot({ path: '/tmp/_ad0.png' });
     await p.click('.walk-edit-btn[data-id="70"]'); await p.waitForSelector('#startWalkBtn');
     ok(await onScreen('#startWalkBtn'), 'Start is on screen without scrolling');

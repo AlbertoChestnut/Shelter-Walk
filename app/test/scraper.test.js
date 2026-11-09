@@ -8,23 +8,32 @@ const fs = require('fs');
 const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-scraper-')), 'test.db');
 process.env.DB_PATH = dbFile;
 const db = require('../src/db');
-const { runScrape } = require('../src/scraper');
+const { runScrape, IMAGES_DIR } = require('../src/scraper');
 
 // What the fake shelter currently "serves".
 let listing = [];
 let adopted = [];
 let detailFails = new Set();
+const summaryOverrides = {}; // dog id -> summary HTML, in place of the default 'Nice dog'
+const tagsOverrides = {}; // dog id -> tags array, in place of the default ["I'm getting adopted!"]
+const videoIdOverrides = {}; // dog id -> youTubeVideoId, as the detail API returns it directly (not embedded in summary)
+const photoPaths = {}; // dog id -> ["large" photo paths], like the real /api/photos/:id response
+const imageBytes = {}; // path (as it appears in the resolved URL) -> fake image body
 const realFetch = global.fetch;
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
-  if (u.endsWith('/api/animals/adopt/') && opts.method === 'POST') return json({ data: listing });
+  // One listing per species; this fake shelter has no cats unless a test adds some.
+  if (u.endsWith('/api/animals/adopt/') && opts.method === 'POST') return json({ data: JSON.parse(opts.body).species === 'Dog' ? listing : [] });
   if (u.includes('/api/animals/adopted')) return json({ data: adopted.map((id) => ({ shelterBuddyId: id })) });
-  if (u.includes('/api/photos/')) return json({ large: [] });
+  const photosMatch = /\/api\/photos\/(\d+)$/.exec(u);
+  if (photosMatch) return json({ large: photoPaths[Number(photosMatch[1])] || [] });
+  const imgKey = Object.keys(imageBytes).find((k) => u.includes(k));
+  if (imgKey) return new Response(imageBytes[imgKey], { status: 200, headers: { 'content-type': 'image/jpeg' } });
   const m = /\/api\/animals\/adopt\/(\d+)$/.exec(u);
   if (m) {
     if (detailFails.has(Number(m[1]))) return json({}, 500);
-    return json({ primaryBreed: 'Test Breed', weight: '50 lbs', location: 'Kennel', summary: 'Nice dog', tags: ["I'm getting adopted!"], sex: 'Male', age: '3 Years' });
+    return json({ primaryBreed: 'Test Breed', weight: '50 lbs', location: 'Kennel', summary: summaryOverrides[Number(m[1])] || 'Nice dog', tags: tagsOverrides[Number(m[1])] || ["I'm getting adopted!"], sex: 'Male', age: '3 Years', youTubeVideoId: videoIdOverrides[Number(m[1])] || null });
   }
   return realFetch(url, opts);
 };
@@ -90,6 +99,43 @@ test('a failed detail fetch keeps the previous good data instead of blanking it'
   assert.equal(row.summary, 'Nice dog');
   assert.ok(row.tags.includes("I'm getting adopted!"));
   detailFails = new Set();
+});
+
+test("a PB dog's sticker clears itself (and logs why) once the stray-hold tag drops off the listing", async () => {
+  const id = 1000;
+  listing = dogs(28);
+  tagsOverrides[id] = ['Dog', 'Shelter', 'On Stray Hold'];
+  await runScrape();
+  db.prepare('UPDATE dogs SET pb_flag = 1 WHERE shelter_buddy_id = ?').run(id);
+
+  // Still on stray hold next scrape: PB is untouched, nothing logged.
+  const before = events('sticker_auto_off');
+  await runScrape();
+  assert.equal(db.prepare('SELECT pb_flag p FROM dogs WHERE shelter_buddy_id = ?').get(id).p, 1);
+  assert.equal(events('sticker_auto_off'), before);
+
+  // The hold is lifted: PB clears itself, with an event recording why.
+  tagsOverrides[id] = ['Dog', 'Shelter'];
+  await runScrape();
+  assert.equal(db.prepare('SELECT pb_flag p FROM dogs WHERE shelter_buddy_id = ?').get(id).p, 0, 'PB is no longer needed once the hold is lifted');
+  assert.equal(events('sticker_auto_off'), before + 1);
+  const ev = db.prepare("SELECT dog_id, detail FROM shelter_events WHERE kind = 'sticker_auto_off' ORDER BY id DESC LIMIT 1").get();
+  assert.equal(ev.dog_id, id);
+  assert.equal(ev.detail, 'pb');
+
+  delete tagsOverrides[id];
+});
+
+test('a dog without the PB sticker leaving stray hold is quiet -- nothing to auto-clear', async () => {
+  const id = 1001;
+  listing = dogs(28);
+  const before = events('sticker_auto_off');
+  tagsOverrides[id] = ['Dog', 'Shelter', 'On Stray Hold'];
+  await runScrape();
+  tagsOverrides[id] = ['Dog', 'Shelter'];
+  await runScrape();
+  assert.equal(events('sticker_auto_off'), before);
+  delete tagsOverrides[id];
 });
 
 test('a dog returning after 6+ months is treated as a fresh start: no bonus days, markers reset', async () => {
@@ -188,4 +234,87 @@ test('a new listing without a name yet is skipped, not a crash, and added once i
   assert.equal(listed(), before + 1);
   assert.equal(events('new_dog'), newDogs + 1);
   assert.equal(db.prepare('SELECT name FROM dogs WHERE shelter_buddy_id = 5000').get().name, 'Newbie');
+});
+
+test("a dog's cached photo is replaced once the shelter's photo URL changes (a new photo was uploaded)", async () => {
+  const id = 1000;
+  const file = path.join(IMAGES_DIR, `${id}.jpg`);
+  fs.rmSync(file, { force: true });
+  listing = dogs(28);
+  // cacheImageIfNeeded refuses anything under 500 bytes (an HTML error page
+  // mistaken for a real photo), so these fakes need to clear that bar.
+  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+
+  photoPaths[id] = ['../app_data/AnimalImages/1000/Large/1000_1.jpg'];
+  imageBytes['AnimalImages/1000/Large/1000_1.jpg'] = fakeJpeg('intake-photo');
+  await runScrape();
+  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'first photo gets cached');
+  assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg');
+
+  // The shelter uploads a nicer photo; it gets its own URL.
+  photoPaths[id] = ['../app_data/AnimalImages/1000/Large/1000_2.jpg'];
+  imageBytes['AnimalImages/1000/Large/1000_2.jpg'] = fakeJpeg('better-photo');
+  await runScrape();
+  assert.ok(fs.readFileSync(file).toString().startsWith('better-photo'), 'the stale cached photo is overwritten once the URL changes');
+
+  delete photoPaths[id];
+  delete imageBytes['AnimalImages/1000/Large/1000_1.jpg'];
+  delete imageBytes['AnimalImages/1000/Large/1000_2.jpg'];
+});
+
+test("a dog with several photos on the shelter's page gets the first one as photo_url", async () => {
+  const id = 1000;
+  const file = path.join(IMAGES_DIR, `${id}.jpg`);
+  fs.rmSync(file, { force: true });
+  listing = dogs(28);
+  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+
+  // The shelter lists three photos for this dog; /api/photos/:id's array
+  // order is the only signal of which one is "first".
+  photoPaths[id] = [
+    '../app_data/AnimalImages/1000/Large/1000_1.jpg',
+    '../app_data/AnimalImages/1000/Large/1000_2.jpg',
+    '../app_data/AnimalImages/1000/Large/1000_3.jpg'
+  ];
+  imageBytes['AnimalImages/1000/Large/1000_1.jpg'] = fakeJpeg('photo-one');
+  imageBytes['AnimalImages/1000/Large/1000_2.jpg'] = fakeJpeg('photo-two');
+  imageBytes['AnimalImages/1000/Large/1000_3.jpg'] = fakeJpeg('photo-three');
+  await runScrape();
+  assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg', 'photo_url is the first photo in the list, not the last or some other one');
+  assert.ok(fs.readFileSync(file).toString().startsWith('photo-one'), 'the cached file is the first photo too');
+
+  delete photoPaths[id];
+  delete imageBytes['AnimalImages/1000/Large/1000_1.jpg'];
+  delete imageBytes['AnimalImages/1000/Large/1000_2.jpg'];
+  delete imageBytes['AnimalImages/1000/Large/1000_3.jpg'];
+});
+
+test("a YouTube video embedded in a dog's summary becomes a direct link, and survives a failed detail fetch", async () => {
+  listing = dogs(28);
+  summaryOverrides[1000] = '<p>Meet me!</p><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0" frameborder="0"></iframe>';
+  summaryOverrides[1001] = '<p>No video here, just a bio.</p>';
+  await runScrape();
+  assert.equal(db.prepare('SELECT video_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'the embed URL is normalized to a canonical watch link');
+  assert.equal(db.prepare('SELECT video_url u FROM dogs WHERE shelter_buddy_id = 1001').get().u, null, 'no video in the summary -> no video_url');
+
+  // A detail fetch failure next run must not blank out a video_url we
+  // already have, same as it already protects breed/summary/tags.
+  detailFails.add(1000);
+  await runScrape();
+  assert.equal(db.prepare('SELECT video_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'kept across a failed detail fetch');
+  detailFails.delete(1000);
+
+  delete summaryOverrides[1000];
+  delete summaryOverrides[1001];
+});
+
+test("a YouTube video on the dog's dedicated youTubeVideoId field becomes a direct link, even with no video in the summary", async () => {
+  listing = dogs(28);
+  videoIdOverrides[1000] = 'dQw4w9WgXcQ';
+  summaryOverrides[1000] = '<p>Just a bio, the video lives in its own field now.</p>';
+  await runScrape();
+  assert.equal(db.prepare('SELECT video_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'youTubeVideoId is turned into a canonical watch link');
+
+  delete videoIdOverrides[1000];
+  delete summaryOverrides[1000];
 });

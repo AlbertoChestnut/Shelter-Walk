@@ -1,0 +1,9 @@
+/* The view switcher on the desktop pages (desk-nav.js). Uses each page's own
+   --green / --border / --muted / --text tokens. */
+.desk-nav { display: flex; align-items: center; gap: 14px; margin-left: auto; flex-wrap: wrap; font-size: 0.85rem; }
+.desk-nav-views { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.desk-nav-link { padding: 6px 12px; color: var(--text); text-decoration: none; white-space: nowrap; }
+.desk-nav-link + .desk-nav-link { border-left: 1px solid var(--border); }
+a.desk-nav-link:hover { background: rgba(127, 127, 127, 0.12); }
+.desk-nav-link.current { background: var(--green); color: #fff; font-weight: 600; }
+.desk-nav-start { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; }

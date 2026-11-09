@@ -32,13 +32,13 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await p.isHidden('#profileSheet'), 'tapping a marker badge in the name still just shows the markers');
     await p.click('#closeMarkerInfoPopupBtn').catch(() => {}); await p.waitForTimeout(300);
     await maple.locator('.dog-name').click({ position: { x: 5, y: 5 } }); await profileOpen();
-    ok(/Walk \/ Edit/.test(await p.textContent('#profileEditBtn')), 'Available: name opens the profile with Walk / Edit');
+    ok(/Start \/ Edit/.test(await p.textContent('#profileEditBtn')), 'Available: name opens the profile with Start / Edit');
     await p.screenshot({ path: '/tmp/_dte1.png' });
     await p.click('#profileEditBtn'); await p.waitForSelector('#startWalkBtn');
     ok(await p.isHidden('#profileSheet') && /Maple/.test(await p.textContent('#app')), 'Edit lands on Maple\'s Walk/Edit screen');
 
     // Walk/Edit screen: name -> profile -> Edit just closes it
-    await p.locator('#app .dog-name.photo-bio-trigger').click({ position: { x: 5, y: 5 } }); await profileOpen();
+    await p.locator('#app .walk-confirm .dog-name').click({ position: { x: 5, y: 5 } }); await profileOpen();
     ok((await p.textContent('#profileEditBtn')).includes('Edit'), 'Walk/Edit screen: name opens the profile');
     await p.click('#profileEditBtn'); await p.waitForTimeout(500);
     ok(await p.isHidden('#profileSheet') && await p.isVisible('#startWalkBtn'), 'Edit there closes the profile and stays on the screen');

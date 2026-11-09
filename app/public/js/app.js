@@ -1,6 +1,14 @@
 (function () {
   'use strict';
 
+  // A module (app/modules/<id>/public/profile.js, injected via
+  // <!-- MODULE_SCRIPTS -->) pushes a `dog => htmlString` function here to
+  // add its own section to a dog's profile -- the one generic hook the
+  // module system offers for the profile page, so a module needs no core
+  // edit of its own for this. Declared before any module's <script> tag can
+  // run (module scripts load at the very end of the page).
+  window.ShelterWalkModules = window.ShelterWalkModules || { profileSections: [] };
+
   const appEl = document.getElementById('app');
   const topbarTitle = document.getElementById('topbarTitle');
   const tabButtons = document.querySelectorAll('.tab-btn');
@@ -79,6 +87,12 @@
     // hidden ones); every other key is its own independent AND'd criterion.
     markerFilters: {},
     filterMatch: 'all', // 'all' | 'any': whether a dog must pass every filter (And) or just one (Or)
+    // For someone who works with both dogs and cats: 'all', 'dog' or 'cat' --
+    // which ones the Available list and Updates show (kept on this device).
+    speciesView: (() => { try { return localStorage.getItem('speciesView') || 'dog'; } catch (e) { return 'dog'; } })(),
+    // Updates has its own switch, with All: news is only marked read when
+    // nothing is filtered out.
+    updatesSpeciesView: (() => { try { return localStorage.getItem('updatesSpeciesView') || 'all'; } catch (e) { return 'all'; } })(),
     needsShiftWalkOnly: false,
     locationFilter: new Set(), // kennel wing letters (A-E) to include; empty = all
     showMoreFilters: false,
@@ -88,7 +102,7 @@
     ageMaxYears: null,
     minShelterDays: null, // advanced filter: at least this many days in the shelter (this stay)
     openFilterSections: new Set(), // folding filter sections the user has opened ('breed', 'advanced')
-    availableSort: 'shelterTime',
+    availableSort: 'lastWalked',
     availableSortDir: 'desc',
     availableSearch: '',
     availableDogsRaw: [],
@@ -105,10 +119,15 @@
     togetherOpenMonths: null, // same, for Together's past days
     selectedDateKey: null,
     selectedShiftIndex: null, // which of the 4 shift tiles is drilled into on the Stats day view, if any
-    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes) | 'shelter' (listing trends)
+    statsActivityFilter: null, // activity key drilled into from the "By Activity" breakdown (mine), if any
+    statsBreakdownScope: 'lifetime', // 'lifetime' | 'today' | 'day' -- which stats view a By Activity / Avg chart / By Dog drill-down was opened from
+    togetherByActivity: false, // whether Together is showing its "By Activity" breakdown screen
+    togetherAvgChart: null, // dateKey of the day Together's "Average engagement" bar chart is showing, if any (today only)
+    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes) | 'playgroup' (play group notes) | 'shelter' (listing trends)
     shelterRange: 30, // days shown on the Shelter trend charts (0 = all)
     notesQuery: '', // search text on the all-notes view
     notesMine: false, // all-notes view narrowed to my private + my walk notes
+    pgStatsQuery: '', // search text on the Stats play group notes view
     togetherDay: null, // dateKey of the Together day being viewed, if any
     statsRange: 'today', // 'today' | 'lifetime' -- which Stats tiles are shown
     audit: { location: '', dog: null, loading: false, pendingMarkers: null, recent: [], scanned: {}, scanError: '' }
@@ -331,10 +350,8 @@
     img.src = '/icons/icon-192.png';
   }, true);
 
-  // Full-screen, uncropped photo viewer -- opt-in per image via the
-  // .photo-lightbox-trigger class (NOT every .dog-photo everywhere; several
-  // already have their own tap behavior, like the Available list's
-  // tap-to-walk/edit shortcut, and this must never fight with that).
+  // Full-screen, uncropped photo viewer -- for any .photo-lightbox-trigger
+  // image, and for an animal's photo on its card (see just below).
   function showImageLightbox(src, alt) {
     if (!src) return;
     const lightbox = document.getElementById('imageLightbox');
@@ -343,19 +360,53 @@
     img.alt = alt || '';
     openOverlay(lightbox);
   }
+  // Tapping an animal's card, wherever one is shown (Available, Updates,
+  // Stats, the scan screen...): the photo opens full screen, and the name or
+  // anything else in the info area opens their profile. One capture-phase
+  // handler, so no card's own listeners compete with it. A stand-in picture
+  // (no photo yet: the drawn silhouette or the app icon) opens the profile.
+  // Pick lists (search results), the new-card screen and the walk edit
+  // controls keep their own taps, as do buttons/inputs inside the info area.
+  const CARD_TAP_SKIP = '.search-result, .add-walk-dog-result, .unlisted-card, .edit-times-row, .walk-confirm-skip';
+  const isRealPhoto = (img) => img instanceof HTMLImageElement && !img.dataset.fallbackApplied
+    && !/\/dog-silhouettes\/|\/icons\//.test(img.getAttribute('src') || '');
+  function cardAnimalId(el) {
+    const tagged = el.closest('[data-dog-id]') || el.closest('[data-dogid]');
+    if (tagged) return tagged.dataset.dogId || tagged.dataset.dogid;
+    const card = el.closest('.card[data-id]');
+    return card ? card.dataset.id : null;
+  }
+  async function openAnimalProfile(id) {
+    try {
+      const { dog, walks } = await api(`/api/dogs/${id}?userId=${state.currentUser.id}`);
+      showProfileSheet(dog, walks);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  document.addEventListener('click', (e) => {
+    const photo = e.target.closest('.dog-card .dog-photo');
+    const info = !photo && e.target.closest('.dog-card .dog-info');
+    const el = photo || info;
+    if (!el || el.closest(CARD_TAP_SKIP) || (info && tapOnNameControl(e))) return;
+    if (photo && isRealPhoto(photo)) {
+      e.stopPropagation();
+      showImageLightbox(photo.src, photo.closest('.dog-card').querySelector('.dog-name')?.textContent.trim() || '');
+      return;
+    }
+    const id = cardAnimalId(el);
+    if (!id) return;
+    e.stopPropagation();
+    openAnimalProfile(id);
+  }, true);
   document.addEventListener('click', (e) => {
     const trigger = e.target.closest('.photo-lightbox-trigger');
     if (!trigger) return;
     e.stopPropagation();
     showImageLightbox(trigger.src, trigger.alt);
   });
-  // Tapping a dog's photo or name (Scan/confirm screen, adopted entries in
-  // Updates) opens their full bio; the big photo at the top of the bio then opens the
-  // uncropped full-screen view.
   // A dog's name holds its own tappable bits (marker badges, the returned-dog
   // and QR buttons); a tap on one of those is theirs, not the name's.
   function tapOnNameControl(e) {
-    return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge');
+    return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge, input, select, textarea, label');
   }
 
   // Names the shelter used before renaming a dog: shown small under the
@@ -400,15 +451,6 @@
       toast(err.message, 'error');
     }
   });
-  document.addEventListener('click', async (e) => {
-    const trigger = e.target.closest('.photo-bio-trigger');
-    if (!trigger || !trigger.dataset.dogId || tapOnNameControl(e)) return;
-    e.stopPropagation();
-    try {
-      const { dog, walks } = await api(`/api/dogs/${trigger.dataset.dogId}?userId=${state.currentUser.id}`);
-      showProfileSheet(dog, walks);
-    } catch (err) { toast(err.message, 'error'); }
-  });
   document.getElementById('closeImageLightboxBtn').addEventListener('click', () => {
     closeOverlay(document.getElementById('imageLightbox'));
   });
@@ -437,10 +479,11 @@
     const popup = document.getElementById('markerInfoPopup');
     const content = document.getElementById('markerInfoPopupContent');
     if (!popup || !content) return;
-    content.innerHTML = '<h3 style="margin-top:0;">🕘 Walk history</h3><p class="muted small center">Loading…</p>';
+    content.innerHTML = '<h3 style="margin-top:0;">🕘 History</h3><p class="muted small center">Loading…</p>';
     openOverlay(popup);
     try {
-      const { name, walks } = await api(`/api/dogs/${dogId}/walk-history`);
+      const { name, species, walks } = await api(`/api/dogs/${dogId}/walk-history`);
+      const t = termsOf({ species });
       const mineCount = walks.filter((w) => w.mine).length;
       const days = new Map();
       for (const w of walks) {
@@ -456,13 +499,13 @@
             ${w.mine ? '<span class="badge eligible">You</span>' : '<span class="small muted">Another volunteer</span>'}
           </div>`).join('')}`).join('');
       content.innerHTML = `
-        <h3 style="margin-top:0;">🕘 ${esc(name)}'s walks</h3>
+        <h3 style="margin-top:0;">🕘 ${esc(name)}'s ${t.nouns}</h3>
         ${walks.length
-    ? `<p class="small muted">${walks.length} walk${walks.length === 1 ? '' : 's'}${mineCount ? `, ${mineCount} with you` : ''}.</p><div class="walk-history-list">${daysHtml}</div>`
-    : `<p class="small muted">No walks recorded for ${esc(name)}.</p>`}
+    ? `<p class="small muted">${walks.length} ${walks.length === 1 ? t.noun : t.nouns}${mineCount ? `, ${mineCount} with you` : ''}.</p><div class="walk-history-list">${daysHtml}</div>`
+    : `<p class="small muted">No ${t.nouns} recorded for ${esc(name)}.</p>`}
       `;
     } catch (err) {
-      content.innerHTML = `<h3 style="margin-top:0;">🕘 Walk history</h3><p class="small muted">Couldn't load the walk history: ${esc(err.message)}</p>`;
+      content.innerHTML = `<h3 style="margin-top:0;">🕘 History</h3><p class="small muted">Couldn't load the history: ${esc(err.message)}</p>`;
     }
   }
   document.addEventListener('click', (e) => {
@@ -608,9 +651,9 @@
 
   // Alumni dogs get bonus days toward eligibility on top of their actual
   // time in shelter — show both so it's clear why an "old" dog is eligible.
-  // A dog with any return history (automatically tracked, or a staff-set
-  // alumni flag) also gets a tappable "returned" icon that opens the full
-  // breakdown of their stay(s) -- this app-only icon has no printed
+  // Every dog also gets a tappable "log" icon next to their stay length that
+  // opens their full timeline (arrived, pending adoption, adopted, returned,
+  // taken off the floor, etc.) -- this app-only icon has no printed
   // equivalent on the dog's physical kennel card.
   function shelterDaysHtml(dog) {
     const hasReturnHistory = dog.previousDaysInShelter > 0;
@@ -622,12 +665,10 @@
     const days = dog.isAlumni
       ? `<span title="Alumni (returned dog) - ${dog.daysInShelter} actual days, ${dog.effectiveDaysInShelter} days for walking privileges (+${dog.alumniBonusDays} bonus)">${dog.daysInShelter}d*</span>`
       : hasReturnHistory
-        ? `<span title="${dog.daysInShelter} day${dog.daysInShelter === 1 ? '' : 's'} this stay, ${dog.daysInShelter + dog.previousDaysInShelter} total across all stays -- tap 🔄 for the full breakdown">${dog.daysInShelter}d/${dog.daysInShelter + dog.previousDaysInShelter}d</span>`
+        ? `<span title="${dog.daysInShelter} day${dog.daysInShelter === 1 ? '' : 's'} this stay, ${dog.daysInShelter + dog.previousDaysInShelter} total across all stays -- tap 📜 for the full timeline">${dog.daysInShelter}d/${dog.daysInShelter + dog.previousDaysInShelter}d</span>`
         : `${dog.daysInShelter}d`;
-    const returned = (hasReturnHistory || dog.isAlumni)
-      ? ` <button type="button" class="mini-icon-btn returned-icon-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}" title="Returned dog - tap to see their stay history" aria-label="${esc(dog.name)}'s stay history">🔄</button>`
-      : '';
-    return days + returned;
+    const log = ` <button type="button" class="mini-icon-btn stay-log-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}" title="See ${esc(dog.name)}'s shelter timeline" aria-label="${esc(dog.name)}'s shelter timeline">📜</button>`;
+    return days + log;
   }
 
   // Human-readable version of the server's notEligibleReason code, shown on
@@ -694,14 +735,174 @@
       } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
     });
   }
-  function activityChipsHtml(selected) {
-    return Object.entries(ACTIVITIES).map(([key, a]) =>
-      `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}">${a.emoji} ${a.label}</button>`).join('');
+  // keys: which activities to offer (an animal's species allows only some).
+  function activityChipsHtml(selected, keys = Object.keys(ACTIVITIES)) {
+    return keys.filter((key) => ACTIVITIES[key]).map((key) => {
+      const a = ACTIVITIES[key];
+      return `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}">${a.emoji} ${a.label}</button>`;
+    }).join('');
   }
+
+  // ---------- Species (dogs, cats) ----------
+  // What each species can do comes from the server (species.js, sent with
+  // /api/me): its activities, whether it has kennel card stickers, and
+  // whether experience levels decide who may take it out.
+  const FALLBACK_SPECIES = {
+    dog: { label: 'Dog', plural: 'Dogs', noun: 'dog', emoji: '🐕', activities: Object.keys(ACTIVITIES), stickers: true, levelRules: true }
+  };
+  const speciesTable = () => (state.currentUser && state.currentUser.species) || FALLBACK_SPECIES;
+  const speciesInfo = (key) => speciesTable()[key] || speciesTable().dog;
+  const speciesOf = (dog) => speciesInfo(dog && dog.species);
+  // Who this volunteer works with (Settings): 'dog', 'cat' or 'both'.
+  const speciesPref = () => (state.currentUser && state.currentUser.speciesPref) || 'dog';
+  const prefSpeciesKeys = () => (speciesPref() === 'both' ? Object.keys(speciesTable()) : [speciesPref()]);
+  const worksWithBoth = () => prefSpeciesKeys().length > 1;
+  // "dog", "cat", or "animal" for wording that covers more than one.
+  const nounFor = (keys, plural) => (keys.length === 1
+    ? (plural ? speciesInfo(keys[0]).plural.toLowerCase() : speciesInfo(keys[0]).noun)
+    : (plural ? 'animals' : 'animal'));
+  // What time with an animal is called (species.js terms): dogs are walked,
+  // cats are played with, and anything covering more than one species says
+  // "engage". termsFor(keys) for a list or screen, termsOf(dog) for one
+  // animal, myTerms() for the volunteer's own (their Settings choice).
+  const ENGAGE_TERMS = { verb: 'engage', verbWith: 'engage with', past: 'engaged with', noun: 'engagement', nouns: 'engagements', ing: 'engaging' };
+  const DOG_TERMS = { verb: 'walk', verbWith: 'walk', past: 'walked', noun: 'walk', nouns: 'walks', ing: 'walking' };
+  function termsFor(keys) {
+    const kinds = [...new Set(keys)];
+    return kinds.length === 1 ? (speciesInfo(kinds[0]).terms || DOG_TERMS) : ENGAGE_TERMS;
+  }
+  const termsOf = (dog) => termsFor([(dog && dog.species) || 'dog']);
+  const myTerms = () => termsFor(state.currentUser ? prefSpeciesKeys() : ['dog']);
+  // For a summary of PAST activity (lifetime/today/one-day stats): the
+  // wording has to follow the species that history actually happened with,
+  // never the volunteer's current Settings preference -- otherwise flipping
+  // that preference (dog -> cat, say) instantly relabels old dog walks as
+  // "play sessions" even though nothing about those walks changed. Only
+  // falls back to the current preference when there's no history at all to
+  // get wrong (an empty-state message, say).
+  const historySpeciesKeys = (rows) => {
+    const keys = [...new Set((rows || []).map((r) => r.species).filter(Boolean))];
+    return keys.length ? keys : prefSpeciesKeys();
+  };
+  const historyTerms = (rows) => termsFor(historySpeciesKeys(rows));
+  const capFirst = (str) => str.charAt(0).toUpperCase() + str.slice(1);
+  const titleCase = (str) => str.split(' ').map(capFirst).join(' ');
+  const aNoun = (t) => `${/^[aeiou]/.test(t.noun) ? 'an' : 'a'} ${t.noun}`;
+  // Fixed page text (Settings, Privacy) marked data-term="past" etc. follows
+  // who the volunteer works with.
+  function applyTermsToPage() {
+    const t = myTerms();
+    const animal = nounFor(prefSpeciesKeys());
+    const words = { ...t, animal, animals: nounFor(prefSpeciesKeys(), true), aNoun: aNoun(t), aAnimal: `${/^[aeiou]/.test(animal) ? 'an' : 'a'} ${animal}` };
+    document.querySelectorAll('[data-term]').forEach((el) => {
+      const word = words[el.dataset.term];
+      if (word) el.textContent = el.dataset.cap ? capFirst(word) : word;
+    });
+  }
+  // Onboarding / Settings wording for who someone works with: the noun
+  // ("dog", "cat", "dog or cat"), and what they do with them.
+  function prefWords() {
+    const keys = prefSpeciesKeys();
+    const t = termsFor(keys);
+    return {
+      noun: keys.map((k) => speciesInfo(k).noun).join(' or '),
+      nouns: keys.map((k) => speciesInfo(k).plural.toLowerCase()).join(' and '),
+      did: t.past,
+      start: aNoun(t)
+    };
+  }
+  // The usual activity, or this animal's first one when it can't do that
+  // (a dog walker scanning a cat gets a cuddle).
+  function usualActivityFor(dog) {
+    const allowed = speciesOf(dog).activities;
+    const usual = usualActivity();
+    return allowed.includes(usual) ? usual : allowed[0];
+  }
+  const kennelsOf = (dog) => speciesOf(dog).kennels || KENNEL_LETTERS;
+  // A kitten (the shelter's tag, see species.js youngFirst), and a warning
+  // when this volunteer has been with an adult cat this shift: adult -> kitten
+  // can pass disease on, so kittens come first.
+  function youngBadgeHtml(dog) {
+    const rule = speciesOf(dog).youngFirst;
+    if (!rule || !dog.isYoung) return '';
+    return `<span class="badge young" title="${esc(rule.young)}">🍼 ${esc(rule.young.charAt(0).toUpperCase() + rule.young.slice(1))}</span>`
+      + (dog.handlingWarning ? ` <span class="badge caution" title="You were with ${esc(dog.handlingWarning.name)} (an ${esc(dog.handlingWarning.adult)}) earlier">⚠ After an ${esc(dog.handlingWarning.adult)}</span>` : '');
+  }
+  // Mid-adoption cats (any species with wrap-up checks) live behind a lock.
+  const relockNeeded = (dog) => !!(dog && dog.isPendingAdoption && (speciesOf(dog).wrapUpChecks || []).length);
+  // End screen reminders (species.js wrapUpChecks). Ticking is just for the
+  // volunteer: nothing is saved or required.
+  function wrapUpChecklistHtml(dog) {
+    const checks = [...(speciesOf(dog).wrapUpChecks || [])];
+    if (!checks.length) return '';
+    if (relockNeeded(dog)) checks.splice(1, 0, 'Being adopted: condo locked again');
+    return `<fieldset class="wrap-up-checks"><legend class="small">Before you move on</legend>
+      ${checks.map((c) => `<label class="small"><input type="checkbox" /> ${esc(c)}</label>`).join('')}</fieldset>`;
+  }
+  function handlingWarningText(dog) {
+    const w = dog.handlingWarning;
+    if (!w) return '';
+    return `You were with ${w.name}, an ${w.adult}, at ${fmtClock(w.at)}. Going from an ${w.adult} to a ${w.young} can pass disease on to the ${w.young}: ${w.young}s first, then ${w.adult}s, never the other way round. Wash up and change your gown or gloves first, or pick another ${w.adult} instead.`;
+  }
+  // A small species tag on cards, only for someone who sees more than one.
+  // The species the lists show right now: always exactly one. Someone who
+  // works with both picks with the Dogs / Cats switch (dogs until they do);
+  // everyone else just sees their own.
+  function viewSpeciesKeys() {
+    const keys = prefSpeciesKeys();
+    return [keys.includes(state.speciesView) ? state.speciesView : keys[0]];
+  }
+  // The Updates feed's choice, which can also be all of them.
+  function updatesSpeciesKeys() {
+    const keys = prefSpeciesKeys();
+    return keys.includes(state.updatesSpeciesView) ? [state.updatesSpeciesView] : keys;
+  }
+  const inSpeciesView = (dog, keys = viewSpeciesKeys()) => keys.includes((dog && dog.species) || 'dog');
+  function setSpeciesView(view, forUpdates) {
+    const key = forUpdates ? 'updatesSpeciesView' : 'speciesView';
+    state[key] = view;
+    try { localStorage.setItem(key, view); } catch (e) { /* this device only, best effort */ }
+  }
+  function speciesSwitchHtml(forUpdates) {
+    if (!worksWithBoth()) return '';
+    const keys = forUpdates ? updatesSpeciesKeys() : viewSpeciesKeys();
+    const view = keys.length > 1 ? 'all' : keys[0];
+    const btn = (key, label) => `<button type="button" class="seg-btn ${view === key ? 'on' : ''}" data-species-view="${key}" role="radio" aria-checked="${view === key}">${label}</button>`;
+    return `<div class="seg seg-small species-switch" role="radiogroup" aria-label="${forUpdates ? 'Show dogs, cats or both' : 'Show dogs or cats'}" style="margin:0 0 8px;">
+      ${prefSpeciesKeys().map((key) => btn(key, `${speciesInfo(key).emoji} ${esc(speciesInfo(key).plural)}`)).join('')}${forUpdates ? btn('all', 'All') : ''}</div>`;
+  }
+  // Dogs / Cats / Both chips (Settings and onboarding); the choice lives on
+  // the container's data-selected.
+  function speciesPrefPickerHtml(selected) {
+    const opts = [...Object.entries(speciesTable()).map(([key, info]) => [key, `${info.emoji} ${info.plural}`]), ['both', 'Both']];
+    return opts.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-species-pref="${key}" style="width:auto;flex:0 0 auto;">${esc(label)}</button>`).join('');
+  }
+  function wireSpeciesPrefPicker(el, onPick) {
+    el.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-species-pref]');
+      if (!chip) return;
+      el.dataset.selected = chip.dataset.speciesPref;
+      el.querySelectorAll('[data-species-pref]').forEach((c) => c.classList.toggle('active', c === chip));
+      if (onPick) onPick(chip.dataset.speciesPref);
+    });
+  }
+  function wireSpeciesSwitch(onChange, forUpdates) {
+    document.querySelectorAll('[data-species-view]').forEach((b) => {
+      b.addEventListener('click', () => {
+        setSpeciesView(b.dataset.speciesView, forUpdates);
+        // "Dogs to Walk" / "Cats to Visit" follows the switch.
+        if (TAB_TITLES[state.tab]) topbarTitle.textContent = TAB_TITLES[state.tab];
+        onChange();
+      });
+    });
+  }
+  const speciesTagHtml = (dog) => (worksWithBoth()
+    ? `<span class="species-tag" title="${esc(speciesOf(dog).label)}">${speciesOf(dog).emoji}</span>`
+    : '');
   const activityInfo = (key) => ACTIVITIES[key] || ACTIVITIES.walk;
-  function activityOptionsHtml(selected) {
-    return Object.entries(ACTIVITIES).map(([key, a]) =>
-      `<option value="${key}" ${key === (selected || 'walk') ? 'selected' : ''}>${a.emoji} ${a.label}</option>`).join('');
+  function activityOptionsHtml(selected, keys = Object.keys(ACTIVITIES)) {
+    return keys.filter((key) => ACTIVITIES[key]).map((key) =>
+      `<option value="${key}" ${key === (selected || 'walk') ? 'selected' : ''}>${ACTIVITIES[key].emoji} ${ACTIVITIES[key].label}</option>`).join('');
   }
 
   // Shown wherever a dog card appears so it's obvious the dog isn't actually
@@ -741,45 +942,21 @@
   // (the Available list); other callers omit it and keep the combined label.
   // While you're out with one dog, every other dog's button is edit-only
   // (markers, POO, kennel spot) -- see goToConfirmForDog().
-  function dogActionButtons(dogId, cannotWalk) {
+  function dogActionButtons(dogId, cannotWalk, species) {
     const activeId = activeWalkDogId();
     const editOnly = cannotWalk || (activeId && activeId !== String(dogId));
+    const t = termsOf({ species });
     return `
       <div class="row" style="margin-top:6px;">
         <button class="btn small-btn view-profile-btn" data-id="${dogId}">View Info</button>
-        <button class="btn small-btn walk-history-btn" data-dog-id="${dogId}" title="Walk history" aria-label="Walk history" style="flex:0 0 auto;width:auto;">🕘</button>
-        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}">${editOnly ? '✎ Edit' : '▶ Walk / Edit'}</button>
+        <button class="btn small-btn walk-history-btn" data-dog-id="${dogId}" title="${capFirst(t.noun)} history" aria-label="${capFirst(t.noun)} history" style="flex:0 0 auto;width:auto;">🕘</button>
+        <button class="btn small-btn primary walk-edit-btn" data-id="${dogId}">${editOnly ? '✎ Edit' : '▶ Start / Edit'}</button>
       </div>`;
   }
 
   function wireDogActionButtons(scope) {
-    // Tapping the photo is a shortcut straight to Walk/Edit -- the more
-    // common action of the two buttons below it (edit-only for other dogs
-    // while a walk is running).
-    (scope || document).querySelectorAll('.dog-photo').forEach((img) => {
-      const card = img.closest('[data-id]');
-      if (!card) return;
-      img.style.cursor = 'pointer';
-      img.addEventListener('click', (e) => {
-        e.stopPropagation();
-        goToConfirmForDog(card.dataset.id);
-      });
-    });
-    // The dog's name opens their profile (which has its own Edit button),
-    // the same as tapping a dog on screens without these buttons.
-    (scope || document).querySelectorAll('.dog-name').forEach((name) => {
-      const card = name.closest('[data-id]');
-      if (!card || !card.querySelector('.view-profile-btn')) return;
-      name.style.cursor = 'pointer';
-      name.addEventListener('click', async (e) => {
-        if (tapOnNameControl(e)) return;
-        e.stopPropagation();
-        try {
-          const { dog, walks } = await api(`/api/dogs/${card.dataset.id}?userId=${state.currentUser.id}`);
-          showProfileSheet(dog, walks);
-        } catch (err) { toast(err.message, 'error'); }
-      });
-    });
+    // Photo and name/info taps are handled app-wide (see "Tapping an
+    // animal's card" near the top): photo full screen, info = profile.
     (scope || document).querySelectorAll('.view-profile-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1012,6 +1189,10 @@
     // most walkers never see this button, keeping their app simple.
     const auditBtn = document.getElementById('auditModeBtn');
     if (auditBtn) auditBtn.classList.toggle('hidden', !user.canAudit);
+    // The page loads titled for dogs; the volunteer's own species (and the
+    // Dogs / Cats switch) is known only now.
+    if (state.tab === 'available') topbarTitle.textContent = TAB_TITLES.available;
+    applyTermsToPage();
   }
 
   // "My Account" is a sheet with its own little pages (Profile, Privacy &
@@ -1041,6 +1222,7 @@
     document.getElementById('accountNameStatus').textContent = '';
     document.getElementById('accountHideNameCheck').checked = !!state.currentUser.hideNameWhileWalking;
     document.getElementById('adminPanelLink').classList.toggle('hidden', !state.currentUser.isStaff);
+    document.getElementById('staffDashLink').classList.toggle('hidden', !state.currentUser.isStaff);
     document.getElementById('feedbackInboxRow').classList.toggle('hidden', !canReadFeedback());
     // Staff accounts are removed from the staff panel (so the coordinators can
     // never lock themselves out by accident) -- that's specific to deleting
@@ -1199,7 +1381,7 @@
         </ul>
 
         <h4>What we collect</h4>
-        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown to other volunteers only while one of your walks is in progress, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
+        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown to other volunteers only while you're out with an animal, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
 
         <h4>Feedback and bug reports</h4>
         <p>Reports sent from My Account are saved without your name or account, so nobody can tell who sent one. If you tick "Include my phone and browser type", your browser's standard identification line is saved with the report (it names the kind of phone and browser, like iPhone and Safari, nothing about you) to help fix bugs. Only staff can read reports, and they can delete them.</p>
@@ -1217,15 +1399,15 @@
 
         <h4>How your data is used</h4>
         <ul>
-          <li>To show you your own stats and walk history.</li>
+          <li>To show you your own stats and history with the animals.</li>
           <li>To show other volunteers which dog is currently out, and with whom, unless you've turned that off.</li>
-          <li>To combine everyone's walks into shelter-wide totals, without ever exposing who contributed what.</li>
+          <li>To combine everyone's engagements with the animals into shelter-wide totals, without ever exposing who contributed what.</li>
           <li>To send you a sign-in code by email.</li>
         </ul>
         <p>Nothing here is used to evaluate volunteers, and nothing is sold, shared for advertising, or shown to any third party - there is no advertising in this app.</p>
 
         <h4>Where your data lives</h4>
-        <p>Shelter Walk runs on a server hosted by <strong>DigitalOcean</strong>. Sign-in emails are sent through <strong>Resend</strong>, our email delivery provider - it only ever sees the email address needed to send you a code, never your walk history, notes, or stats. Your name and email are never shared with any other third party, for any reason.</p>
+        <p>Shelter Walk runs on a server hosted by <strong>DigitalOcean</strong>. Sign-in emails are sent through <strong>Resend</strong>, our email delivery provider - it only ever sees the email address needed to send you a code, never your history, notes, or stats. Your name and email are never shared with any other third party, for any reason.</p>
 
         <h4>Backups</h4>
         <p>The site takes automatic backups every day, kept for 14 days and then permanently deleted. They exist for one reason: recovering the <em>entire</em> site if something goes badly wrong. They are not a tool for looking up or restoring one person's data - restoring one means restoring everyone's data to that point in time, all at once, not pulling one person's data back out on its own.</p>
@@ -1233,9 +1415,9 @@
 
         <h4>Your choices</h4>
         <ul>
-          <li><strong>Hide your name while walking.</strong> Other volunteers see "a Volunteer" instead of your name on the live "currently out" badge. This never affects anything after a walk ends - that's hidden from everyone, always, regardless of this setting.</li>
+          <li><strong>Hide your name while you're out with an animal.</strong> Other volunteers see "a Volunteer" instead of your name on the live "currently out" badge. This never affects anything after an engagement ends - that's hidden from everyone, always, regardless of this setting.</li>
           <li><strong>Download your data.</strong> Get a copy of everything Shelter Walk has stored about you, any time.</li>
-          <li><strong>Delete your walk data.</strong> Permanently disconnect every walk you've done from your account while keeping your account and sign-in.</li>
+          <li><strong>Delete your engagement data.</strong> Permanently disconnect every walk, play session or other engagement you've done from your account while keeping your account and sign-in.</li>
           <li><strong>Delete your account entirely.</strong> Permanently remove your account, sign-in, and all personal data.</li>
         </ul>
         <p class="small muted">Questions about this policy can be directed to whoever coordinates volunteers for your shelter.</p>
@@ -1287,14 +1469,14 @@
     showDangerConfirm({
       title: 'Delete your account',
       intro: [
-        "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, favorite dogs, and private notes.",
-        "The walks you did stay in the shelter's records and totals, but they will no longer be connected to you in any way, not even for the site owner. Tips you shared stay on the dogs' boards, without your name.",
+        "This permanently deletes your account: your name, email, passkeys, experience level, settings, saved filters, favorites, and private notes.",
+        `The ${myTerms().nouns} you did stay in the shelter's records and totals, but they will no longer be connected to you in any way, not even for the site owner. Tips you shared stay on the animals' boards, without your name.`,
         'The site keeps day-to-day backups for 14 days, but only to roll the whole site back after a major problem - restoring one means restoring everyone\'s data to that point in time, not pulling your data back out on its own. Those backups age out completely after 14 days either way.'
       ],
       checks: [
         'I understand this cannot be undone.',
         'I understand my sign-in, name, email, and all personal settings will be permanently deleted.',
-        'I understand any past walks I did will be permanently disconnected from my account, and no one - including the site owner - has a way to look that connection up again afterward.',
+        `I understand any past ${myTerms().nouns} I did will be permanently disconnected from my account, and no one - including the site owner - has a way to look that connection up again afterward.`,
         'I understand I will be signed out right away, and will need a brand-new invite to use Shelter Walk again.'
       ],
       confirmLabel: 'Delete my account forever',
@@ -1310,21 +1492,21 @@
   document.getElementById('deleteMyDataBtn').addEventListener('click', async () => {
     await closeSheetAwait(document.getElementById('accountSheet'));
     showDangerConfirm({
-      title: 'Delete your walk data',
+      title: `Delete your ${myTerms().noun} data`,
       intro: [
-        "This disconnects every walk you've done from your account. Your personal stats and per-dog history reset to zero, and any private notes you wrote are deleted. Shared tips you wrote stay on the dogs' boards, without your name (they never showed it anyway).",
-        'Your account, sign-in, name, email, and settings are not affected - you can keep walking dogs normally afterward, starting from a blank history.',
+        "This disconnects every " + myTerms().noun + " you've done from your account. Your personal stats and per-" + nounFor(prefSpeciesKeys()) + " history reset to zero, and any private notes you wrote are deleted. Shared tips you wrote stay on the animals' boards, without your name (they never showed it anyway).",
+        `Your account, sign-in, name, email, and settings are not affected - you can keep volunteering normally afterward, starting from a blank history.`,
         'The site keeps day-to-day backups for 14 days, but only to roll the whole site back after a major problem - restoring one means restoring everyone\'s data to that point in time, not pulling your data back out on its own. Those backups age out completely after 14 days either way.'
       ],
       checks: [
         'I understand this cannot be undone.',
-        'I understand that data connecting my account to a walk will be permanently deleted, and no one - including the site owner - has a way to look that connection up again afterward.',
-        'I understand my personal stats and dog history will reset to zero, even though the walks themselves stay in the shelter\'s overall totals.'
+        `I understand that data connecting my account to ${aNoun(myTerms())} will be permanently deleted, and no one - including the site owner - has a way to look that connection up again afterward.`,
+        `I understand my personal stats and ${nounFor(prefSpeciesKeys())} history will reset to zero, even though the ${myTerms().nouns} themselves stay in the shelter's overall totals.`
       ],
-      confirmLabel: 'Delete my walk data',
+      confirmLabel: `Delete my ${myTerms().noun} data`,
       action: async () => {
         await api('/api/me/data', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
-        toast('Your walk data has been deleted.');
+        toast(`Your ${myTerms().noun} data has been deleted.`);
       }
     });
   });
@@ -1340,7 +1522,7 @@
     screen.innerHTML = `
       <div class="user-picker-inner center">
         <h2>Your account has been deleted 🐾</h2>
-        <p>Thank you for everything you did for the dogs. Your walks stay in the shelter's records, but they are no longer connected to you.</p>
+        <p>Thank you for everything you did for the animals. Your ${myTerms().nouns} stay in the shelter's records, but they are no longer connected to you.</p>
         <p class="muted small">You're welcome back any time with a new invite.</p>
         <a class="btn primary" href="https://login.shelterwalk.com/accounts/login/" style="text-decoration:none;">Done</a>
       </div>`;
@@ -1379,8 +1561,25 @@
   // Every meaningful UI change (tab switch, sheet open) pushes a history
   // entry so the hardware/gesture back button navigates within the app
   // (closing overlays, stepping back a tab) instead of leaving the page.
-  const TAB_TITLES = { available: 'Dogs to Walk', walk: 'Scan a Dog', stats: 'Stats', updates: 'Updates', audit: 'Audit Mode', guide: 'Guide' };
+  // The first two follow who the volunteer works with (Settings).
+  const TAB_TITLES = {
+    get available() {
+      const keys = state.currentUser ? viewSpeciesKeys() : ['dog'];
+      return `${speciesInfo(keys[0]).plural} to ${titleCase(termsFor(keys).verbWith)}`;
+    },
+    get walk() {
+      const keys = state.currentUser ? prefSpeciesKeys() : ['dog'];
+      return keys.length > 1 ? 'Scan a Kennel Card' : `Scan a ${speciesInfo(keys[0]).label}`;
+    },
+    stats: 'Stats', updates: 'Updates', audit: 'Audit Mode', guide: 'Guide'
+  };
   let syncingFromHistory = false;
+  // The scan screens (scanning, and the dog just scanned) drop the green bar
+  // for more room (owner, 2026-11-06). Every screen change sets the title,
+  // so watching it catches them all.
+  const topbarEl = document.querySelector('.topbar');
+  const syncTopbar = () => topbarEl.classList.toggle('hidden', state.tab === 'walk' && topbarTitle.textContent === TAB_TITLES.walk);
+  new MutationObserver(syncTopbar).observe(topbarTitle, { childList: true, characterData: true, subtree: true });
 
   // settingsSheet/profileSheet are declared further down with `const`, but since
   // these functions are only ever called later (from event handlers), the
@@ -1540,7 +1739,7 @@
     if (tab !== 'updates') refreshUpdatesBadge();
   }
 
-  // Opening a dog from another tab (its photo or Walk / Edit) is a step on
+  // Opening a dog from another tab (its photo or Start / Edit) is a step on
   // top of that tab, not a tab switch: Back returns to where it was opened
   // (Updates, Stats...), not to Available.
   function activateWalkTab() {
@@ -1558,7 +1757,7 @@
   }
 
   // Jumps to the Walk tab's confirm/edit screen for a known dog (from the
-  // Available list's "Walk / Edit" button) without ever opening the camera —
+  // Available list's "Start / Edit" button) without ever opening the camera —
   // switchTab() would default an idle walk phase to 'scanning' first.
   //
   // If a walk is already in progress for a DIFFERENT dog, this deliberately
@@ -1611,12 +1810,13 @@
       starFlag: !!dog.starFlag,
       pbFlag: !!dog.pbFlag
     };
+    const stickers = speciesOf(dog).stickers;
     content.innerHTML = `
       <h3 style="margin-top:0;">✎ ${esc(dog.name)}</h3>
       <p class="small muted" style="margin-top:-6px;">You're still out with ${esc(state.walk.dog.name)} — this only edits ${esc(dog.name)}.</p>
-      ${markerPickerHtml()}
-      <label style="display:block;margin-top:14px;">Kennel location</label>
-      ${kennelLetterPickerHtml('editPopupLocationPicker', dog.kennelLocation || '')}
+      ${stickers ? markerPickerHtml() : ''}
+      <label style="display:block;${stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
+      ${kennelLetterPickerHtml('editPopupLocationPicker', dog.kennelLocation || '', { letters: kennelsOf(dog) })}
       <div class="row" style="margin-top:10px;">
         <button type="button" id="editPopupSaveBtn" class="btn primary">Save Changes</button>
         <button type="button" id="editPopupNotesBtn" class="btn">📝 Notes</button>
@@ -1630,7 +1830,7 @@
       const location = kennelLetterPickerValue('editPopupLocationPicker');
       statusEl.textContent = 'Saving…';
       try {
-        await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(pending) });
+        if (stickers) await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(pending) });
         if (location && location !== dog.kennelLocation) {
           await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
         }
@@ -1713,7 +1913,7 @@
   // already have a level but never seen the rest of this. Progress is kept
   // in localStorage (not the server) purely so the passkey step's redirect
   // to login.shelterwalk.com and back doesn't restart the whole sequence.
-  const ONBOARDING_STEPS = ['name', 'level', 'activity', 'passkey', 'notifications', 'info', 'thanks'];
+  const ONBOARDING_STEPS = ['name', 'species', 'level', 'activity', 'passkey', 'notifications', 'info', 'thanks'];
   const ONBOARDING_STEP_KEY = 'dogwalk_onboarding_step';
 
   function getOnboardingStep() {
@@ -1780,7 +1980,7 @@
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
         <h2>Welcome to Shelter Walk 🐾</h2>
-        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? It's never shown on your past walks, and you choose below whether other volunteers see it while you're out with a dog.</p>
+        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? It's never shown on your past engagements with the animals, and you choose below whether other volunteers see it while you're out with a dog.</p>
         <label for="onboardingNameInput" class="small">Name</label>
         <input type="text" id="onboardingNameInput" maxlength="60" autocomplete="name" value="${esc(looksReal ? existing : '')}" />
         <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
@@ -1828,7 +2028,7 @@
           }
           const nameEl = document.getElementById('userBtnName');
           if (nameEl) nameEl.textContent = updated.name;
-          runOnboardingStep('level');
+          runOnboardingStep('species');
         } catch (err) {
           statusEl.textContent = err.status === 409
             ? 'Another volunteer already has that exact name. Add a middle initial or another detail to tell you apart.'
@@ -1838,6 +2038,42 @@
       };
       document.getElementById('onboardingNameNext').addEventListener('click', submit);
       inner.querySelectorAll('input').forEach((i) => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); }));
+      return;
+    }
+
+    if (step === 'species') {
+      inner.innerHTML = `
+        ${onboardingProgressHtml(step)}
+        <h2>Who do you volunteer with?</h2>
+        <p class="muted small">Your lists and Updates will show these. Scanning works for any kennel card either way, and you can change this in Settings.</p>
+        <div id="onboardingSpeciesList" class="marker-row" style="gap:6px;" data-selected="${esc(speciesPref())}">${speciesPrefPickerHtml(speciesPref())}</div>
+        <p id="onboardingSpeciesStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
+        <button type="button" id="onboardingSpeciesNext" class="btn primary">Continue</button>
+        ${backBtn('name')}`;
+      wireBack('name');
+      const list = document.getElementById('onboardingSpeciesList');
+      wireSpeciesPrefPicker(list);
+      document.getElementById('onboardingSpeciesNext').addEventListener('click', async () => {
+        const nextBtn = document.getElementById('onboardingSpeciesNext');
+        nextBtn.disabled = true;
+        try {
+          const pref = list.dataset.selected || 'dog';
+          const levelsMatter = (pref === 'both' ? Object.keys(speciesTable()) : [pref]).some((k) => speciesInfo(k).levelRules);
+          const updated = await api(`/api/users/${state.currentUser.id}/settings`, {
+            method: 'PUT',
+            // Levels only decide dogs: someone with cats only starts as a
+            // Beginner (changeable in Settings) instead of being asked.
+            body: JSON.stringify(levelsMatter ? { speciesPref: pref } : { speciesPref: pref, experienceLevel: state.currentUser.experienceLevel || 'beginner' })
+          });
+          state.currentUser.speciesPref = updated.speciesPref;
+          applyTermsToPage();
+          state.currentUser.experienceLevel = updated.experienceLevel;
+          runOnboardingStep(levelsMatter ? 'level' : 'activity');
+        } catch (err) {
+          document.getElementById('onboardingSpeciesStatus').textContent = err.message;
+          nextBtn.disabled = false;
+        }
+      });
       return;
     }
 
@@ -1851,13 +2087,14 @@
       let selected = state.currentUser.experienceLevel || '';
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
-        <h2>What kind of volunteer are you?</h2>
+        <h2>What kind of ${worksWithBoth() ? 'dog ' : ''}volunteer are you?</h2>
         <p class="muted small">This decides which dogs the app shows you as ready to walk. Pick the one that fits you today. Not sure? Choose Beginner. You can change it any time in Settings.</p>
+        ${worksWithBoth() ? '<p class="muted small">Levels are only for dogs. Any volunteer can play with any cat, with no hours needed.</p>' : ''}
         <div id="onboardingLevelList" class="stack"></div>
         <p id="onboardingLevelStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingLevelNext" class="btn primary" ${selected ? '' : 'disabled'}>Continue</button>
-        ${backBtn('name')}`;
-      wireBack('name');
+        ${backBtn('species')}`;
+      wireBack('species');
       const list = document.getElementById('onboardingLevelList');
       list.innerHTML = levelPickerHtml(levels, selected);
       list.querySelectorAll('.level-pick-btn').forEach((btn) => {
@@ -1889,16 +2126,18 @@
     }
 
     if (step === 'activity') {
-      let selected = usualActivity();
+      const keys = activityKeysForPref(speciesPref());
+      let selected = keys.includes(usualActivity()) ? usualActivity() : keys[0];
+      const prevStep = prefSpeciesKeys().some((k) => speciesInfo(k).levelRules) ? 'level' : 'species';
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
-        <h2>What do you usually do with the dogs?</h2>
-        <p class="muted small">When you scan a kennel, the start button will offer this first. You can still pick something else for any dog, and change your usual one in Settings.</p>
-        <div id="onboardingActivityList" class="marker-row activity-chips">${activityChipsHtml(selected)}</div>
+        <h2>What do you usually do with the ${esc(nounFor(prefSpeciesKeys(), true))}?</h2>
+        <p class="muted small">When you scan a kennel, the start button will offer this first. You can still pick something else each time, and change your usual one in Settings.</p>
+        <div id="onboardingActivityList" class="marker-row activity-chips">${activityChipsHtml(selected, keys)}</div>
         <p id="onboardingActivityStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingActivityNext" class="btn primary">Continue</button>
-        ${backBtn('level')}`;
-      wireBack('level');
+        ${backBtn(prevStep)}`;
+      wireBack(prevStep);
       const list = document.getElementById('onboardingActivityList');
       list.addEventListener('click', (e) => {
         const chip = e.target.closest('[data-activity]');
@@ -1955,11 +2194,11 @@
         </label>
         <label class="small checkbox-row">
           <input type="checkbox" id="onboardingPrefAdopted" />
-          <span>Tell me when a dog I've walked is adopted</span>
+          <span>Tell me when a ${esc(prefWords().noun)} I've ${prefWords().did} is adopted</span>
         </label>
         <label class="small checkbox-row">
           <input type="checkbox" id="onboardingPrefWalkStarted" />
-          <span>When I start a walk, remind me which dog and where to return them</span>
+          <span>When I start ${prefWords().start}, remind me which ${esc(prefWords().noun)} and where to return them</span>
         </label>
         <p class="muted small" style="margin-top:8px;">On iPhone, notifications only work after you add this app to your Home Screen.</p>
         <p id="onboardingNotifStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
@@ -1997,10 +2236,11 @@
         ${onboardingProgressHtml(step)}
         <h2>Good to know</h2>
         <ul class="onboarding-tips">
-          <li><strong>Book icon (top right):</strong> the <strong>Guide</strong>. What every sticker means, tips for walking, and how the app works.</li>
-          <li><strong>Gear icon (top right):</strong> change your experience level, notifications, and light or dark mode.</li>
+          <li><strong>Book icon (top right):</strong> the <strong>Guide</strong>. ${prefSpeciesKeys().some((k) => speciesInfo(k).stickers) ? 'What every sticker means, tips for walking, and how' : 'How'} the app works.</li>
+          <li><strong>Gear icon (top right):</strong> change ${prefSpeciesKeys().some((k) => speciesInfo(k).levelRules) ? 'your experience level, ' : ''}who you volunteer with, notifications, and light or dark mode.</li>
           <li><strong>Your name (top bar):</strong> change your name, email, and passkeys, or sign out.</li>
-          <li><strong>Tap a dog's photo</strong> to see it full size.</li>
+          <li><strong>Tap a ${esc(prefWords().noun)}'s photo</strong> to see it full size.</li>
+          ${prefSpeciesKeys().some((k) => speciesInfo(k).youngFirst) ? '<li><strong>Kittens before adult cats:</strong> an adult cat can pass disease on to a kitten. The app warns you before a kitten if you were with an adult cat this shift.</li>' : ''}
         </ul>
         <button type="button" id="onboardingInfoNext" class="btn primary">Continue</button>
         ${backBtn('notifications')}`;
@@ -2012,11 +2252,11 @@
     if (step === 'thanks') {
       inner.innerHTML = `
         <h2>Thank you! 🐾</h2>
-        <p>Thanks for volunteering and making a dog's day better.</p>
-        <p>New here? The short tutorial shows how everything works, starting with how to scan a kennel card for a walk. It takes about 2 minutes.</p>
+        <p>Thanks for volunteering and making a ${esc(prefWords().noun)}'s day better.</p>
+        <p>New here? The short tutorial shows how everything works, starting with how to scan a kennel card for ${prefWords().start}. It takes about 2 minutes.</p>
         <p id="onboardingFinishStatus" class="small" style="color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingTutorialBtn" class="btn primary">📘 Show me how it works</button>
-        <button type="button" id="onboardingFinishBtn" class="btn" style="margin-top:8px;">Skip, go to the dogs</button>`;
+        <button type="button" id="onboardingFinishBtn" class="btn" style="margin-top:8px;">Skip, go to the ${esc(nounFor(prefSpeciesKeys(), true))}</button>`;
       // Either button finishes setup; the main one then opens the tutorial,
       // which links back to the app when they're done.
       const finish = async (toTutorial) => {
@@ -2063,31 +2303,132 @@
       const raw = document.getElementById(inputId).value.trim();
       if (!raw) continue;
       const m = Number(raw);
-      if (!Number.isInteger(m) || m < 1 || m > 179) return { error: 'Walk alerts must be whole minutes from 1 to 179.' };
+      if (!Number.isInteger(m) || m < 1 || m > 179) return { error: 'Length alerts must be whole minutes from 1 to 179.' };
       minutes.push(m);
     }
     return { minutes };
   }
+  const speciesPrefPicker = document.getElementById('speciesPrefPicker');
+  // The usual-activity chips follow the species picked: a cat-only volunteer
+  // is offered only what cats can do.
+  const activityKeysForPref = (pref) => [...new Set((pref === 'both' ? Object.keys(speciesTable()) : [pref])
+    .flatMap((k) => speciesInfo(k).activities))];
+  function fillDefaultActivityPicker(pref) {
+    const keys = activityKeysForPref(pref);
+    const current = defaultActivityPicker.dataset.selected || usualActivity();
+    const usual = keys.includes(current) ? current : keys[0];
+    defaultActivityPicker.innerHTML = activityChipsHtml(usual, keys);
+    defaultActivityPicker.dataset.selected = usual;
+  }
+  // Levels only decide dogs: hidden for cats only, marked "(dogs)" for both.
+  function syncLevelSection(pref) {
+    const keys = pref === 'both' ? Object.keys(speciesTable()) : [pref];
+    const levels = keys.some((k) => speciesInfo(k).levelRules);
+    const mixed = levels && keys.some((k) => !speciesInfo(k).levelRules);
+    document.getElementById('levelSection').classList.toggle('hidden', !levels);
+    document.getElementById('levelDogsOnly').classList.toggle('hidden', !mixed);
+    document.getElementById('levelBothNote').classList.toggle('hidden', !mixed);
+  }
+  // Every control in Settings saves itself the moment it's changed -- no
+  // Save button to remember to tap, and switching species (the one people
+  // change most, and expect to see reflected right away) takes effect on
+  // the screen behind the sheet immediately too.
+  wireSpeciesPrefPicker(speciesPrefPicker, async (pref) => {
+    fillDefaultActivityPicker(pref);
+    syncLevelSection(pref);
+    try {
+      const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ speciesPref: pref }) });
+      state.currentUser.speciesPref = updated.speciesPref;
+      applyTermsToPage();
+      if (state.tab === 'available' || (state.tab === 'walk' && ['idle', 'scanning'].includes(state.walk.phase))) topbarTitle.textContent = TAB_TITLES[state.tab];
+      render();
+    } catch (err) { toast(err.message, 'error'); }
+  });
   const defaultActivityPicker = document.getElementById('defaultActivityPicker');
-  defaultActivityPicker.addEventListener('click', (e) => {
+  defaultActivityPicker.addEventListener('click', async (e) => {
     const chip = e.target.closest('[data-activity]');
     if (!chip) return;
     defaultActivityPicker.dataset.selected = chip.dataset.activity;
     defaultActivityPicker.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+    try {
+      const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ defaultActivity: chip.dataset.activity }) });
+      state.currentUser.defaultActivity = updated.defaultActivity;
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  document.getElementById('desktopViewSelect').addEventListener('change', async (e) => {
+    try {
+      await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ desktopView: e.target.value }) });
+      const desk = state.currentUser.desktop;
+      if (desk) { desk.start = e.target.value; desk.chosen = e.target.value; }
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  // Notification + favorite + Updates-feed toggles: push-dependent ones
+  // (isPush) also try to turn push on the moment they're switched on, same
+  // as the old Save button did, just per-toggle instead of all at once.
+  const PUSH_DEPENDENT_TOGGLES = [
+    ['settingsPrefShelterAlerts', 'shelter_alerts'],
+    ['settingsPrefNewSignups', 'new_signups'],
+    ['settingsPrefAdopted', 'adopted_walked_dog'],
+    ['settingsPrefWalkStarted', 'walk_started'],
+    ...FAVORITE_PREFS
+  ];
+  const FEED_TOGGLES = [
+    ['settingsShowNewDog', 'show_new_dog'],
+    ['settingsShowAdopted', 'show_adopted'],
+    ['settingsShowReturned', 'show_returned']
+  ];
+  function wireAutosaveToggle(inputId, key, isPush) {
+    const el = document.getElementById(inputId);
+    el.addEventListener('change', async () => {
+      const enabled = el.checked;
+      try {
+        await saveNotificationPref(key, enabled, true);
+        if (isPush && enabled) {
+          const ok = await ensurePushSubscribed();
+          if (!ok) toast(`Saved, but notifications aren't working on this device yet. ${pushProblemMessage()}`, 'error');
+        } else if (!isPush) {
+          await refreshUpdatesTabVisibility();
+        }
+      } catch (err) {
+        el.checked = !enabled;
+        toast(err.message, 'error');
+      }
+    });
+  }
+  PUSH_DEPENDENT_TOGGLES.forEach(([inputId, key]) => wireAutosaveToggle(inputId, key, true));
+  FEED_TOGGLES.forEach(([inputId, key]) => wireAutosaveToggle(inputId, key, false));
+  WALK_ALERT_INPUTS.forEach((inputId) => {
+    document.getElementById(inputId).addEventListener('change', async () => {
+      const result = readWalkAlerts();
+      if (result.error) { toast(result.error, 'error'); return; }
+      try {
+        await api(`/api/users/${state.currentUser.id}/walk-alerts`, { method: 'PUT', body: JSON.stringify({ minutes: result.minutes }) });
+        if (result.minutes.length) {
+          const ok = await ensurePushSubscribed();
+          if (!ok) toast(`Saved, but notifications aren't working on this device yet. ${pushProblemMessage()}`, 'error');
+        }
+      } catch (err) { toast(err.message, 'error'); }
+    });
   });
   document.getElementById('settingsBtn').addEventListener('click', async () => {
     const levels = await loadExperienceLevels();
     document.getElementById('experienceLevelPicker').innerHTML = levelPickerHtml(levels, state.currentUser.experienceLevel);
-    const usual = usualActivity();
-    defaultActivityPicker.innerHTML = activityChipsHtml(usual);
-    defaultActivityPicker.dataset.selected = usual;
+    speciesPrefPicker.innerHTML = speciesPrefPickerHtml(speciesPref());
+    speciesPrefPicker.dataset.selected = speciesPref();
+    syncLevelSection(speciesPref());
+    defaultActivityPicker.dataset.selected = usualActivity();
+    fillDefaultActivityPicker(speciesPref());
     document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((b) => {
           b.classList.toggle('primary', b === btn);
           b.querySelector('.small').classList.toggle('muted', b !== btn);
         });
         document.getElementById('experienceLevelPicker').dataset.selected = btn.dataset.level;
+        try {
+          const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ experienceLevel: btn.dataset.level }) });
+          state.currentUser.experienceLevel = updated.experienceLevel;
+        } catch (err) { toast(err.message, 'error'); }
       });
     });
     document.getElementById('experienceLevelPicker').dataset.selected = state.currentUser.experienceLevel || '';
@@ -2107,6 +2448,7 @@
     }
     document.getElementById('refreshStatus').textContent = '';
     document.getElementById('refreshDataSection').classList.toggle('hidden', !(state.currentUser.isStaff || state.currentUser.isPrivileged));
+    fillDesktopViewSetting();
     try {
       const { prefs } = await api(`/api/users/${state.currentUser.id}/notification-prefs`);
       document.getElementById('settingsPrefShelterAlerts').checked = prefs.shelter_alerts !== false;
@@ -2126,6 +2468,20 @@
     openSheet(settingsSheet, 'settings');
   });
   document.getElementById('closeSettingsBtn').addEventListener('click', () => closeSheet(settingsSheet));
+
+  // "On a computer, open": which page the site starts on at a computer
+  // (desktopViews.js on the server). Only shown on a computer, or to staff,
+  // who have more than one desktop page to choose from anyway.
+  const onPhone = /Mobi|Android|iPhone|iPod|Windows Phone/i.test(navigator.userAgent);
+  function fillDesktopViewSetting() {
+    const desk = state.currentUser.desktop;
+    const section = document.getElementById('desktopViewSection');
+    const show = !!desk && desk.views.length > 1 && (!onPhone || state.currentUser.isStaff);
+    section.classList.toggle('hidden', !show);
+    if (!show) return;
+    const select = document.getElementById('desktopViewSelect');
+    select.innerHTML = desk.views.map((v) => `<option value="${esc(v.key)}"${v.key === desk.start ? ' selected' : ''}>${esc(v.label)}</option>`).join('');
+  }
   // Book icon in the top bar. Already in the Guide? Just go back to its list.
   document.getElementById('guideBtn').addEventListener('click', () => {
     if (state.tab === 'guide') {
@@ -2138,50 +2494,6 @@
       openGuide();
     }
   });
-  document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
-    const key = document.getElementById('experienceLevelPicker').dataset.selected;
-    if (!key) { toast('Pick an experience level first.', 'error'); return; }
-    const walkAlerts = readWalkAlerts();
-    if (walkAlerts.error) { toast(walkAlerts.error, 'error'); return; }
-    const saveBtn = document.getElementById('saveSettingsBtn');
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving…';
-    try {
-      const updated = await api(`/api/users/${state.currentUser.id}/settings`, {
-        method: 'PUT',
-        body: JSON.stringify({ experienceLevel: key, defaultActivity: defaultActivityPicker.dataset.selected || 'walk' })
-      });
-      state.currentUser.experienceLevel = updated.experienceLevel;
-      state.currentUser.defaultActivity = updated.defaultActivity;
-      const wantsAdopted = document.getElementById('settingsPrefAdopted').checked;
-      const wantsWalkStarted = document.getElementById('settingsPrefWalkStarted').checked;
-      const wantsAlerts = document.getElementById('settingsPrefShelterAlerts').checked;
-      const wantsSignups = state.currentUser.isPrivileged && document.getElementById('settingsPrefNewSignups').checked;
-      await saveNotificationPref('shelter_alerts', wantsAlerts, true);
-      if (state.currentUser.isPrivileged) await saveNotificationPref('new_signups', wantsSignups, true);
-      await saveNotificationPref('adopted_walked_dog', wantsAdopted, true);
-      await saveNotificationPref('walk_started', wantsWalkStarted, true);
-      const favoritePrefs = FAVORITE_PREFS.map(([inputId, key]) => [key, document.getElementById(inputId).checked]);
-      for (const [key, on] of favoritePrefs) await saveNotificationPref(key, on, true);
-      await api(`/api/users/${state.currentUser.id}/walk-alerts`, { method: 'PUT', body: JSON.stringify({ minutes: walkAlerts.minutes }) });
-      let pushProblem = false;
-      if (wantsAlerts || wantsSignups || wantsAdopted || wantsWalkStarted || favoritePrefs.some(([, on]) => on) || walkAlerts.minutes.length) pushProblem = !(await ensurePushSubscribed());
-      await saveNotificationPref('show_new_dog', document.getElementById('settingsShowNewDog').checked, true);
-      await saveNotificationPref('show_adopted', document.getElementById('settingsShowAdopted').checked, true);
-      await saveNotificationPref('show_returned', document.getElementById('settingsShowReturned').checked, true);
-      closeSheet(settingsSheet);
-      await refreshUpdatesTabVisibility();
-      render();
-      if (pushProblem) appAlert(`Your settings were saved, but notifications are not working on this device yet. ${pushProblemMessage()}`, 'Saved');
-      else toast('Settings saved');
-    } catch (err) {
-      appAlert(`Your settings were not saved. ${err.message}`, 'Not saved');
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.textContent = 'Save';
-    }
-  });
-
   document.getElementById('refreshDataBtn').addEventListener('click', async () => {
     const statusEl = document.getElementById('refreshStatus');
     const btn = document.getElementById('refreshDataBtn');
@@ -2189,7 +2501,12 @@
     statusEl.textContent = 'Refreshing from pets.wake.gov. This can take a minute.';
     try {
       const result = await api('/api/scrape/run', { method: 'POST', timeout: 180000 });
-      statusEl.textContent = result.ok ? `Done. ${result.count} dogs currently listed.` : `Failed: ${result.error}`;
+      const counts = result.counts
+        ? Object.entries(result.counts).map(([k, n]) => `${n} ${speciesInfo(k).plural.toLowerCase()}`).join(' and ')
+        : `${result.count} dogs`;
+      statusEl.textContent = result.counts
+        ? `${result.ok ? 'Done' : `Partly done (${result.error})`}. ${counts} currently listed.`
+        : `Failed: ${result.error}`;
       render();
     } catch (err) {
       statusEl.textContent = `Failed: ${err.message}`;
@@ -2202,11 +2519,11 @@
   const profileSheet = document.getElementById('profileSheet');
   const profileSheetInner = document.getElementById('profileSheetInner');
 
-  // Tapping the dimmed backdrop closes without saving, same as the X/Cancel
-  // button -- for Settings specifically, that means any changes made before
-  // tapping outside are simply discarded (only the Save button persists
-  // them). Guarded on e.target === the overlay itself so clicks inside the
-  // actual panel never bubble into an accidental close.
+  // Tapping the dimmed backdrop closes the sheet, same as the X/Done button.
+  // Settings has no discard-on-close behavior to worry about: every control
+  // in it saves itself the moment it's changed. Guarded on e.target === the
+  // overlay itself so clicks inside the actual panel never bubble into an
+  // accidental close.
   [settingsSheet, profileSheet, document.getElementById('accountSheet')].forEach((el) => {
     el.addEventListener('click', (e) => { if (e.target === el) closeSheet(el); });
   });
@@ -2240,20 +2557,25 @@
       const w = (walks || []).find((x) => String(x.id) === String(walkId));
       if (w) w.notes = body;
     };
+    // A note left at the end of a session is tagged by what the session
+    // actually was -- play group gets its own label instead of being folded
+    // into "walk", which was confusing next to the dog's separate play group
+    // notes.
     const items = [
       ...data.sharedTips.map((t) => ({ kind: 'tip', id: t.id, body: t.body, when: t.createdAt, updatedAt: t.updatedAt })),
-      ...(walks || []).filter((w) => w.notes && w.ended_at).map((w) => ({ kind: 'walk', id: w.id, body: w.notes, when: w.started_at }))
+      ...(walks || []).filter((w) => w.notes && w.ended_at).map((w) => ({ kind: w.activity === 'playgroup' ? 'playgroup' : 'walk', id: w.id, body: w.notes, when: w.started_at }))
     ].sort((a, b) => (a.when < b.when ? 1 : -1));
-    const tipRows = items.map((n) => `<li class="tip-item${n.kind === 'walk' ? ' tip-item-walk' : ''}" ${n.kind === 'walk' ? 'data-walk' : 'data-tip'}="${n.id}">
+    const isWalkKind = (kind) => kind === 'walk' || kind === 'playgroup';
+    const tipRows = items.map((n) => `<li class="tip-item${isWalkKind(n.kind) ? ' tip-item-walk' : ''}" ${isWalkKind(n.kind) ? 'data-walk' : 'data-tip'}="${n.id}">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${esc(n.body)} ${n.kind === 'walk' ? `<span class="tip-date">from a walk · ${fmtNoteDate(n.when)}</span>` : noteDateHtml(n.when, n.updatedAt)}</span>
+           <span class="tip-text">${linkifyYouTube(esc(n.body))} ${isWalkKind(n.kind) ? `<span class="tip-date">from ${n.kind === 'playgroup' ? 'play group' : aNoun(termsOf(dog))} · ${fmtNoteDate(n.when)}</span>` : noteDateHtml(n.when, n.updatedAt)}</span>
            <span class="tip-item-actions">
              <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
              <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
            </span>
          </li>`).join('');
     container.innerHTML = `
-      <label class="small muted" style="display:block;margin-top:12px;">Tips <span class="badge neutral">Anyone can edit or delete</span></label>
+      <label class="small muted notes-label">Tips <span class="badge neutral">Anyone can edit or delete</span></label>
       <ul class="tip-list">
         ${tipRows}
       </ul>
@@ -2261,12 +2583,12 @@
         <input type="text" class="tip-input" maxlength="1000" placeholder="Add a tip about ${esc(dog.name)}…" />
         <button type="button" class="btn small-btn primary tip-add-btn">Add</button>
       </div>
-      <p class="small muted" style="margin:4px 0 0;">Anonymous - can be edited or deleted by anyone.</p>
-      <label class="small muted" style="display:block;margin-top:14px;">My private notes <span class="badge neutral">Only you can see this</span></label>
+      <p class="small muted tip-help">Anonymous - can be edited or deleted by anyone.</p>
+      <label class="small muted notes-label">My private notes <span class="badge neutral">Only you can see this</span></label>
       <ul class="tip-list">
         ${data.privateNote ? `<li class="tip-item" data-private="1">
              <span class="tip-bullet">•</span>
-             <span class="tip-text">${esc(data.privateNote.body)} <span class="tip-date">updated ${fmtNoteDate(data.privateNote.updatedAt)}</span></span>
+             <span class="tip-text">${linkifyYouTube(esc(data.privateNote.body))} <span class="tip-date">updated ${fmtNoteDate(data.privateNote.updatedAt)}</span></span>
              <span class="tip-item-actions">
                <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit your private note">✎</button>
                <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete your private note">✕</button>
@@ -2297,7 +2619,7 @@
       const isWalk = li.dataset.walk !== undefined;
       const id = isWalk ? li.dataset.walk : li.dataset.tip;
       const url = `/api/dogs/${dog.id}/${isWalk ? 'walk-notes' : 'notes'}/${id}`;
-      const current = (items.find((n) => n.kind === (isWalk ? 'walk' : 'tip') && String(n.id) === id) || {}).body || '';
+      const current = (items.find((n) => (isWalk ? isWalkKind(n.kind) : n.kind === 'tip') && String(n.id) === id) || {}).body || '';
       li.querySelector('[data-act="edit"]').addEventListener('click', () => {
         li.classList.add('editing');
         li.innerHTML = `
@@ -2324,7 +2646,7 @@
         li.querySelector('[data-act="cancel"]').addEventListener('click', reload);
       });
       li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
-        if (!(await appConfirm('Delete this tip? Every walker will stop seeing it.', { title: 'Delete tip', confirmText: 'Delete', danger: true }))) return;
+        if (!(await appConfirm('Delete this tip? Every volunteer will stop seeing it.', { title: 'Delete tip', confirmText: 'Delete', danger: true }))) return;
         try { await api(url, { method: 'DELETE' }); toast('Tip deleted'); if (isWalk) patchWalkNote(id, null); reload(); }
         catch (err) { toast(err.message, 'error'); }
       });
@@ -2392,7 +2714,7 @@
       badgesToggle.addEventListener('click', () => breakdown.classList.toggle('hidden'));
     }
     const statsBtn = document.getElementById('profileStatsBtn');
-    if (statsBtn) statsBtn.addEventListener('click', () => showDogStatsPopup(dog.id, dog.name));
+    if (statsBtn) statsBtn.addEventListener('click', () => showDogStatsPopup(dog.id, dog.name, dog.species));
     const editBtn = document.getElementById('profileEditBtn');
     if (editBtn) {
       editBtn.addEventListener('click', async () => {
@@ -2412,12 +2734,12 @@
 
   // Every way into a dog's profile (tapping its photo or name on any screen)
   // ends with the same Edit button, so editing a dog is always one tap away.
-  // Same label rules as the cards' own Walk / Edit button.
+  // Same label rules as the cards' own Start / Edit button.
   function profileEditButtonHtml(dog) {
     const activeId = activeWalkDogId();
-    let label = dog.tooYoung || dog.eligible === false ? '✎ Edit' : '▶ Walk / Edit';
+    let label = dog.tooYoung || dog.eligible === false ? '✎ Edit' : '▶ Start / Edit';
     let disabled = '';
-    if (activeId === String(dog.id)) label = '↩ Back to your walk';
+    if (activeId === String(dog.id)) label = `↩ Back to your ${activityInfo(state.walk.activity).noun}`;
     else if (activeId) label = '✎ Edit';
     else if (onConfirmScreenFor(dog.id)) label = '✎ Edit';
     return `<button type="button" id="profileEditBtn" class="btn primary" style="margin:6px 0 10px;"${disabled}>${label}</button>`;
@@ -2426,8 +2748,9 @@
   // Personal history only: how often *this* user has walked the dog.
   function walksTogetherText(dog) {
     const n = dog.myWalkCount || 0;
-    if (!n) return 'No walks together recorded';
-    return `${n}× walk${n === 1 ? '' : 's'} together · last on ${fmtDate(dog.myLastWalkedAt)}`;
+    const t = termsOf(dog);
+    if (!n) return `No ${t.nouns} together recorded`;
+    return `${n}× ${n === 1 ? t.noun : t.nouns} together · last on ${fmtDate(dog.myLastWalkedAt)}`;
   }
 
   function renderDogProfile(dog, walks) {
@@ -2453,14 +2776,17 @@
       ${dog.summary ? `<div class="dog-summary">${sanitizeHtml(dog.summary)}</div>` : ''}
       <p class="small" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <a href="${esc(dog.adoptUrl)}" target="_blank" rel="noopener">View on pets.wake.gov →</a>
+        ${dog.videoUrl ? `<a href="${esc(dog.videoUrl)}" target="_blank" rel="noopener noreferrer">▶ Watch on YouTube</a>` : ''}
         <button type="button" class="link-btn dog-qr-btn" data-dog-id="${dog.id}" data-dog-name="${esc(dog.name)}">▦ Show QR code</button>
       </p>
       <div class="row" style="margin-top:4px;">
-        <button type="button" id="profileStatsBtn" class="btn small-btn">📊 Our walks together</button>
-        <button type="button" class="btn small-btn walk-history-btn" data-dog-id="${dog.id}">🕘 Walk history</button>
+        <button type="button" id="profileStatsBtn" class="btn small-btn">📊 Our ${termsOf(dog).nouns} together</button>
+        <button type="button" class="btn small-btn walk-history-btn" data-dog-id="${dog.id}">🕘 ${capFirst(termsOf(dog).noun)} history</button>
       </div>
+      ${showsPlaygroup(dog) ? `<div class="row" style="margin-top:6px;">${playgroupButtonHtml(dog)}</div>` : ''}
       <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
-      <p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>
+      ${speciesOf(dog).stickers ? '<p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>' : ''}
+      ${(window.ShelterWalkModules.profileSections || []).map((fn) => { try { return fn(dog) || ''; } catch (err) { console.error('[modules] profile section failed:', err); return ''; } }).join('')}
     `;
   }
 
@@ -2481,9 +2807,288 @@
     }
   }
 
+  // ---------- Play group notes ----------
+  // Dated entries on how a dog does in play group (playgroupNotes.js). They
+  // run a few sentences each, so they get their own roomy popup instead of a
+  // spot on the profile: walkers who don't run play group only ever see one
+  // button. Typing "@" in the editor tags another dog; it's saved as @[id],
+  // shown as the dog's current name, and the note also lists under
+  // "Mentioned in other dogs' notes" on the tagged dog.
+
+  // On every dog (owner, 2026-11-06), not just the ones who can join.
+  const showsPlaygroup = (dog) => speciesOf(dog).activities.includes('playgroup');
+  const playgroupButtonLabel = (n, short) => `🥎 ${short ? 'Play group' : 'Play group notes'}${n ? ` (${n})` : ''}`;
+  // The prominent action on the live walk screen while a play group session
+  // is running: not "browse notes" but "write one for what's happening right
+  // now" -- same editor (showPlaygroupNotes), defaulting to today's date.
+  const playgroupSessionButtonLabel = (n) => `📝 Take notes for this session${n ? ` (${n} already)` : ''}`;
+  function playgroupButtonHtml(dog) {
+    if (!showsPlaygroup(dog)) return '';
+    return `<button type="button" class="btn small-btn playgroup-notes-btn" data-dog-id="${dog.id}">${playgroupButtonLabel((dog.playgroupCounts || {}).notes)}</button>`;
+  }
+
+  // Dogs that can be tagged: every dog that can go to play group, including
+  // ones currently in foster -- even once the shelter's own listing drops
+  // them, volunteers still write play group notes about a foster dog (an
+  // earlier session, a meet-up). `all=true` is the only way to see those;
+  // a delisted dog that's NOT in foster (adopted, transferred) is left out.
+  let pgDogsPromise = null;
+  function playgroupDogList() {
+    const canTag = (d) => speciesOf(d).activities.includes('playgroup') && (d.stillListed || d.location === 'In Foster');
+    if (!pgDogsPromise) {
+      pgDogsPromise = api('/api/dogs?all=true').then((d) => d.dogs.filter(canTag))
+        .catch(() => { pgDogsPromise = null; return []; });
+    }
+    return pgDogsPromise;
+  }
+
+  // Tagging, tag display and the date row are shared with the desk page
+  // (pg-tags.js).
+  const { pickLabel: pgPickLabel, toEditable: pgToEditable, bodyHtml: pgBodyHtml, bodySnippet: pgBodySnippet, fmtDate: fmtPgDate, linkifyYouTube } = window.PgTags;
+
+  // Backfilling a run of notes from the same day: a new note starts on the
+  // date last picked (for an hour), not on today.
+  let pgLastDate = null;
+  const pgDefaultDate = () => (pgLastDate && Date.now() - pgLastDate.at < 3600000 ? pgLastDate.key : todayKey());
+
+  function pgEditorHtml({ text = '', date = pgDefaultDate(), signed = false, showDate = true, showSign = true, placeholder = 'How did play group go? Type @ to tag another dog.' } = {}) {
+    return `<div class="pg-editor">
+      ${showDate ? window.PgTags.dateRowHtml(date) : ''}
+      ${window.PgTags.mdToolbarHtml()}
+      <div class="pg-text-wrap">
+        <div class="pg-text" data-placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}">${esc(text)}</div>
+        <div class="pg-suggest hidden" role="listbox" aria-label="Dogs to tag"></div>
+      </div>
+      <div class="pg-preview"></div>
+      <p class="small muted pg-hint">Type @ and a name to tag a dog, or just type their name and tap the highlighted suggestion. The note shows on their play group notes too. Use the buttons above for bold, italic or a list.</p>
+      ${showSign ? `<label class="pg-sign"><input type="checkbox" class="pg-signed"${signed ? ' checked' : ''} /> Sign with my name <span class="small muted">(otherwise anonymous)</span></label>` : ''}
+    </div>`;
+  }
+
+  // Wires the @ picker, auto-tag suggestions, date row and markdown
+  // toolbar/preview of one pgEditorHtml. The box grows with its content on
+  // its own now (it's a contenteditable div, not a textarea).
+  function wirePgEditor(root, { picks = new Map(), ownId = null } = {}) {
+    const ta = root.querySelector('.pg-text');
+    const tags = window.PgTags.wireTagPicker(ta, root.querySelector('.pg-suggest'), { getDogs: playgroupDogList, picks, ownId });
+    window.PgTags.wireAutoTagger(ta, { getDogs: playgroupDogList, ownId, picks });
+    window.PgTags.wireDateRow(root);
+    window.PgTags.wireMarkdownTools(root, ta);
+    return {
+      body: tags.body,
+      date: () => (root.querySelector('.pg-date') || {}).value || '',
+      signed: () => { const c = root.querySelector('.pg-signed'); return c ? c.checked : undefined; },
+      focus: () => ta.focus()
+    };
+  }
+
+  // Writing or editing a note takes the whole screen: the box sits at the top
+  // and fills the space above the keyboard (visualViewport shrinks when the
+  // keyboard opens), with Save and Cancel up top where it can't cover them.
+  const pgEditorOverlay = document.getElementById('pgEditorOverlay');
+  const pgEditorInner = document.getElementById('pgEditorInner');
+  let pgEditorUnfit = null;
+  function openPgEditor({ title, text = '', picks, ownId, date, signed = false, showSign = true, placeholder, emptyError, save }) {
+    pgEditorInner.innerHTML = `
+      <div class="pg-fs-bar">
+        <button type="button" class="btn small-btn" data-act="cancel">Cancel</button>
+        <span class="pg-fs-title">${esc(title)}</span>
+        <button type="button" class="btn small-btn primary" data-act="save">Save</button>
+      </div>
+      ${pgEditorHtml({ text, date, signed, showSign, placeholder })}`;
+    const editor = wirePgEditor(pgEditorInner, { picks, ownId });
+    const fit = () => {
+      const vv = window.visualViewport;
+      pgEditorInner.style.height = `${vv ? vv.height : window.innerHeight}px`;
+      pgEditorInner.style.transform = vv && vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
+    };
+    if (pgEditorUnfit) pgEditorUnfit();
+    fit();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', fit);
+      window.visualViewport.addEventListener('scroll', fit);
+      pgEditorUnfit = () => {
+        window.visualViewport.removeEventListener('resize', fit);
+        window.visualViewport.removeEventListener('scroll', fit);
+        pgEditorUnfit = null;
+      };
+    }
+    openOverlay(pgEditorOverlay);
+    editor.focus();
+    const close = async () => { if (pgEditorUnfit) pgEditorUnfit(); await closeOverlayAwait(pgEditorOverlay); };
+    pgEditorInner.querySelector('[data-act="cancel"]').addEventListener('click', close);
+    pgEditorInner.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
+      const body = editor.body();
+      if (!body) {
+        if (emptyError) toast(emptyError, 'error');
+        editor.focus();
+        return;
+      }
+      e.currentTarget.disabled = true;
+      try {
+        const v = { body, noteDate: editor.date() };
+        if (v.noteDate && v.noteDate !== todayKey()) pgLastDate = { key: v.noteDate, at: Date.now() };
+        else pgLastDate = null;
+        const sig = editor.signed();
+        if (sig !== undefined) v.signed = sig;
+        await save(v);
+        await close();
+      } catch (err) {
+        toast(err.message, 'error');
+        e.currentTarget.disabled = false;
+      }
+    });
+  }
+
+  const pgPopup = document.getElementById('playgroupPopup');
+  const pgContent = document.getElementById('playgroupPopupContent');
+  // Dogs passed through by tapping tags, for the back link.
+  let pgTrail = [];
+  async function showPlaygroupNotes(dogId, { keepTrail = false } = {}) {
+    if (!keepTrail) pgTrail = [];
+    pgContent.innerHTML = '<h3 style="margin-top:0;">🥎 Play group notes</h3><p class="muted small center">Loading…</p>';
+    openOverlay(pgPopup);
+    pgPopup.querySelector('.popup-card').scrollTop = 0;
+    try {
+      renderPlaygroupNotes(String(dogId), await api(`/api/dogs/${dogId}/playgroup-notes`));
+    } catch (err) {
+      pgContent.innerHTML = `<h3 style="margin-top:0;">🥎 Play group notes</h3><p class="small muted">Couldn't load the notes: ${esc(err.message)}</p>`;
+    }
+  }
+
+  function renderPlaygroupNotes(dogId, data) {
+    const dog = data.dogs[dogId] || { id: dogId, name: 'This dog' };
+    const reload = () => showPlaygroupNotes(dogId, { keepTrail: true });
+    const back = pgTrail[pgTrail.length - 1];
+    // Collapsed to a short preview, with "Read more" swapping in the full,
+    // already-rendered note (nothing re-fetched): every mention under another
+    // dog's notes (a dog tagged often would otherwise turn this list into a
+    // wall of other dogs' full entries), and every one of THIS dog's own
+    // notes but the most recent -- notes run long, and on a phone a dog with
+    // a real history shouldn't turn into endless scrolling just to add one.
+    const entryBodyHtml = (n, collapse) => {
+      if (!collapse) return `<div class="pg-entry-body">${pgBodyHtml(n.body, data.dogs)}</div>`;
+      const snippet = pgBodySnippet(n.body, data.dogs);
+      if (!snippet.truncated) return `<div class="pg-entry-body">${pgBodyHtml(n.body, data.dogs)}</div>`;
+      return `<div class="pg-entry-body pg-entry-snippet">${esc(snippet.text)}</div>
+        <div class="pg-entry-body pg-entry-full hidden">${pgBodyHtml(n.body, data.dogs)}</div>
+        <button type="button" class="link-btn pg-expand">Read more</button>`;
+    };
+    const entryHtml = (n, fromDog, collapse) => `<li class="pg-entry" data-note="${n.id}">
+        <div class="pg-entry-head">
+          ${!fromDog && n.canEdit
+    ? `<label class="pg-entry-date pg-entry-date-edit" title="Change the date">${fmtPgDate(n.noteDate)} <span aria-hidden="true">📅</span><input type="date" class="pg-redate" value="${n.noteDate}" max="${todayKey()}" aria-label="Change this note's date" /></label>`
+    : `<span class="pg-entry-date">${fmtPgDate(n.noteDate)}</span>`}
+          ${fromDog ? `<span class="small muted">in <button type="button" class="pg-tag" data-pg-dog="${fromDog.id}">${esc(fromDog.name)}</button>'s notes</span>` : ''}
+          ${!fromDog && n.canEdit ? `<span class="tip-item-actions">
+            <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this note">✎</button>
+            <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this note">✕</button>
+          </span>` : ''}
+        </div>
+        ${entryBodyHtml(n, collapse)}
+        ${n.author ? `<div class="pg-entry-author">${esc(n.author)}</div>` : ''}
+      </li>`;
+    pgContent.innerHTML = `
+      ${back ? `<button type="button" class="link-btn pg-back">← Back to ${esc(back.name)}</button>` : ''}
+      <div class="row" style="align-items:center;gap:8px;margin-top:0;">
+        ${dog.photoUrl ? `<img loading="lazy" decoding="async" class="dog-photo small" src="${esc(dog.photoUrl)}" alt="" />` : ''}
+        <h3 style="margin:0;">🥎 ${esc(dog.name)}'s play group notes</h3>
+      </div>
+      ${dog.stillListed === false ? '<p class="small muted" style="margin-top:-6px;">No longer listed at the shelter.</p>' : ''}
+      <button type="button" class="btn primary pg-add-btn">＋ Add a note</button>
+      ${data.notes.length ? `<ul class="pg-list">${data.notes.map((n, i) => entryHtml(n, null, i > 0)).join('')}</ul>`
+        : '<p class="small muted">No play group notes yet. Paste in earlier notes or add one after play group.</p>'}
+      <p class="small muted pg-desk-link">On a computer? <a href="/playgroup?dog=${dogId}" target="_blank" rel="noopener">Open the play group desk</a> to type up and export notes.</p>
+      ${data.mentions.length ? `<h4 class="pg-section">Mentioned in other dogs' notes (${data.mentions.length})</h4>
+        <ul class="pg-list">${data.mentions.map((n) => entryHtml(n, data.dogs[n.dogId] || { id: n.dogId, name: 'another dog' }, true)).join('')}</ul>` : ''}`;
+
+    // Keep the button on the profile (and the live walk screen's own
+    // "take notes" button, which keeps its session-specific wording) underneath in step.
+    document.querySelectorAll(`.playgroup-notes-btn[data-dog-id="${dogId}"]`).forEach((b) => {
+      b.textContent = 'session' in b.dataset ? playgroupSessionButtonLabel(data.notes.length) : playgroupButtonLabel(data.notes.length, 'short' in b.dataset);
+    });
+
+    if (back) {
+      pgContent.querySelector('.pg-back').addEventListener('click', () => {
+        pgTrail.pop();
+        showPlaygroupNotes(back.id, { keepTrail: true });
+      });
+    }
+    pgContent.querySelectorAll('[data-pg-dog]').forEach((t) => {
+      t.addEventListener('click', () => {
+        if (t.dataset.pgDog === dogId) return;
+        pgTrail.push({ id: dogId, name: dog.name });
+        showPlaygroupNotes(t.dataset.pgDog, { keepTrail: true });
+      });
+    });
+    pgContent.querySelectorAll('.pg-expand').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const li = btn.closest('.pg-entry');
+        const expanding = li.querySelector('.pg-entry-full').classList.toggle('hidden') === false;
+        li.querySelector('.pg-entry-snippet').classList.toggle('hidden', expanding);
+        btn.textContent = expanding ? 'Show less' : 'Read more';
+      });
+    });
+
+    pgContent.querySelector('.pg-add-btn').addEventListener('click', () => openPgEditor({
+      title: `${dog.name}: new note`,
+      ownId: dogId,
+      placeholder: `How did ${dog.name} do? Type @ to tag a dog they played with.`,
+      save: async (v) => {
+        await api(`/api/dogs/${dogId}/playgroup-notes`, { method: 'POST', body: JSON.stringify(v) });
+        toast('Play group note saved');
+        reload();
+      }
+    }));
+
+    pgContent.querySelectorAll('.pg-list .pg-entry').forEach((li) => {
+      const n = data.notes.find((x) => String(x.id) === li.dataset.note);
+      if (!n) return; // a mention: read-only here, edited on its own dog
+      const editBtn = li.querySelector('[data-act="edit"]');
+      if (!editBtn) return;
+      // Changing just the date: pick one and it's saved.
+      li.querySelector('.pg-redate').addEventListener('click', (e) => { try { e.target.showPicker(); } catch (err) { /* the browser opens its own */ } });
+      li.querySelector('.pg-redate').addEventListener('change', async (e) => {
+        const noteDate = e.target.value;
+        if (!noteDate || noteDate === n.noteDate) return;
+        try {
+          await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'PUT', body: JSON.stringify({ body: n.body, noteDate }) });
+          toast(`Moved to ${fmtPgDate(noteDate)}`);
+          reload();
+        } catch (err) { toast(err.message, 'error'); e.target.value = n.noteDate; }
+      });
+      editBtn.addEventListener('click', () => {
+        const { text, picks } = pgToEditable(n.body, data.dogs);
+        openPgEditor({
+          title: `${dog.name}: edit note`,
+          text, picks, ownId: dogId, date: n.noteDate, signed: n.signed, showSign: n.mine,
+          emptyError: "A note can't be empty. Delete it instead.",
+          save: async (v) => {
+            await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'PUT', body: JSON.stringify(v) });
+            toast('Note updated');
+            reload();
+          }
+        });
+      });
+      li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
+        if (!(await appConfirm(`Delete this play group note from ${fmtPgDate(n.noteDate)}?`, { title: 'Delete note', confirmText: 'Delete', danger: true }))) return;
+        try { await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'DELETE' }); toast('Note deleted'); reload(); }
+        catch (err) { toast(err.message, 'error'); }
+      });
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.playgroup-notes-btn');
+    if (btn) showPlaygroupNotes(btn.dataset.dogId);
+  });
+  document.getElementById('closePlaygroupPopupBtn').addEventListener('click', () => closeOverlay(pgPopup));
+  pgPopup.addEventListener('click', (e) => { if (e.target === pgPopup) closeOverlay(pgPopup); });
+
   // Reuses the same generic info popup as the marker-meaning breakdown --
   // one modal, two different content builders.
-  async function showDogStatsPopup(dogId, dogName) {
+  async function showDogStatsPopup(dogId, dogName, species) {
+    const t = termsOf({ species });
     const popup = document.getElementById('markerInfoPopup');
     const content = document.getElementById('markerInfoPopupContent');
     if (!popup || !content) return;
@@ -2495,71 +3100,148 @@
       const everyone = stats.everyone;
       const happyLine = mine.count > 0
         ? `<p class="small">You've spent <strong>${fmtDuration(mine.totalSeconds)}</strong> making ${esc(dogName)}'s day better! 🐾</p>`
-        : `<p class="small muted">No walks together recorded with ${esc(dogName)}.</p>`;
+        : `<p class="small muted">No ${t.nouns} together recorded with ${esc(dogName)}.</p>`;
       content.innerHTML = `
         <h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3>
         <div class="stat-grid">
-          <div class="stat-tile"><div class="value">${mine.count}</div><div class="label">Walks together</div></div>
-          <div class="stat-tile"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together</div></div>
+          ${mine.count ? `
+          <div class="stat-tile stats-drilldown-tile" id="dogStatsVisitsTile" style="cursor:pointer;"><div class="value">${mine.count}</div><div class="label">${capFirst(t.nouns)} together ›</div></div>
+          <div class="stat-tile stats-drilldown-tile" id="dogStatsTimeTile" style="cursor:pointer;"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together ›</div></div>`
+    : `
+          <div class="stat-tile"><div class="value">${mine.count}</div><div class="label">${capFirst(t.nouns)} together</div></div>
+          <div class="stat-tile"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together</div></div>`}
         </div>
         ${mine.count ? `
-        <p class="small">First walked together ${fmtDate(mine.firstWalkedAt)} · most recently ${fmtDate(mine.lastWalkedAt)}</p>
-        <p class="small">Longest walk together: ${fmtDuration(mine.longestSeconds)}</p>` : ''}
+        <p class="small">First together ${fmtDate(mine.firstWalkedAt)} · most recently ${fmtDate(mine.lastWalkedAt)}</p>
+        <p class="small">Longest ${t.noun} together: ${fmtDuration(mine.longestSeconds)}</p>` : ''}
         ${happyLine}
         <hr />
-        <p class="small muted">Walks logged in Shelter Walk by everyone: ${everyone.count} (${fmtDuration(everyone.totalSeconds)} total). ${esc(dogName)} also gets walks from people who don't use the app, so the real number is likely higher.</p>
+        <p class="small muted">${capFirst(t.nouns)} logged in Shelter Walk by everyone: ${everyone.count} (${fmtDuration(everyone.totalSeconds)} total). ${esc(dogName)} also gets ${t.nouns} from people who don't use the app, so the real number is likely higher.</p>
       `;
+      if (mine.count) {
+        const openDrilldown = () => showDogStatsDrilldown(dogId, dogName, species);
+        document.getElementById('dogStatsVisitsTile').addEventListener('click', openDrilldown);
+        document.getElementById('dogStatsTimeTile').addEventListener('click', openDrilldown);
+      }
     } catch (err) {
       content.innerHTML = `<h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3><p class="small muted">Couldn't load stats: ${esc(err.message)}</p>`;
     }
   }
 
-  // The "returned" icon's popup: this dog's current stay plus any earlier
-  // one(s) reconstructed from the shelter's event log (see the server route
-  // for why it's capped to the last several months).
-  async function showStayHistoryPopup(dogId, dogName) {
+  // Drill-down behind "{N} together"/"Time together": every one of YOUR
+  // visits with this dog, in order, as a duration bar chart (plus a by-
+  // activity breakdown if more than one kind shows up) -- the same general-
+  // number-then-detail pattern as the Stats tab, scaled to a popup.
+  async function showDogStatsDrilldown(dogId, dogName, species) {
+    const t = termsOf({ species });
+    const content = document.getElementById('markerInfoPopupContent');
+    if (!content) return;
+    const backBtnHtml = `<button type="button" id="backToDogStatsBtn" class="btn back-btn">← Back</button>`;
+    content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3><p class="muted small center">Loading…</p>`;
+    try {
+      const history = await api(`/api/dogs/${dogId}/walk-history`);
+      const mine = history.walks.filter((w) => w.mine)
+        .map((w) => ({ activity: w.activity, duration_seconds: w.durationSeconds, started_at: w.startedAt }))
+        .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+      const totalSeconds = mine.reduce((s, w) => s + (w.duration_seconds || 0), 0);
+      const avgSeconds = mine.length ? totalSeconds / mine.length : 0;
+      const byActivity = byActivityOf(mine);
+      const activityRows = byActivity.length > 1 ? `<div class="stack tight" style="margin-bottom:8px;">${byActivity.map((a) => {
+        const info = activityInfo(a.activity);
+        return `<div class="card compact"><div class="dog-info"><p class="dog-name">${info.emoji} ${info.label}</p><p class="dog-meta">${a.count} ${a.count === 1 ? info.noun : info.noun + 's'} · ${fmtDuration(a.totalSeconds)} total</p></div></div>`;
+      }).join('')}</div>` : '';
+      const items = mine.map((w) => ({ label: activityInfo(w.activity).label, seconds: w.duration_seconds || 0, sub: fmtDate(w.started_at) }));
+      content.innerHTML = `
+        ${backBtnHtml}
+        <h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3>
+        <p class="small muted" style="margin-top:-6px;">${mine.length} ${mine.length === 1 ? t.noun : t.nouns} · avg ${fmtDuration(avgSeconds)}, oldest to newest</p>
+        ${activityRows}
+        <div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>
+      `;
+      wireBarChart(content);
+    } catch (err) {
+      content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3><p class="small muted">Couldn't load: ${esc(err.message)}</p>`;
+    }
+    document.getElementById('backToDogStatsBtn').addEventListener('click', () => showDogStatsPopup(dogId, dogName, species));
+  }
+
+  // The "log" icon's popup: every tracked status change for this dog --
+  // arrived, pending adoption (and ones that fell through), adopted,
+  // returned, taken off the floor -- most recent first, with the gap
+  // between each one so a long gap or a fast turnaround both read clearly
+  // (see the server route for why it's capped to the last several months).
+  function timelineEventLabel(e) {
+    switch (e.kind) {
+      case 'new_dog': return '🟢 Arrived on the adoption floor';
+      case 'returned': return e.detail === 'adopted_return' ? '↩️ Returned to the shelter after being adopted' : '🟢 Back on the adoption floor';
+      case 'adopted': return '🏠 Adopted';
+      case 'removed': return '⬇️ Taken off the floor';
+      case 'pending_adoption': return '⏳ Adoption went pending';
+      case 'pending_canceled': return '↪️ Pending adoption fell through';
+      case 'sticker_on': return `🏷️ ${esc(e.title || e.detail)} turned on`;
+      case 'sticker_off': return `🏷️ ${esc(e.title || e.detail)} turned off`;
+      case 'sticker_auto_off': return `🏷️ ${esc(e.title || e.detail)} turned off automatically (left stray hold)`;
+      default: return esc(e.title || e.kind);
+    }
+  }
+  async function showStayLogPopup(dogId, dogName) {
     const popup = document.getElementById('markerInfoPopup');
     const content = document.getElementById('markerInfoPopupContent');
     if (!popup || !content) return;
-    const title = `🔄 ${esc(dogName)}'s stay history`;
+    const title = `📜 ${esc(dogName)}'s timeline`;
     content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="muted small center">Loading…</p>`;
     openOverlay(popup);
+    let showStickers = false;
     try {
       const [{ dog }, history] = await Promise.all([
         api(`/api/dogs/${dogId}?userId=${state.currentUser.id}`),
         api(`/api/dogs/${dogId}/stay-history`)
       ]);
-      const stayDays = (fromIso, toIso) => Math.max(1, Math.round((new Date(toIso) - new Date(fromIso)) / 86400000));
-      const stayLine = (fromIso, toIso, current) => {
-        const days = current ? dog.daysInShelter : stayDays(fromIso, toIso);
-        const range = current ? `Since ${fmtDate(fromIso)}` : `${fmtDate(fromIso)} - ${fmtDate(toIso)}`;
-        return `<li class="tip-item"><span class="tip-bullet">•</span><span class="tip-text">${range} (${days} day${days === 1 ? '' : 's'}${current ? ', current' : ''})</span></li>`;
+      const dayWord = (n) => `${n} day${n === 1 ? '' : 's'}`;
+      const render = () => {
+        const items = [];
+        if (dog.stillListed) {
+          items.push({ occurredAt: new Date().toISOString(), label: `📍 On the floor now (${dayWord(dog.daysInShelter)} this stay)` });
+        }
+        const sourceEvents = showStickers ? [...history.events, ...history.stickerEvents] : history.events;
+        items.push(...sourceEvents.slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)).reverse()
+          .map((e) => ({ occurredAt: e.occurredAt, label: timelineEventLabel(e) })));
+        const rows = items.map((item, i) => {
+          const older = items[i + 1];
+          if (!older) return `<li class="tip-item"><span class="tip-bullet">•</span><span class="tip-text">${item.label} -- ${fmtDate(item.occurredAt)}</span></li>`;
+          const gap = Math.max(0, Math.round((new Date(item.occurredAt) - new Date(older.occurredAt)) / 86400000));
+          const gapText = gap === 0 ? 'the same day' : `${dayWord(gap)} earlier`;
+          // The list is newest first (top) to oldest (bottom), so the gap
+          // marker between two entries points up -- from the older one below
+          // to the newer one above it, old to new, not new to old.
+          return `<li class="tip-item"><span class="tip-bullet">•</span><span class="tip-text">${item.label} -- ${fmtDate(item.occurredAt)}</span></li>`
+            + `<li class="small muted" style="list-style:none; margin:2px 0 6px 20px;">↑ ${gapText}</li>`;
+        }).join('');
+        content.innerHTML = `
+          <h3 style="margin-top:0;">${title}</h3>
+          <p class="small muted">Most recent first, with the time between each one.</p>
+          <label class="small" style="display:flex;align-items:center;gap:6px;margin:-4px 0 10px;">
+            <input type="checkbox" id="stayLogStickersToggle" ${showStickers ? 'checked' : ''}>
+            Show sticker changes (star, blue, POO, PB)
+          </label>
+          <ul class="tip-list">${rows}</ul>
+          <p class="small muted">Showing the last ${history.months} months.</p>
+        `;
+        document.getElementById('stayLogStickersToggle').addEventListener('change', (e) => {
+          showStickers = e.target.checked;
+          render();
+        });
       };
-      const priorStays = history.priorStays.slice().reverse(); // most recent first
-      const rows = [
-        stayLine(dog.dateInShelter, dog.removedAt, dog.stillListed),
-        ...priorStays.map((s) => stayLine(s.arrivedAt, s.leftAt, false))
-      ].join('');
-      const itemizedDays = history.priorStays.reduce((sum, s) => sum + stayDays(s.arrivedAt, s.leftAt), 0);
-      const unaccountedDays = Math.max(0, history.previousDaysInShelter - itemizedDays);
-      const totalDays = dog.daysInShelter + history.previousDaysInShelter;
-      content.innerHTML = `
-        <h3 style="margin-top:0;">${title}</h3>
-        <p class="small muted">The ${dog.daysInShelter}d/${totalDays}d on their card is this stay, then every stay combined --
-           the list below is most recent first.</p>
-        <ul class="tip-list">${rows}</ul>
-        ${unaccountedDays > 0 ? `<p class="small muted">Plus ${unaccountedDays} earlier day${unaccountedDays === 1 ? '' : 's'} from before this was tracked.</p>` : ''}
-        <p class="small muted">Showing return history from the last ${history.months} months.</p>
-      `;
+      render();
     } catch (err) {
-      content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="small muted">Couldn't load stay history: ${esc(err.message)}</p>`;
+      content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="small muted">Couldn't load ${esc(dogName)}'s timeline: ${esc(err.message)}</p>`;
     }
   }
   document.addEventListener('click', (e) => {
-    const trigger = e.target.closest('.returned-icon-btn');
+    const trigger = e.target.closest('.stay-log-btn');
     if (!trigger) return;
     e.stopPropagation();
-    showStayHistoryPopup(trigger.dataset.dogId, trigger.dataset.dogName);
+    showStayLogPopup(trigger.dataset.dogId, trigger.dataset.dogName);
   });
 
   // ---------- Guide (wiki) ----------
@@ -2702,7 +3384,7 @@
           <span class="guide-card-icon" aria-hidden="true">📘</span>
           <span class="guide-card-text">
             <strong>How to use Shelter Walk</strong>
-            <span class="small muted">Step-by-step with screenshots, starting with how to scan a dog for a walk.</span>
+            <span class="small muted">Step-by-step with screenshots, starting with how to scan a kennel card.</span>
           </span>
           <span class="muted" aria-hidden="true">›</span>
         </a>
@@ -2988,11 +3670,11 @@
     state.todaySlotsByDog = map;
   }
 
-  function slotGridHtml(dogId) {
+  function slotGridHtml(dogId, species) {
     const entry = (state.todaySlotsByDog || new Map()).get(dogId);
     const slots = entry ? entry.slots : [false, false, false, false];
     const boxes = slots.map((filled, i) => `<span class="slot-box ${filled ? 'filled' : ''}" title="${WALK_SLOTS[i].label}"></span>`).join('');
-    return `<div class="slot-grid" title="Walks logged in Shelter Walk today: 7-10a · 10-1p · 1-4p · 4-7p">${boxes}</div>`;
+    return `<div class="slot-grid" title="${capFirst(termsOf({ species }).nouns)} logged in Shelter Walk today: 7-10a · 10-1p · 1-4p · 4-7p">${boxes}</div>`;
   }
 
   async function renderAvailable() {
@@ -3039,8 +3721,10 @@
   // Within one criterion the values still OR: blue letters need ANY ✓
   // letter (requiring every selected letter at once would almost never
   // match anything), and a ✕ on letters means having NONE of them.
-  function applyMarkerFilters(dogs) {
-    const filters = state.markerFilters;
+  // skipKeys: filters left out this time (ones hidden because no animal in
+  // the list could match them, e.g. stickers while showing only cats).
+  function applyMarkerFilters(dogs, skipKeys = new Set()) {
+    const filters = Object.fromEntries(Object.entries(state.markerFilters).filter(([k]) => !skipKeys.has(k)));
     const conditions = [];
     // One criterion whose values OR within each mode.
     const group = (tests) => {
@@ -3075,6 +3759,7 @@
       star: (d) => !!d.starFlag,
       pb: (d) => !!d.pbFlag,
       pendingAdoption: (d) => !!d.isPendingAdoption,
+      young: (d) => !!d.isYoung,
       walkedByMe: (d) => !!d.walkedByMe,
       favorite: (d) => !!d.isFavorite,
       playgroup: playgroupEligible,
@@ -3091,7 +3776,7 @@
     if (state.locationFilter.size) {
       conditions.push((d) => d.kennelLocation && state.locationFilter.has(d.kennelLocation.trim()[0]?.toUpperCase()));
     }
-    if (state.presetMinDaysAtLeast != null) {
+    if (state.presetMinDaysAtLeast != null && !skipKeys.has('presetMinDays')) {
       const min = state.presetMinDaysAtLeast;
       conditions.push((d) => (d.effectiveDaysInShelter != null ? d.effectiveDaysInShelter : d.daysInShelter) >= min);
     }
@@ -3116,17 +3801,18 @@
     return names.map((name) => ({ name, count: dogs.filter((d) => dogHasBreed(d, name)).length }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
-  // Advanced filters. Tags come straight from the shelter's listing.
+  // Advanced filters. Tags come straight from the shelter's listing;
+  // dogOnly ones (and the sizes) are left out when looking at cats.
   const TAG_FILTERS = [
-    { tag: 'Best in Home without Dogs', label: 'Best without other dogs' },
-    { tag: 'Dog Selective', label: 'Dog selective' },
-    { tag: 'No small dogs or little critters', label: 'No small dogs / critters' },
+    { tag: 'Best in Home without Dogs', label: 'Best without dogs' },
+    { tag: 'Dog Selective', label: 'Dog selective', dogOnly: true },
+    { tag: 'No small dogs or little critters', label: 'No small dogs / critters', dogOnly: true },
     { tag: 'Best in Home without Cats', label: 'Best without cats' },
     { tag: 'Best in Home without Children', label: 'Best without children' },
-    { tag: 'Not compatible with Livestock', label: 'Not good with livestock' }
+    { tag: 'Not compatible with Livestock', label: 'Not good with livestock', dogOnly: true }
   ];
   const HEALTH_TAG_FILTERS = [
-    { tag: 'Heartworm Positive', label: 'Heartworm positive' },
+    { tag: 'Heartworm Positive', label: 'Heartworm positive', dogOnly: true },
     { tag: 'On Stray Hold', label: 'On stray hold (not adoptable yet)' },
     { tag: 'Video', label: '🎬 Has a video' }
   ];
@@ -3148,21 +3834,25 @@
   // they don't need a network round-trip each time.
   // `hidden` sorts are kept but left out of the menu: they rank dogs by walks
   // logged in the app, which reads as "this dog needs a walk" when the dog
-  // may well have been walked by someone not using the app.
+  // may well have been walked by someone not using the app. `lastWalked` used
+  // to be one of these, but it's common enough (and useful enough as "who
+  // hasn't been out today") that it's the default now, caveat and all.
   const AVAILABLE_SORTS = {
     shelterTime: { label: 'Days in shelter (most first)', cmp: (a, b) => (b.daysInShelter || 0) - (a.daysInShelter || 0) },
+    // "Longest since a logged walk" (default): a dog/cat currently out counts
+    // as "just walked" — current session time always sorts as most recent, to
+    // the bottom either way. Nothing ever logged sorts as longest-since of
+    // all (oldest-equivalent), tied with every other never-logged animal.
+    // Ties of any kind (including "never") fall back to name, A-Z.
     lastWalked: {
-      label: 'Longest since a logged walk',
-      hidden: true,
+      label: (terms) => `Longest since a logged ${terms.noun}`,
       cmp: (a, b) => {
-        // A dog currently out counts as "just walked" — no need to walk
-        // again right now, so it sorts to the bottom either way.
-        const aLast = a.currentWalk ? a.currentWalk.startedAt : a.lastWalkedAt;
-        const bLast = b.currentWalk ? b.currentWalk.startedAt : b.lastWalkedAt;
-        if (!aLast && !bLast) return (b.daysInShelter || 0) - (a.daysInShelter || 0);
-        if (!aLast) return -1;
-        if (!bLast) return 1;
-        return new Date(aLast) - new Date(bLast);
+        const lastOf = (d) => (d.currentWalk ? d.currentWalk.startedAt : d.lastWalkedAt);
+        const aLast = lastOf(a);
+        const bLast = lastOf(b);
+        const aTime = aLast ? new Date(aLast).getTime() : -Infinity;
+        const bTime = bLast ? new Date(bLast).getTime() : -Infinity;
+        return aTime - bTime || a.name.localeCompare(b.name);
       }
     },
     alphabetical: { label: 'Name (A-Z)', cmp: (a, b) => a.name.localeCompare(b.name) },
@@ -3172,7 +3862,7 @@
       cmp: (a, b) => (a.recentWalkCount || 0) - (b.recentWalkCount || 0) || (b.daysInShelter || 0) - (a.daysInShelter || 0)
     },
     location: {
-      label: 'Location (A → E)',
+      label: 'Location (A first)',
       // Dogs with no letter on file go last; within a wing, by name.
       cmp: (a, b) => (a.kennelLocation || '~').localeCompare(b.kennelLocation || '~') || a.name.localeCompare(b.name)
     }
@@ -3192,9 +3882,32 @@
     const h = new Date().getHours();
     return h >= 11 && h < 16;
   }
+  // Each preset is for one species (shown only while looking at it).
   const BUILT_IN_PRESETS = [
     {
+      key: '__kittens',
+      species: 'cat',
+      name: 'Kittens',
+      description: 'Kittens only. Visit one kitten condo a shift, and before any adult cats',
+      filter: { markerFilters: { young: 'only' }, locationFilter: [], minDaysAtLeast: null }
+    },
+    {
+      key: '__adult_cats',
+      species: 'cat',
+      name: 'Adult Cats',
+      description: 'No kittens: play with as many adult cats as you like',
+      filter: { markerFilters: { young: 'hide' }, locationFilter: [], minDaysAtLeast: null }
+    },
+    {
+      key: '__long_stay_cats',
+      species: 'cat',
+      name: 'Long-stay Cats',
+      description: 'In the shelter 30 days or more: they wait longest and need the company',
+      filter: { markerFilters: {}, locationFilter: [], minDaysAtLeast: null, minShelterDays: 30 }
+    },
+    {
       key: '__beginner',
+      species: 'dog',
       name: 'Beginner',
       description: 'For anyone with less than 20 hours',
       filter: {
@@ -3207,6 +3920,7 @@
     },
     {
       key: '__avoid_beginner',
+      species: 'dog',
       name: 'Avoid Beginner Dogs',
       description: 'Targets dogs with behavior issues, so beginners aren’t drawn to them and easier dogs stay available',
       filter: {
@@ -3225,12 +3939,14 @@
     },
     {
       key: '__walkable',
+      species: 'dog',
       name: 'Eligible to Walk',
       description: 'Only dogs cleared for your level right now',
       filter: { markerFilters: { walkable: 'only' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__poo',
+      species: 'dog',
       name: 'POO Dogs',
       description: 'For mornings and evenings (before 11 and after 4)',
       suggestedNow: () => !nonPooHours(),
@@ -3238,6 +3954,7 @@
     },
     {
       key: '__non_poo',
+      species: 'dog',
       name: 'Non-POO Dogs',
       description: 'For the middle of the day (11 to 4)',
       suggestedNow: () => nonPooHours(),
@@ -3245,12 +3962,14 @@
     },
     {
       key: '__playgroup',
+      species: 'dog',
       name: 'Playgroup Eligible',
       description: 'Hides dogs who are PB only, best without other dogs, or adopted',
       filter: { markerFilters: { playgroup: 'only' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__not_playgroup',
+      species: 'dog',
       name: 'Not Playgroup Eligible',
       description: 'Only dogs who are PB only, best without other dogs, or adopted',
       filter: { markerFilters: { playgroup: 'hide' }, locationFilter: [], minDaysAtLeast: null }
@@ -3308,7 +4027,7 @@
     return `
       <div class="stack tight" style="margin-top:4px;">
         <label class="small muted">Built-in presets</label>
-        ${BUILT_IN_PRESETS.map((p) => `
+        ${BUILT_IN_PRESETS.filter((p) => viewSpeciesKeys().includes(p.species)).map((p) => `
           <div class="card compact" style="padding:8px;">
             <div class="row" style="justify-content:space-between;align-items:center;">
               <div>
@@ -3335,15 +4054,38 @@
   }
 
   function redrawAvailableList() {
-    const allDogs = state.availableDogsRaw || [];
+    const allDogs = (state.availableDogsRaw || []).filter((d) => inSpeciesView(d));
+    const viewKeys = viewSpeciesKeys();
+    const noun = nounFor(viewKeys);
+    const nouns = nounFor(viewKeys, true);
+    // Filters that only mean something for some species (stickers, levels,
+    // play group) show only when the list has one of those.
+    const viewHasStickers = viewKeys.some((k) => speciesInfo(k).stickers);
+    const viewHasLevels = viewKeys.some((k) => speciesInfo(k).levelRules);
+    const viewHasPlaygroup = viewKeys.some((k) => speciesInfo(k).activities.includes('playgroup'));
+    const viewHasDogs = viewKeys.includes('dog');
+    const viewTerms = termsFor(viewKeys);
+    const youngRule = viewKeys.map((k) => speciesInfo(k).youngFirst).find(Boolean) || null;
+    const kennelLabel = viewKeys.length === 1 && speciesInfo(viewKeys[0]).kennelLabel || 'Kennel wing';
     if (!allDogs.length) {
-      appEl.innerHTML = `<p class="empty-state">No dogs currently listed. Try refreshing shelter data from Settings.</p>`;
+      appEl.innerHTML = speciesSwitchHtml() + `<p class="empty-state">No ${nouns} currently listed. Try refreshing shelter data from Settings.</p>`;
+      wireSpeciesSwitch(redrawAvailableList);
       restoreScroll(state.availableScrollTop);
       return;
     }
+    // Hidden filters stay set (they come back with the Dogs view) but don't apply.
+    const hiddenFilterKeys = new Set([
+      ...(viewHasStickers ? [] : [...BLUE_MARKERS.map((m) => m.value), 'poo', 'poo_priority', 'star', 'pb']),
+      ...(viewHasLevels ? [] : ['walkable']),
+      ...(viewHasPlaygroup ? [] : ['playgroup']),
+      // Beginner preset's day threshold is a level rule too.
+      ...(viewHasLevels ? [] : ['presetMinDays']),
+      ...(viewHasDogs ? [] : [...SIZE_FILTERS.map((z) => z.key), ...[...TAG_FILTERS, ...HEALTH_TAG_FILTERS].filter((t) => t.dogOnly).map((t) => `tag:${t.tag}`)]),
+      ...(youngRule ? [] : ['young'])
+    ]);
     const fosterCount = allDogs.filter((d) => d.location === 'In Foster').length;
     let visibleDogs = state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster');
-    visibleDogs = applyMarkerFilters(visibleDogs);
+    visibleDogs = applyMarkerFilters(visibleDogs, hiddenFilterKeys);
     if (state.needsShiftWalkOnly) {
       const idx = currentShiftSlotIndex();
       if (idx >= 0) {
@@ -3358,7 +4100,7 @@
     // Each sort's cmp is written for its natural "primary" direction (e.g.
     // most-days-first, A-Z) — that's what 'desc' means here, the default;
     // 'asc' just reverses whichever sort is currently selected.
-    const baseCmp = AVAILABLE_SORTS[state.availableSort || 'shelterTime'].cmp;
+    const baseCmp = AVAILABLE_SORTS[state.availableSort || 'lastWalked'].cmp;
     const dirCmp = state.availableSortDir === 'asc' ? (a, b) => -baseCmp(a, b) : baseCmp;
     visibleDogs = [...visibleDogs].sort(dirCmp);
 
@@ -3380,7 +4122,9 @@
     const adopterChips = `
       ${textChip('male', '♂ Male')}
       ${textChip('female', '♀ Female')}
-      ${textChip('desexed', 'Spayed / neutered', 'Spayed or neutered (hide to see dogs that are not, or unknown)')}`;
+      ${textChip('desexed', 'Spayed / neutered', `Spayed or neutered (hide to see ${nouns} that are not, or unknown)`)}
+      ${youngRule ? textChip('young', `🍼 ${youngRule.young.charAt(0).toUpperCase() + youngRule.young.slice(1)}s`, `${youngRule.young}s only (hide for ${youngRule.adult}s only)`) : ''}
+      ${viewHasStickers ? '' : textChip('pendingAdoption', '💜 Being adopted', 'Someone has started adopting them (hide to see the rest)')}`;
     const ageSelect = (id, options, value, anyLabel, fmt) => `
       <select id="${id}" class="small" style="flex:1;">
         <option value="">${anyLabel}</option>
@@ -3396,7 +4140,7 @@
     const breedChips = breedCounts(state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster'))
       .map((b) => textChip(`breed:${b.name}`, `${esc(b.name)} <span class="chip-count">${b.count}</span>`, b.name)).join('');
     const listedDogs = state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster');
-    const tagChips = (list) => list.map((t) => {
+    const tagChips = (list) => list.filter((t) => viewHasDogs || !t.dogOnly).map((t) => {
       const n = listedDogs.filter((d) => (d.tags || []).includes(t.tag)).length;
       return textChip(`tag:${t.tag}`, `${esc(t.label)} <span class="chip-count">${n}</span>`, t.tag);
     }).join('');
@@ -3407,10 +4151,10 @@
     const advancedSectionHtml = () => `
         <details class="advanced-filters" data-section="advanced" ${advancedActive || state.openFilterSections.has('advanced') ? 'open' : ''}>
           <summary class="small muted">Advanced filters${advancedActive ? ` (${advancedActive} active)` : ''}</summary>
-          <p class="small muted" style="margin:6px 0 2px;">Home compatibility (hide these to find dogs without the restriction):</p>
+          <p class="small muted" style="margin:6px 0 2px;">Home compatibility (hide these to find ${nouns} without the restriction):</p>
           <div class="marker-row" style="gap:6px;">${tagChips(TAG_FILTERS)}</div>
-          <p class="small muted" style="margin:8px 0 2px;">Size (by listed weight):</p>
-          <div class="marker-row" style="gap:6px;">${sizeChips}</div>
+          ${viewHasDogs ? `<p class="small muted" style="margin:8px 0 2px;">Size (by listed weight):</p>
+          <div class="marker-row" style="gap:6px;">${sizeChips}</div>` : ''}
           <p class="small muted" style="margin:8px 0 2px;">Health and status:</p>
           <div class="marker-row" style="gap:6px;">${tagChips(HEALTH_TAG_FILTERS)}</div>
           <div class="row" style="align-items:center;gap:6px;margin-top:8px;">
@@ -3421,7 +4165,9 @@
             </select>
           </div>
         </details>`;
-    const locationChips = KENNEL_LETTERS.map((letter) => `
+    // Every letter any species in the list uses (cats' rooms are A-D).
+    const viewKennels = [...new Set(viewKeys.flatMap((k) => speciesInfo(k).kennels || KENNEL_LETTERS))].sort();
+    const locationChips = viewKennels.map((letter) => `
       <button type="button" class="btn small-btn filter-chip ${state.locationFilter.has(letter) ? 'active' : ''}" data-location-key="${letter}" style="width:auto;flex:0 0 auto;min-width:44px;">${letter}</button>`).join('');
 
     // Shown on the collapsed "Filters" toggle so it's obvious something is
@@ -3429,34 +4175,36 @@
     // letters count as at most 1 "only" + 1 "hide" no matter how many are
     // selected (e.g. the blue-any bulk chip), since they're one conceptual
     // filter, not one per letter.
-    const allBlueValues = BLUE_MARKERS.map((m) => m.value);
+    const allBlueValues = BLUE_MARKERS.map((m) => m.value).filter((v) => !hiddenFilterKeys.has(v));
     const blueOnlyActive = allBlueValues.some((v) => state.markerFilters[v] === 'only') ? 1 : 0;
     const blueHideActive = allBlueValues.some((v) => state.markerFilters[v] === 'hide') ? 1 : 0;
-    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'playgroup', 'walkable', 'male', 'female', 'desexed'];
+    const otherFilterKeys = ['poo', 'poo_priority', 'star', 'pb', 'pendingAdoption', 'walkedByMe', 'favorite', 'playgroup', 'walkable', 'male', 'female', 'desexed', 'young']
+      .filter((k) => !hiddenFilterKeys.has(k));
     const otherActiveCount = otherFilterKeys.filter((k) => state.markerFilters[k]).length;
     const breedModes = Object.keys(state.markerFilters).filter((k) => k.startsWith('breed:')).map((k) => state.markerFilters[k]);
     const breedActive = (breedModes.includes('only') ? 1 : 0) + (breedModes.includes('hide') ? 1 : 0);
     const ageActive = state.ageMinYears != null || state.ageMaxYears != null ? 1 : 0;
-    const tagActive = Object.keys(state.markerFilters).filter((k) => k.startsWith('tag:')).length;
-    const sizeModes = SIZE_FILTERS.map((z) => state.markerFilters[z.key]);
+    const tagActive = Object.keys(state.markerFilters).filter((k) => k.startsWith('tag:') && !hiddenFilterKeys.has(k)).length;
+    const sizeModes = viewHasDogs ? SIZE_FILTERS.map((z) => state.markerFilters[z.key]) : [];
     const sizeActive = (sizeModes.includes('only') ? 1 : 0) + (sizeModes.includes('hide') ? 1 : 0);
     const advancedActive = tagActive + sizeActive + (state.minShelterDays != null ? 1 : 0);
     const activeFilterCount = (state.showFoster ? 1 : 0) + (state.needsShiftWalkOnly ? 1 : 0)
       + blueOnlyActive + blueHideActive + otherActiveCount + breedActive + ageActive + advancedActive
-      + state.locationFilter.size + (state.presetMinDaysAtLeast != null ? 1 : 0);
+      + state.locationFilter.size + (state.presetMinDaysAtLeast != null && viewHasLevels ? 1 : 0);
 
     // Dogs also get walked by people who aren't using the app, so the green
     // shift boxes only ever mean "a walk we know about", never "the whole day".
     const lastUpdatedLine = (state.lastScrapeAt
       ? `<p class="muted small" style="margin:0 0 6px;">Last updated ${fmtDate(state.lastScrapeAt)} · ${fmtClock(state.lastScrapeAt)}</p>`
-      : '') + `<p class="muted small" style="margin:0 0 6px;"><span class="slot-box filled" style="display:inline-block;vertical-align:-2px;"></span> = a walk logged here that shift. Dogs also get walked outside the app.</p>`;
+      : '') + `<p class="muted small" style="margin:0 0 6px;"><span class="slot-box filled" style="display:inline-block;vertical-align:-2px;"></span> = ${aNoun(viewTerms)} logged here that shift. ${capFirst(nouns)} also get ${viewTerms.past} outside the app.</p>`;
     const filterRow = `
+      ${speciesSwitchHtml()}
       <div class="card compact stack" style="gap:6px;margin-bottom:8px;">
         <input type="text" id="availableSearchInput" placeholder="Search by name…" value="${esc(state.availableSearch || '')}" />
         <div class="row" style="align-items:center;gap:6px;">
           <label class="small muted" style="flex:0 0 auto;margin:0;">Sort:</label>
           <select id="availableSortSelect" class="small" style="flex:1;">
-            ${Object.entries(AVAILABLE_SORTS).filter(([, s]) => !s.hidden).map(([key, s]) => `<option value="${key}" ${state.availableSort === key ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}
+            ${Object.entries(AVAILABLE_SORTS).filter(([, s]) => !s.hidden).map(([key, s]) => `<option value="${key}" ${state.availableSort === key ? 'selected' : ''}>${esc(typeof s.label === 'function' ? s.label(viewTerms) : s.label)}</option>`).join('')}
           </select>
           <button type="button" id="availableSortDirBtn" class="btn small-btn" style="flex:0 0 auto;width:auto;" title="${state.availableSortDir === 'asc' ? 'Ascending' : 'Descending'}">${state.availableSortDir === 'asc' ? '▲' : '▼'}</button>
         </div>
@@ -3470,20 +4218,20 @@
         ${fosterCount ? `
         <label class="small muted" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="showFosterCheck" ${state.showFoster ? 'checked' : ''} />
-          Show ${fosterCount} dog${fosterCount === 1 ? '' : 's'} in foster (can't be walked)
+          Show ${fosterCount} ${fosterCount === 1 ? noun : nouns} in foster (can't be ${viewTerms.past})
         </label>` : ''}
         <label class="small muted" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="needsShiftWalkCheck" ${state.needsShiftWalkOnly ? 'checked' : ''} />
-          Hide dogs with a walk logged this shift
+          Hide ${nouns} with ${aNoun(viewTerms)} logged this shift
         </label>
         <label class="small muted" style="margin:6px 0 0;">Combine filters with:</label>
         <div class="seg seg-small" role="radiogroup" aria-label="Combine filters with" style="margin:0;">
           <button type="button" class="seg-btn ${state.filterMatch === 'any' ? '' : 'on'}" data-filter-match="all" role="radio" aria-checked="${state.filterMatch !== 'any'}">And (match all)</button>
           <button type="button" class="seg-btn ${state.filterMatch === 'any' ? 'on' : ''}" data-filter-match="any" role="radio" aria-checked="${state.filterMatch === 'any'}">Or (match any)</button>
         </div>
-        <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">Dogs I've walked before</button>
+        <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.walkedByMe)}" data-filter-key="walkedByMe" style="margin-top:2px;">${capFirst(nouns)} I've ${viewTerms.past} before</button>
         <button type="button" class="btn small-btn filter-chip ${filterChipClass(state.markerFilters.favorite)}" data-filter-key="favorite">♥ My favorites</button>
-        <label class="small muted" style="margin:6px 0 0;">Kennel wing:</label>
+        <label class="small muted" style="margin:6px 0 0;">${esc(kennelLabel)}:</label>
         <div class="marker-row" style="gap:6px;">${locationChips}</div>
         <label class="small muted" style="margin:6px 0 0;">Tap once for only, twice to hide, again to clear:</label>
         <div class="marker-row" style="gap:6px;">${adopterChips}</div>
@@ -3492,10 +4240,11 @@
           <summary class="small muted">Breed${breedActive ? ' (filtering)' : ''}</summary>
           <div class="marker-row" style="gap:6px;margin-top:6px;">${breedChips}</div>
         </details>
+        ${viewHasStickers ? `
         <div class="marker-row" style="gap:6px;">${starChip}</div>
         <div class="marker-row" style="gap:6px;">${blueChips}</div>
-        <div class="marker-row" style="gap:6px;">${otherChips}</div>
-        <div class="marker-row" style="gap:6px;">${textChip('walkable', '🦮 Eligible to walk', 'Cleared for your level right now, the same as the Eligible ✓ badge (hide to see dogs who are not)')}${textChip('playgroup', '🥎 Playgroup eligible', 'Not PB only, best without other dogs, or adopted (hide to see dogs who are)')}</div>
+        <div class="marker-row" style="gap:6px;">${otherChips}</div>` : ''}
+        ${viewHasLevels || viewHasPlaygroup ? `<div class="marker-row" style="gap:6px;">${viewHasLevels ? textChip('walkable', '🦮 Eligible to walk', 'Cleared for your level right now, the same as the Eligible ✓ badge (hide to see dogs who are not)') : ''}${viewHasPlaygroup ? textChip('playgroup', '🥎 Playgroup eligible', 'Not PB only, best without other dogs, or adopted (hide to see dogs who are)') : ''}</div>` : ''}
         ${advancedSectionHtml()}
         <button type="button" id="clearFiltersBtn" class="btn small-btn" style="margin-top:8px;">Clear Filters</button>
         `}
@@ -3503,15 +4252,15 @@
       </div>`;
 
     // How many dogs this search/filter returns, against everyone listed.
-    const resultCount = `<p class="muted small result-count" style="margin:0 0 6px;">Showing <strong>${visibleDogs.length}</strong> of ${allDogs.length} dog${allDogs.length === 1 ? '' : 's'}</p>`;
+    const resultCount = `<p class="muted small result-count" style="margin:0 0 6px;">Showing <strong>${visibleDogs.length}</strong> of ${allDogs.length} ${allDogs.length === 1 ? noun : nouns}</p>`;
     if (!visibleDogs.length) {
-      appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<p class="empty-state">No dogs match this filter.</p>`;
+      appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<p class="empty-state">No ${nouns} match this filter.</p>`;
       restoreScroll(state.availableScrollTop);
       wireAvailableFilters();
       return;
     }
     const cards = visibleDogs.map((dog) => {
-      const badge = dog.tooYoung
+      const badge = !speciesOf(dog).levelRules ? '' : dog.tooYoung
         ? `<span class="badge blocked">🚫 Too young</span>`
         : dog.eligible
         ? `<span class="badge eligible">Eligible ✓</span>`
@@ -3521,19 +4270,19 @@
           <div class="dog-card ${dog.checkedOffToday ? 'checked-off' : ''}">
             <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
-              <p class="dog-name">${esc(dog.name)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
+              <p class="dog-name">${esc(dog.name)} ${speciesTagHtml(dog)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
               ${akaHtml(dog)}
               <p class="dog-meta">${esc(dog.breed || 'Unknown breed')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap">ID ${dog.id}</span></p>
-              ${slotGridHtml(dog.id)}
+              ${slotGridHtml(dog.id, dog.species)}
               ${currentWalkBadge(dog)}
-              ${badge}
+              ${badge}${youngBadgeHtml(dog)}
             </div>
-            <label class="checkoff-label" title="Someone else already walked this dog today">
+            <label class="checkoff-label" title="Someone else already ${termsOf(dog).past} this ${esc(speciesOf(dog).noun)} today">
               <input type="checkbox" class="checkoff-check" data-id="${dog.id}" ${dog.checkedOffToday ? 'checked' : ''} />
               <span class="small muted">Out</span>
             </label>
           </div>
-          ${dogActionButtons(dog.id, dog.tooYoung || dog.eligible === false)}
+          ${dogActionButtons(dog.id, dog.tooYoung || dog.eligible === false, dog.species)}
         </div>`;
     }).join('');
     appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<div class="stack tight">${cards}</div>`;
@@ -3646,6 +4395,7 @@
         redrawAvailableList();
       });
     });
+    wireSpeciesSwitch(redrawAvailableList);
     const clearBtn = document.getElementById('clearFiltersBtn');
     if (clearBtn) clearBtn.addEventListener('click', () => clearAllFilters());
 
@@ -3932,8 +4682,9 @@
       resultEl.innerHTML = `<p class="empty-state">Pick a kennel letter and start scanning, or search for a dog by name.</p>`;
       return;
     }
+    const stickers = speciesOf(dog).stickers;
     resultEl.innerHTML = `
-      <div class="card compact">
+      <div class="card compact" data-dog-id="${dog.id}">
         <div class="dog-card">
           <img loading="lazy" decoding="async" class="dog-photo small" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
@@ -3944,6 +4695,7 @@
         </div>
       </div>
       <div class="card compact">
+        ${stickers ? `
         <label class="small">Behavior markers (tap to toggle)</label>
         <div class="marker-row">
           <button type="button" class="marker-shape star" data-group="star" title="Good for beginners">★</button>
@@ -3954,9 +4706,11 @@
           <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
           <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
           <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only">PB</button>
-        </div>
+        </div>` : `<p class="small muted" style="margin:0;">${esc(speciesOf(dog).plural)} don't have kennel card stickers.</p>`}
         <div class="row" style="margin-top:10px;">
-          <button id="auditSaveBtn" class="btn primary">${state.audit.location ? `Save markers &amp; location ${esc(state.audit.location)}` : 'Save markers'}</button>
+          <button id="auditSaveBtn" class="btn primary" ${!stickers && !state.audit.location ? 'disabled' : ''}>${stickers
+            ? (state.audit.location ? `Save markers &amp; location ${esc(state.audit.location)}` : 'Save markers')
+            : `Save location ${esc(state.audit.location || '')}`}</button>
         </div>
         <p id="auditSaveStatus" class="small muted" style="margin:6px 0 0;"></p>
       </div>`;
@@ -3972,7 +4726,7 @@
       const letter = state.audit.location;
       statusEl.textContent = 'Saving…';
       try {
-        await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.audit.pendingMarkers) });
+        if (stickers) await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.audit.pendingMarkers) });
         if (letter) {
           const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location: letter }) });
           dog.kennelLocation = locRes.location;
@@ -4025,6 +4779,7 @@
         <button type="button" class="seg-btn ${state.statsScope === 'mine' ? 'on' : ''}" data-scope="mine" role="tab" aria-selected="${state.statsScope === 'mine'}">My stats</button>
         <button type="button" class="seg-btn ${state.statsScope === 'together' ? 'on' : ''}" data-scope="together" role="tab" aria-selected="${state.statsScope === 'together'}">Together</button>
         <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
+        <button type="button" class="seg-btn ${state.statsScope === 'playgroup' ? 'on' : ''}" data-scope="playgroup" role="tab" aria-selected="${state.statsScope === 'playgroup'}">Play group</button>
         <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
       </div>`;
   }
@@ -4033,7 +4788,10 @@
       if (b.dataset.scope === state.statsScope) return;
       state.statsScope = b.dataset.scope;
       state.togetherDay = null;
+      state.togetherByActivity = false;
+      state.togetherAvgChart = null;
       state.statsView = 'summary';
+      state.statsActivityFilter = null;
       renderStats();
     }));
   }
@@ -4052,27 +4810,27 @@
       const h = sec / 3600;
       return h >= 10 ? String(Math.round(h)) : String(Math.round(h * 10) / 10);
     };
-    const tile = (value, label, sub) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    const tile = (value, label, sub, id) => `<div class="stat-tile${id ? ' stats-drilldown-tile' : ''}"${id ? ` id="${id}" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
     // "Walks" and "dogs" are the same number on most days, so they're one tile;
     // the distinct-dog count only appears when a dog was walked more than once.
-    const dogsNote = (walks, dogs) => (dogs && dogs !== walks ? `${dogs} different dog${dogs === 1 ? '' : 's'}` : '');
-    const avg = (x) => fmtDuration(x.walks ? x.seconds / x.walks : 0);
+    const dogsNote = (walks, dogs) => (dogs && dogs !== walks ? `${dogs} different animal${dogs === 1 ? '' : 's'}` : '');
+    const avg = (x) => fmtDuration(x.avgSeconds || 0);
     const t = data.today;
     const todayHtml = t
-      ? `<div class="stat-grid three">${tile(t.walks, 'Walks today', dogsNote(t.walks, t.dogs))}${tile(hours(t.seconds) + ' h', 'Collective walk time')}${tile(avg(t), 'Average walk')}</div>
-         ${t.sessions.length ? `<div class="stat-grid" style="margin-top:10px;">${t.sessions.map((s) => tile(s.walks, `${esc(s.label)} walks`, `avg ${avg(s)}`)).join('')}</div>` : ''}`
-      : `<div class="card compact center"><p class="muted" style="margin:0;">Today's combined walks show up here as the day goes on. 🐾</p></div>`;
+      ? `<div class="stat-grid three">${tile(t.walks, 'Engagements today ›', dogsNote(t.walks, t.dogs), 'togetherTodayActivityTile')}${tile(hours(t.seconds) + ' h', 'Collective time ›', null, 'togetherTodayTimeTile')}${tile(avg(t), 'Average engagement ›', null, 'togetherAvgChartTile')}</div>
+         ${t.sessions.length ? `<div class="stat-grid" style="margin-top:10px;">${t.sessions.map((s) => tile(s.walks, `${esc(s.label)} engagements`, `avg ${avg(s)}`)).join('')}</div>` : ''}`
+      : `<div class="card compact center"><p class="muted" style="margin:0;">Today's combined engagements show up here as the day goes on. 🐾</p></div>`;
     const dayRow = (d) => `
       <div class="card compact together-day" data-date="${esc(d.dateKey)}" role="button" tabindex="0">
         <div class="together-day-head">
           <strong>${fmtDayHeading(d.dateKey)}</strong>
-          <span class="muted small">${d.walks} walks${d.dogs !== d.walks ? ` (${d.dogs} dogs)` : ''} · ${hours(d.seconds)} h · avg ${avg(d)} · tap for details ›</span>
+          <span class="muted small">${d.walks} engagements${d.dogs !== d.walks ? ` (${d.dogs} animals)` : ''} · ${hours(d.seconds)} h · avg ${avg(d)} · tap for details ›</span>
         </div>
-        ${d.sessions.length ? `<div class="together-sessions">${d.sessions.map((s) => `<span class="badge neutral">${esc(s.label)}: ${s.walks} walks</span>`).join(' ')}</div>` : ''}
+        ${d.sessions.length ? `<div class="together-sessions">${d.sessions.map((s) => `<span class="badge neutral">${esc(s.label)}: ${s.walks} engagements</span>`).join(' ')}</div>` : ''}
       </div>`;
     // Past days grouped by month, newest open, same as Lifetime stats.
     const dayRows = visitMonthsHtml(data.days.filter((d) => d.dateKey !== (t && t.dateKey)), (d) => d.dateKey, dayRow,
-      (days) => { const walks = days.reduce((n, d) => n + d.walks, 0); return `${days.length} day${days.length === 1 ? '' : 's'} · ${walks} walks · ${hours(days.reduce((n, d) => n + d.seconds, 0))} h`; },
+      (days) => { const walks = days.reduce((n, d) => n + d.walks, 0); return `${days.length} day${days.length === 1 ? '' : 's'} · ${walks} engagements · ${hours(days.reduce((n, d) => n + d.seconds, 0))} h`; },
       'togetherOpenMonths');
     const a = data.allTime;
     appEl.innerHTML = `
@@ -4082,14 +4840,105 @@
       ${t ? `<button type="button" class="btn together-open" data-date="${esc(t.dateKey)}" style="margin-top:10px;">See today's walks in order ›</button>` : ''}
       ${dayRows ? `<h2 class="section-heading">Past days</h2><div class="stack tight">${dayRows}</div>` : ''}
       <h2 class="section-heading">Since we started tracking</h2>
-      <div class="stat-grid three">${tile(a.walks, 'Walks', dogsNote(a.walks, a.dogs))}${tile(hours(a.seconds) + ' h', 'Collective walk time')}${tile(avg(a), 'Average walk')}</div>
-      <p class="small muted center" style="margin-top:14px;">Everyone's walks, combined. No names or individual numbers are shown or stored here, ever. Days and sessions with fewer than ${data.minCell} walks are left out of the lists (they still count in the totals).</p>`;
+      <div class="stat-grid three">${tile(a.walks, 'Engagements ›', dogsNote(a.walks, a.dogs), 'togetherAllTimeActivityTile')}${tile(hours(a.seconds) + ' h', 'Collective time ›', null, 'togetherAllTimeTimeTile')}${tile(avg(a), 'Average engagement')}</div>
+      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. No names or individual numbers are shown or stored here, ever. Days and sessions with fewer than ${data.minCell} engagements are left out of the lists (they still count in the totals).</p>`;
     wireStatsScopeSwitch();
     wireVisitMonths('togetherOpenMonths');
     appEl.querySelectorAll('[data-date]').forEach((el) => {
       const open = () => { state.togetherDay = el.dataset.date; renderTogetherDay(); };
       el.addEventListener('click', open);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+    const todayActivityTile = document.getElementById('togetherTodayActivityTile');
+    if (todayActivityTile) todayActivityTile.addEventListener('click', () => { state.togetherByActivity = 'today'; renderStats(); });
+    const allTimeActivityTile = document.getElementById('togetherAllTimeActivityTile');
+    if (allTimeActivityTile) allTimeActivityTile.addEventListener('click', () => { state.togetherByActivity = 'allTime'; renderStats(); });
+    const todayTimeTile = document.getElementById('togetherTodayTimeTile');
+    if (todayTimeTile) todayTimeTile.addEventListener('click', () => { state.togetherByActivity = 'today'; renderStats(); });
+    const allTimeTimeTile = document.getElementById('togetherAllTimeTimeTile');
+    if (allTimeTimeTile) allTimeTimeTile.addEventListener('click', () => { state.togetherByActivity = 'allTime'; renderStats(); });
+    // Only today's average is charted (per-dog, anonymous) -- charting every
+    // engagement ever would be hundreds of bars with no real use.
+    const avgChartTile = document.getElementById('togetherAvgChartTile');
+    if (avgChartTile && t) avgChartTile.addEventListener('click', () => { state.togetherAvgChart = t.dateKey; renderStats(); });
+  }
+
+  // Today's "Average engagement" drill-down: a bar per engagement, oldest to
+  // newest, with a dashed average line -- same shape as My Stats' chart, but
+  // sourced from /api/impact/day so no walker identity ever enters this
+  // (only dog name + duration, same as the "In order" list already shows).
+  async function renderTogetherAvgChart() {
+    const myTab = state.tab;
+    const dateKey = state.togetherAvgChart;
+    appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+    let data;
+    try {
+      data = await api(`/api/impact/day?date=${encodeURIComponent(dateKey)}`);
+    } catch (err) {
+      if (state.tab !== myTab) return;
+      if (err.status === 404) { state.togetherAvgChart = null; toast(err.message, 'error'); return renderStats(); }
+      showLoadError("today's engagements", err, renderTogetherAvgChart);
+      return;
+    }
+    if (state.tab !== myTab) return;
+    // The average itself is walk-only with an all-activities fallback (see
+    // impact.js's avgOf), so the chart matches: only walks when there are
+    // any today, otherwise every engagement.
+    const walkOnly = data.walks.filter((w) => (w.activity || 'walk') === 'walk');
+    const chartWalks = walkOnly.length ? walkOnly : data.walks;
+    const ordered = [...chartWalks].sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+    const avgSeconds = ordered.length ? ordered.reduce((s, w) => s + (w.durationSeconds || 0), 0) / ordered.length : 0;
+    const items = ordered.map((w) => ({ label: w.dogName, seconds: w.durationSeconds || 0, sub: `${fmtClock(w.startedAt)}${w.mine ? ' · you' : ''}` }));
+    appEl.innerHTML = `
+      <button id="togetherAvgChartBack" class="btn back-btn">← Back to Together</button>
+      <h2 class="section-heading" style="margin-top:0;">Today's engagement length, oldest to newest</h2>
+      <p class="small muted" style="margin-top:-6px;">${ordered.length} engagement${ordered.length === 1 ? '' : 's'} · avg ${fmtDuration(avgSeconds)} · tap a bar for details</p>
+      <div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>
+      <p class="small muted center" style="margin-top:14px;">Everyone's engagements, combined. Names are never shown; only your own are marked "you", and only you see that.</p>`;
+    document.getElementById('togetherAvgChartBack').addEventListener('click', () => {
+      state.togetherAvgChart = null;
+      renderStats();
+    });
+    wireBarChart();
+  }
+
+  // Together's own "By Activity": a shelter-wide breakdown of engagement
+  // types for the scope (today or since we started tracking) the volunteer
+  // tapped into. No per-dog drill-down here -- unlike "My stats", breaking
+  // this down further by dog would start pointing at who did what.
+  async function renderTogetherByActivity() {
+    const myTab = state.tab;
+    const scope = state.togetherByActivity;
+    appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+    let data;
+    try {
+      data = await api('/api/impact?days=all');
+    } catch (err) {
+      if (state.tab === myTab) showLoadError('the shared stats', err, renderStats);
+      return;
+    }
+    if (state.tab !== myTab) return;
+    const source = scope === 'today' ? data.today : data.allTime;
+    const byActivity = (source && source.byActivity) || [];
+    const heading = `<button id="togetherActivityBack" class="btn back-btn">← Back to Together</button>` +
+      `<h2 class="section-heading" style="margin-top:0;">${scope === 'today' ? "Today's engagements" : 'Engagements since we started tracking'}, by activity</h2>`;
+    const rows = byActivity.map((a) => {
+      const info = activityInfo(a.activity);
+      return `
+      <div class="card compact">
+        <div class="dog-info">
+          <p class="dog-name">${info.emoji} ${info.label}</p>
+          <p class="dog-meta">${a.count} engagement${a.count === 1 ? '' : 's'} · ${fmtDuration(a.totalSeconds)} total · avg ${fmtDuration(a.avgSeconds)}</p>
+        </div>
+      </div>`;
+    }).join('');
+    appEl.innerHTML = heading +
+      (byActivity.length ? `<div class="stack tight">${rows}</div>`
+        : `<p class="empty-state">Not enough of any one activity yet to break down -- it's still combined into the totals.</p>`) +
+      `<p class="small muted center" style="margin-top:14px;">Everyone's engagements, combined. An activity type with fewer than ${data.minCell} engagements isn't shown separately, so a rare one can't be pinned on whoever did it (it still counts in the totals above).</p>`;
+    document.getElementById('togetherActivityBack').addEventListener('click', () => {
+      state.togetherByActivity = false;
+      renderStats();
     });
   }
 
@@ -4107,7 +4956,7 @@
     } catch (err) {
       if (state.tab !== myTab) return;
       if (err.status === 404) { state.togetherDay = null; toast(err.message, 'error'); return renderStats(); }
-      showLoadError("that day's walks", err, renderTogetherDay);
+      showLoadError("that day's engagements", err, renderTogetherDay);
       return;
     }
     if (state.tab !== myTab) return;
@@ -4126,13 +4975,13 @@
       <button id="togetherBack" class="btn back-btn">← Back to Together</button>
       <h2 class="section-heading">${fmtDayHeading(date)}</h2>
       <div class="stat-grid three">
-        <div class="stat-tile"><div class="value">${data.walks.length}</div><div class="label">Walks</div>${dogs !== data.walks.length ? `<div class="label sub">${dogs} different dog${dogs === 1 ? '' : 's'}</div>` : ''}</div>
-        <div class="stat-tile"><div class="value">${fmtDuration(totalSeconds)}</div><div class="label">Collective walk time</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(data.walks.length ? totalSeconds / data.walks.length : 0)}</div><div class="label">Average walk</div></div>
+        <div class="stat-tile"><div class="value">${data.walks.length}</div><div class="label">Engagements</div>${dogs !== data.walks.length ? `<div class="label sub">${dogs} different animal${dogs === 1 ? '' : 's'}</div>` : ''}</div>
+        <div class="stat-tile"><div class="value">${fmtDuration(totalSeconds)}</div><div class="label">Collective time</div></div>
+        <div class="stat-tile"><div class="value">${fmtDuration(data.walks.length ? totalSeconds / data.walks.length : 0)}</div><div class="label">Average engagement</div></div>
       </div>
       <h2 class="section-heading">In order</h2>
       <div class="stack tight">${rowsHtml}</div>
-      <p class="small muted center" style="margin-top:14px;">Everyone's walks, combined. Names are never shown; only your own walks are marked "You", and only you see that.</p>`;
+      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. Names are never shown; only your own are marked "You", and only you see that.</p>`;
     document.getElementById('togetherBack').addEventListener('click', () => { state.togetherDay = null; renderStats(); });
     appEl.querySelectorAll('.together-walk').forEach((card) => card.addEventListener('click', async () => {
       try {
@@ -4159,7 +5008,12 @@
     const days = state.shelterRange ? data.days.slice(-state.shelterRange) : data.days;
     const sum = (k) => days.reduce((n, d) => n + d[k], 0);
     const perDay = (k) => (days.length ? Math.round((sum(k) / days.length) * 10) / 10 : 0);
-    const tile = (value, label, sub) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    // These tiles' "drill-down" is the chart (and table) already below them
+    // -- a line over time is the right shape for a count that moves day to
+    // day, not another per-interaction bar chart, so a tap jumps to and
+    // opens that detail instead of building a second chart that says the
+    // same thing. target: which chart answers this tile ('listed' or 'inout').
+    const tile = (value, label, sub, target) => `<div class="stat-tile${target ? ' stats-drilldown-tile' : ''}"${target ? ` data-trend-target="${target}" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}${target ? ' ›' : ''}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
     const first = days[0];
     const change = first ? data.listedNow - first.listed : 0;
     const firstFloor = days.find((d) => d.floor != null);
@@ -4174,22 +5028,22 @@
         ${SHELTER_RANGES.map((r) => `<button type="button" class="seg-btn ${state.shelterRange === r.days ? 'on' : ''}" data-shelter-range="${r.days}" role="radio" aria-checked="${state.shelterRange === r.days}">${r.label}</button>`).join('')}
       </div>
       <div class="stat-grid">
-        ${tile(data.floorNow == null ? '–' : data.floorNow, 'On the floor now', floorChange != null ? `${signed(floorChange)} since ${esc(shortDate(firstFloor.dateKey))}` : '')}
-        ${tile(data.listedNow, 'Listed now', first ? `${signed(change)} since ${esc(shortDate(first.dateKey))}` : '')}
-        ${tile(sum('broughtIn'), 'Brought in', `${perDay('broughtIn')} a day`)}
-        ${tile(sum('adopted'), 'Adopted', `${perDay('adopted')} a day`)}
+        ${tile(data.floorNow == null ? '–' : data.floorNow, 'On the floor now', floorChange != null ? `${signed(floorChange)} since ${esc(shortDate(firstFloor.dateKey))}` : '', 'listed')}
+        ${tile(data.listedNow, 'Listed now', first ? `${signed(change)} since ${esc(shortDate(first.dateKey))}` : '', 'listed')}
+        ${tile(sum('broughtIn'), 'Brought in', `${perDay('broughtIn')} a day`, 'inout')}
+        ${tile(sum('adopted'), 'Adopted', `${perDay('adopted')} a day`, 'inout')}
       </div>
-      <h2 class="section-heading">Dogs at the shelter</h2>
+      <h2 class="section-heading" id="trendListedHeading">Dogs at the shelter</h2>
       <div class="card compact trend-card">${trendChartHtml(days, [
         { key: 'listed', label: 'Listed', cls: 'listed' },
         { key: 'floor', label: 'On the floor', cls: 'floor' }
       ], { zoom: true })}</div>
-      <h2 class="section-heading">In and out each day</h2>
+      <h2 class="section-heading" id="trendInoutHeading">In and out each day</h2>
       <div class="card compact trend-card">${trendChartHtml(days, [
         { key: 'broughtIn', label: 'Brought in', cls: 'in' },
         { key: 'adopted', label: 'Adopted', cls: 'out' }
       ])}</div>
-      <details class="trend-table-wrap">
+      <details class="trend-table-wrap" id="trendTableDetails">
         <summary class="small muted">Show as a table</summary>
         <div class="trend-table-scroll">
           <table class="trend-table">
@@ -4205,6 +5059,13 @@
       renderShelterTrends();
     }));
     wireTrendCharts(days, shortDate);
+    appEl.querySelectorAll('[data-trend-target]').forEach((t2) => {
+      t2.addEventListener('click', () => {
+        const heading = document.getElementById(t2.dataset.trendTarget === 'listed' ? 'trendListedHeading' : 'trendInoutHeading');
+        document.getElementById('trendTableDetails').open = true;
+        if (heading) heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
   }
 
   // A small hand-drawn SVG line chart over days (one y-axis, starting at 0
@@ -4295,6 +5156,66 @@
     });
   }
 
+  // The drill-down behind any "Avg length" tile: one bar per interaction, in
+  // the order given (chronological), against a dashed average line. One
+  // series (duration), so one hue and no legend -- identity (which dog, when)
+  // lives in the tap tooltip, not in a label on every bar, so it stays
+  // readable with a handful of bars or a few hundred. items: [{ label, sub,
+  // seconds }], already in the order to display.
+  function durationBarChartHtml(items, avgSeconds) {
+    if (!items.length) return `<p class="small muted" style="margin:0;">Nothing to show yet.</p>`;
+    const BAR_W = 14, GAP = 10, padL = 36, padR = 10, padT = 10, padB = 10, H = 160;
+    const plotH = H - padT - padB;
+    const maxSeconds = Math.max(avgSeconds, ...items.map((it) => it.seconds), 60);
+    const step = niceStep(maxSeconds / 4 || 1);
+    const yMax = Math.ceil(maxSeconds / step) * step || step;
+    const W = Math.max(padL + padR + items.length * (BAR_W + GAP) - GAP, 240);
+    const y = (secs) => padT + plotH * (1 - secs / yMax);
+    const grid = [];
+    for (let v = 0; v <= yMax + 1e-9; v += step) {
+      grid.push(`<line class="trend-grid" x1="${padL}" x2="${W - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" /><text class="trend-axis" x="${padL - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${esc(fmtDuration(v))}</text>`);
+    }
+    const bars = items.map((it, i) => {
+      const bx = padL + i * (BAR_W + GAP);
+      const bh = Math.max(2, plotH * (it.seconds / yMax));
+      const by = padT + plotH - bh;
+      return `<rect class="bar-chart-bar" data-i="${i}" x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${BAR_W}" height="${bh.toFixed(1)}" rx="3" />`;
+    }).join('');
+    const avgY = y(avgSeconds).toFixed(1);
+    const geom = { items: items.map((it) => ({ label: it.label, sub: it.sub || '', seconds: it.seconds })) };
+    return `
+      <div class="bar-chart" data-geom='${esc(JSON.stringify(geom))}'>
+        <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Duration per interaction, oldest to newest, with the average">
+          ${grid.join('')}
+          ${bars}
+          <line class="bar-chart-avg" x1="${padL}" x2="${W - padR}" y1="${avgY}" y2="${avgY}" />
+          <text class="bar-chart-avg-label" x="${(W - padR).toFixed(1)}" y="${(Number(avgY) - 4).toFixed(1)}" text-anchor="end">Avg ${esc(fmtDuration(avgSeconds))}</text>
+        </svg>
+        <div class="trend-tip hidden"></div>
+      </div>`;
+  }
+  function wireBarChart(root) {
+    (root || appEl).querySelectorAll('.bar-chart').forEach((box) => {
+      const g = JSON.parse(box.dataset.geom);
+      const tip = box.querySelector('.trend-tip');
+      const bars = [...box.querySelectorAll('.bar-chart-bar')];
+      const show = (bar) => {
+        bars.forEach((b) => b.classList.toggle('active', b === bar));
+        const it = g.items[Number(bar.dataset.i)];
+        tip.innerHTML = `<strong>${esc(it.label)}</strong><div>${esc(fmtDuration(it.seconds))}${it.sub ? ` · ${esc(it.sub)}` : ''}</div>`;
+        tip.classList.remove('hidden');
+        // Positioned relative to the scrollport (`box`), not the (often much
+        // wider) scrollable SVG inside it, so this stays correct however far
+        // the chart has been scrolled.
+        const boxRect = box.getBoundingClientRect();
+        const barRect = bar.getBoundingClientRect();
+        const left = barRect.left - boxRect.left + barRect.width / 2;
+        tip.style.left = `${Math.min(Math.max(0, left - tip.offsetWidth / 2), box.clientWidth - tip.offsetWidth)}px`;
+      };
+      bars.forEach((bar) => bar.addEventListener('click', () => show(bar)));
+    });
+  }
+
   // Every dog's notes in one list (dogs still at the shelter): shared tips,
   // notes from walks, and your own private notes, newest first. Tapping a dog
   // opens its profile, where the tips and your note can be edited; the list
@@ -4309,7 +5230,16 @@
       return;
     }
     if (state.tab !== myTab || state.statsScope !== 'notes') return;
-    const kindLabel = { tip: 'Tip', walk: state.notesMine ? 'From your walk' : 'From a walk', private: 'Private · only you' };
+    // A "walk" note is labeled by the dog it's actually about (walk vs. play
+    // session), never by the asker's current Settings preference -- so a
+    // dog's own species, not whoever's looking, decides the wording.
+    const kindLabelFor = (dog, kind) => {
+      if (kind === 'tip') return 'Tip';
+      if (kind === 'playgroup') return state.notesMine ? 'From your play group' : 'From play group';
+      if (kind === 'private') return 'Private · only you';
+      const t = termsOf(dog);
+      return state.notesMine ? `From your ${t.noun}` : `From ${aNoun(t)}`;
+    };
     const groupHtml = (g) => `
       <div class="card compact all-notes-dog" data-dogid="${g.dog.id}">
         <div class="all-notes-head" role="button" tabindex="0">
@@ -4321,9 +5251,9 @@
           </div>
         </div>
         <ul class="tip-list">
-          ${g.notes.map((n) => `<li class="tip-item${n.kind === 'walk' ? ' tip-item-walk' : ''}">
+          ${g.notes.map((n) => `<li class="tip-item${(n.kind === 'walk' || n.kind === 'playgroup') ? ' tip-item-walk' : ''}">
             <span class="tip-bullet">•</span>
-            <span class="tip-text">${esc(n.body)} <span class="tip-date">${kindLabel[n.kind]} · ${fmtNoteDate(n.at)}</span></span>
+            <span class="tip-text">${linkifyYouTube(esc(n.body))} <span class="tip-date">${kindLabelFor(g.dog, n.kind)} · ${fmtNoteDate(n.at)}</span></span>
           </li>`).join('')}
         </ul>
       </div>`;
@@ -4338,8 +5268,8 @@
       ${data.dogs.length ? `<input type="search" id="allNotesSearch" class="all-notes-search" placeholder="Search by dog or word…" value="${esc(state.notesQuery)}" />` : ''}
       <div class="stack tight" id="allNotesList"></div>
       <p class="small muted center" style="margin-top:14px;">${state.notesMine
-    ? 'Dogs still at the shelter. Your private notes and the notes from your walks. Shared tips have no owner, so they\'re only under All notes.'
-    : 'Dogs still at the shelter. Tips and walk notes never show who wrote them; private notes are yours alone.'}</p>`;
+    ? `${capFirst(nounFor(prefSpeciesKeys(), true))} still at the shelter. Your private notes and the notes from your ${myTerms().nouns}. Shared tips have no owner, so they're only under All notes.`
+    : `${capFirst(nounFor(prefSpeciesKeys(), true))} still at the shelter. Tips and notes left at the end never show who wrote them; private notes are yours alone.`}</p>`;
     wireStatsScopeSwitch();
     appEl.querySelectorAll('.notes-scope-btn').forEach((b) => b.addEventListener('click', () => {
       const mine = b.dataset.mine === '1';
@@ -4354,8 +5284,8 @@
       list.innerHTML = shown.length
         ? shown.map(groupHtml).join('')
         : `<div class="card compact center"><p class="muted" style="margin:0;">${data.dogs.length ? 'No notes match that search.'
-          : state.notesMine ? 'No notes of yours yet. Private notes and notes you leave at the end of a walk show up here. 🐾'
-          : 'No notes yet. Tips and walk notes for any dog will show up here. 🐾'}</p></div>`;
+          : state.notesMine ? 'No notes of yours yet. Private notes and notes you leave at the end of ${aNoun(myTerms())} show up here. 🐾'
+          : `No notes yet. Tips and notes for any ${nounFor(prefSpeciesKeys())} will show up here. 🐾`}</p></div>`;
       list.querySelectorAll('.all-notes-head').forEach((head) => {
         const open = async () => {
           try {
@@ -4380,10 +5310,83 @@
     if (search) search.addEventListener('input', () => { state.notesQuery = search.value; draw(); });
   }
 
+  // Every dog's play group notes in one place, grouped by dog, newest
+  // activity first. Reuses the desk's own /api/playgroup-notes -- unlike
+  // /api/notes above, it isn't limited to dogs still at the shelter (the
+  // desk already relies on seeing history for dogs who've since left), so a
+  // dog here may show a "left" badge and still list its past sessions.
+  // Tapping a dog opens the same play group popup the profile button does.
+  async function renderPlaygroupStats() {
+    const myTab = state.tab;
+    let data;
+    try {
+      data = await api('/api/playgroup-notes');
+    } catch (err) {
+      if (state.tab === myTab) showLoadError('the play group notes', err, renderStats);
+      return;
+    }
+    if (state.tab !== myTab || state.statsScope !== 'playgroup') return;
+    const byDog = new Map();
+    for (const n of data.notes) {
+      if (!byDog.has(n.dogId)) byDog.set(n.dogId, { dog: data.dogs[n.dogId] || { id: n.dogId, name: n.dogName, kennelLocation: n.kennelLocation }, notes: [] });
+      byDog.get(n.dogId).notes.push(n);
+    }
+    // allNotes() already sorts each dog's own notes newest-first; sort the
+    // dogs themselves by their most recent note.
+    const groups = [...byDog.values()].sort((a, b) => (b.notes[0].noteDate || '').localeCompare(a.notes[0].noteDate || ''));
+    const groupHtml = (g) => `
+      <div class="card compact all-notes-dog" data-dogid="${g.dog.id}">
+        <div class="all-notes-head" role="button" tabindex="0">
+          <img loading="lazy" decoding="async" class="dog-photo small" src="${g.dog.photoUrl ? esc(g.dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
+          <div class="dog-info">
+            <p class="dog-name">${esc(g.dog.name)}${g.dog.stillListed === false ? ' <span class="badge neutral">left</span>' : ''}</p>
+            <p class="dog-meta">${g.notes.length} note${g.notes.length === 1 ? '' : 's'}${g.dog.kennelLocation ? ` · 🏠 ${esc(g.dog.kennelLocation)}` : ''} · tap to open ›</p>
+          </div>
+        </div>
+        <ul class="pg-list">
+          ${g.notes.map((n) => `<li class="pg-entry">
+            <div class="pg-entry-head">
+              <span class="pg-entry-date">${fmtPgDate(n.noteDate)}</span>
+              ${n.author ? `<span class="small muted">— ${esc(n.author)}</span>` : ''}
+            </div>
+            <div class="pg-entry-body">${pgBodyHtml(n.body, data.dogs)}</div>
+          </li>`).join('')}
+        </ul>
+      </div>`;
+    const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => n.text.toLowerCase().includes(q) || (n.author || '').toLowerCase().includes(q));
+    appEl.innerHTML = `
+      ${statsScopeSwitchHtml()}
+      <h2 class="section-heading" style="margin-top:0;">Play group notes</h2>
+      ${data.notes.length ? `<input type="search" id="pgStatsSearch" class="all-notes-search" placeholder="Search by dog or word…" value="${esc(state.pgStatsQuery)}" />` : ''}
+      <div class="stack tight" id="pgStatsList"></div>
+      <p class="small muted center" style="margin-top:14px;">Every play group note on record, including dogs who've since left the shelter. Tap a dog to open their notes and add one.</p>`;
+    wireStatsScopeSwitch();
+    const list = document.getElementById('pgStatsList');
+    const draw = () => {
+      const q = state.pgStatsQuery.trim().toLowerCase();
+      const shown = groups.filter((g) => matches(g, q));
+      list.innerHTML = shown.length
+        ? shown.map(groupHtml).join('')
+        : `<div class="card compact center"><p class="muted" style="margin:0;">${groups.length ? 'No notes match that search.' : 'No play group notes yet. 🥎'}</p></div>`;
+      list.querySelectorAll('.all-notes-head').forEach((head) => {
+        const open = () => showPlaygroupNotes(head.parentElement.dataset.dogid);
+        head.addEventListener('click', open);
+        head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+      });
+    };
+    draw();
+    const search = document.getElementById('pgStatsSearch');
+    if (search) search.addEventListener('input', () => { state.pgStatsQuery = search.value; draw(); });
+  }
+
   async function renderStats() {
     if (state.statsScope === 'notes') {
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
       return renderAllNotes();
+    }
+    if (state.statsScope === 'playgroup') {
+      appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+      return renderPlaygroupStats();
     }
     if (state.statsScope === 'shelter') {
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
@@ -4391,6 +5394,8 @@
     }
     if (state.statsScope === 'together') {
       if (state.togetherDay) return renderTogetherDay();
+      if (state.togetherAvgChart) return renderTogetherAvgChart();
+      if (state.togetherByActivity) return renderTogetherByActivity();
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
       return renderTogether();
     }
@@ -4413,40 +5418,66 @@
     if (state.statsView === 'day') {
       return renderStatsDay();
     }
+    if (state.statsView === 'byActivity') {
+      return renderStatsByActivity(data, walksData.walks);
+    }
+    if (state.statsView === 'byActivityDog') {
+      return renderStatsByActivityDog(data, walksData.walks);
+    }
+    if (state.statsView === 'avgChart') {
+      return renderStatsAvgChart(walksData.walks);
+    }
+    if (state.statsView === 'byDogScope') {
+      return renderStatsByDogScope(walksData.walks);
+    }
 
     if (state.statsRange !== 'lifetime') {
       return renderStatsToday(walksData.walks);
     }
 
     const t = data.totals;
+    // Lifetime wording follows the species actually walked/cuddled/etc,
+    // never the volunteer's current Settings preference -- see
+    // historySpeciesKeys above.
+    const lifetimeKeys = historySpeciesKeys(data.perDog);
+    const lifetimeTerms = termsFor(lifetimeKeys);
     const heading = statsScopeSwitchHtml() + `<h2 class="section-heading" style="margin-top:0;">Lifetime Stats</h2>`;
     const rangeToggle = `<button type="button" id="statsRangeToggle" class="btn primary" style="margin-bottom:10px;">View today's stats</button>`;
     const tiles = `
       <div class="stat-grid">
-        <div class="stat-tile"><div class="value">${t.totalWalks}</div><div class="label">Walks completed</div></div>
-        <div class="stat-tile"><div class="value">${t.uniqueDogs}</div><div class="label">Dogs walked</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(t.totalSeconds)}</div><div class="label">Total time walking</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(t.avgSeconds)}</div><div class="label">Avg walk length</div></div>
+        ${statDrillTile(t.totalWalks, 'Total interactions', 'byActivity')}
+        ${statDrillTile(t.uniqueDogs, `${capFirst(nounFor(lifetimeKeys, true))} ${lifetimeTerms.past}`, 'byDogSection')}
+        ${statDrillTile(fmtDuration(t.totalSeconds), `Total time ${lifetimeTerms.ing}`, 'byActivity')}
+        ${statDrillTile(fmtDuration(t.avgSeconds), `Avg ${lifetimeTerms.noun} length`, 'avgChart')}
       </div>`;
     if (!data.perDog.length) {
-      appEl.innerHTML = heading + rangeToggle + tiles + `<p class="empty-state">No completed walks yet.</p>`;
+      appEl.innerHTML = heading + rangeToggle + tiles + `<p class="empty-state">No completed ${lifetimeTerms.nouns} yet.</p>`;
       wireStatsRangeToggle();
+      wireStatDrillTiles('lifetime');
       return;
     }
 
-    const dayRow = (day) => `
+    const dayRow = (day) => {
+      const dKeys = historySpeciesKeys(day.walks);
+      const dTerms = termsFor(dKeys);
+      return `
       <div class="card dog-card" data-daykey="${esc(day.key)}">
         <div class="dog-info">
           <p class="dog-name">${fmtDayHeading(day.key)}</p>
-          <p class="dog-meta">${day.dogCount} dog${day.dogCount === 1 ? '' : 's'} walked · ${day.walkCount} walk${day.walkCount === 1 ? '' : 's'}</p>
+          <p class="dog-meta">${day.dogCount} ${nounFor(dKeys, day.dogCount !== 1)} ${dTerms.past} · ${day.walkCount} ${day.walkCount === 1 ? dTerms.noun : dTerms.nouns}</p>
           <p class="dog-meta">${fmtClock(day.firstStart)} – ${fmtClock(day.lastEnd)}</p>
         </div>
         <span class="muted">›</span>
       </div>`;
+    };
     // Visits grouped by month, collapsed except the newest, so a long history
     // doesn't push By Dog far down the page.
     const dayRows = visitMonthsHtml(state.statsDays, (day) => day.key, dayRow,
-      (days) => { const walks = days.reduce((n, d) => n + d.walkCount, 0); return `${days.length} visit${days.length === 1 ? '' : 's'} · ${walks} walk${walks === 1 ? '' : 's'}`; },
+      (days) => {
+        const walks = days.reduce((n, d) => n + d.walkCount, 0);
+        const mTerms = termsFor(historySpeciesKeys(days.flatMap((d) => d.walks)));
+        return `${days.length} shelter visit${days.length === 1 ? '' : 's'} · ${walks} ${walks === 1 ? mTerms.noun : mTerms.nouns}`;
+      },
       'statsOpenMonths');
 
     state.statsPerDogRaw = data.perDog;
@@ -4460,9 +5491,10 @@
 
     appEl.innerHTML = heading + rangeToggle + tiles +
       `<h2 class="section-heading">Shelter Visits</h2><div class="stack tight">${dayRows}</div>` +
-      `<h2 class="section-heading">By Dog</h2>${byDogFilterRow}<div class="stack" id="byDogList">${byDogRows}</div>`;
+      `<h2 class="section-heading" id="statsByDogHeading">By Dog</h2>${byDogFilterRow}<div class="stack" id="byDogList">${byDogRows}</div>`;
 
     wireStatsRangeToggle();
+    wireStatDrillTiles('lifetime');
     wireByDogList();
     wireVisitMonths('statsOpenMonths');
     document.getElementById('statsPresentOnlyCheck').addEventListener('change', (e) => {
@@ -4478,6 +5510,197 @@
         renderStats();
       });
     });
+  }
+
+  // A stat tile that opens a drill-down instead of just displaying a number.
+  // `drill` is the statsView to switch to -- 'byDogSection' is special: it
+  // doesn't navigate, it scrolls the already-visible By Dog list into view
+  // (only Lifetime has one on the same page; Today/Day get their own
+  // 'byDogScope' screen instead, wired the normal way).
+  function statDrillTile(value, label, drill) {
+    return `<div class="stat-tile stats-drilldown-tile" data-drill="${drill}" style="cursor:pointer;"><div class="value">${value}</div><div class="label">${label} ›</div></div>`;
+  }
+  function wireStatDrillTiles(scope) {
+    appEl.querySelectorAll('.stat-tile[data-drill]').forEach((tile) => {
+      tile.addEventListener('click', () => {
+        if (tile.dataset.drill === 'byDogSection') {
+          const target = document.getElementById('statsByDogHeading');
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        state.statsBreakdownScope = scope;
+        state.statsView = tile.dataset.drill;
+        renderStats();
+      });
+    });
+  }
+  // Today/Day's breakdown, chart and by-dog screens are computed client-side
+  // from the walks already on the page (no extra round-trip, and these
+  // scopes are small enough that the shared /api/walks?limit=1000 fetch
+  // always has every one of them); Lifetime keeps using the server's
+  // accurate, unbounded totals. Returns null for 'lifetime' so callers know
+  // to fall back to the server data they already have.
+  function statsBreakdownSourceWalks(allWalks) {
+    if (state.statsBreakdownScope === 'today') return allWalks.filter((w) => w.ended_at && dateKey(w.started_at) === todayKey());
+    if (state.statsBreakdownScope === 'day') {
+      const day = state.statsDays.find((d) => d.key === state.selectedDateKey);
+      return day ? day.walks : [];
+    }
+    return null;
+  }
+  function backFromStatsBreakdown() {
+    state.statsView = state.statsBreakdownScope === 'day' ? 'day' : 'summary';
+    renderStats();
+  }
+  function byActivityOf(walks) {
+    const map = new Map();
+    for (const w of walks) {
+      const key = w.activity || 'walk';
+      if (!map.has(key)) map.set(key, { activity: key, count: 0, totalSeconds: 0 });
+      const e = map.get(key);
+      e.count += 1;
+      e.totalSeconds += w.duration_seconds || 0;
+    }
+    return [...map.values()].map((e) => ({ ...e, avgSeconds: e.count ? e.totalSeconds / e.count : 0 })).sort((a, b) => b.count - a.count);
+  }
+  // Shaped like /api/stats's perDog, for renderByDogRows -- still_listed
+  // isn't on a walk row, so these always read as present (fine: Today/Day
+  // dogs are virtually certain to still be listed; Lifetime's own By Dog
+  // list, which does know, is a scroll away via 'byDogSection').
+  function byDogOf(walks) {
+    const map = new Map();
+    for (const w of walks) {
+      if (!map.has(w.dog_id)) {
+        map.set(w.dog_id, {
+          id: w.dog_id, name: w.dog_name, photo_url: w.photo_url, species: w.species,
+          stillListed: true, removedAt: null,
+          blue_markers: w.blue_markers, poo_status: w.poo_status, star_flag: w.star_flag, pb_flag: w.pb_flag,
+          walkCount: 0, totalSeconds: 0, lastWalkedAt: null
+        });
+      }
+      const e = map.get(w.dog_id);
+      e.walkCount += 1;
+      e.totalSeconds += w.duration_seconds || 0;
+      if (!e.lastWalkedAt || w.started_at > e.lastWalkedAt) e.lastWalkedAt = w.started_at;
+    }
+    return [...map.values()].sort((a, b) => b.walkCount - a.walkCount || (b.lastWalkedAt || '').localeCompare(a.lastWalkedAt || ''));
+  }
+
+  // "By Activity": a breakdown of every kind of interaction in the current
+  // scope (a dog person might see Walk, Cuddle, Playgroup, Daycation; a cat
+  // person just Cuddle and Matchmaking). Tapping one drills into which dogs
+  // it was with, reusing the By Dog list filtered down.
+  function renderStatsByActivity(data, allWalks) {
+    const scopeWalks = statsBreakdownSourceWalks(allWalks);
+    const byActivity = scopeWalks ? byActivityOf(scopeWalks) : data.byActivity;
+    const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">By Activity</h2>`;
+    const rows = byActivity.map((a) => {
+      const info = activityInfo(a.activity);
+      return `
+      <div class="card dog-card" data-activity="${esc(a.activity)}">
+        <div class="dog-info">
+          <p class="dog-name">${info.emoji} ${info.label}</p>
+          <p class="dog-meta">${a.count} ${a.count === 1 ? info.noun : info.noun + 's'} · ${fmtDuration(a.totalSeconds)} total · avg ${fmtDuration(a.avgSeconds)}</p>
+        </div>
+        <span class="muted">›</span>
+      </div>`;
+    }).join('');
+    appEl.innerHTML = heading +
+      (byActivity.length ? `<div class="stack tight">${rows}</div>` : `<p class="empty-state">No completed interactions yet.</p>`);
+    document.getElementById('backToStatsBtn').addEventListener('click', backFromStatsBreakdown);
+    appEl.querySelectorAll('[data-activity]').forEach((card) => {
+      card.addEventListener('click', () => {
+        state.statsActivityFilter = card.dataset.activity;
+        state.statsView = 'byActivityDog';
+        renderStats();
+      });
+    });
+  }
+
+  // Which dogs one activity type was with, for the volunteer drilling in from
+  // By Activity -- same By Dog card list, scoped to just that activity.
+  // Lifetime fetches the server's accurate totals; Today/Day compute from
+  // the walks already on the page.
+  async function renderStatsByActivityDog(data, allWalks) {
+    const myTab = state.tab;
+    const activity = state.statsActivityFilter;
+    const info = activityInfo(activity);
+    const scopeWalks = statsBreakdownSourceWalks(allWalks);
+    let perDog;
+    let totals;
+    if (scopeWalks) {
+      const filtered = scopeWalks.filter((w) => (w.activity || 'walk') === activity);
+      perDog = byDogOf(filtered);
+      const totalSeconds = filtered.reduce((s, w) => s + (w.duration_seconds || 0), 0);
+      totals = { totalWalks: filtered.length, uniqueDogs: perDog.length, totalSeconds, avgSeconds: filtered.length ? totalSeconds / filtered.length : 0 };
+    } else {
+      appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
+      let apiData;
+      try {
+        apiData = await api(`/api/stats?userId=${state.currentUser.id}&activity=${encodeURIComponent(activity)}`);
+      } catch (err) {
+        if (state.tab === myTab) showLoadError('that breakdown', err, renderStats);
+        return;
+      }
+      if (state.tab !== myTab) return;
+      perDog = apiData.perDog;
+      totals = apiData.totals;
+    }
+    const heading = `<button id="backToActivityBtn" class="btn back-btn">← Back to By Activity</button><h2 class="section-heading" style="margin-top:0;">${info.emoji} ${info.label}</h2>`;
+    const tiles = `
+      <div class="stat-grid">
+        <div class="stat-tile"><div class="value">${totals.totalWalks}</div><div class="label">${capFirst(info.noun)}${totals.totalWalks === 1 ? '' : 's'}</div></div>
+        <div class="stat-tile"><div class="value">${totals.uniqueDogs}</div><div class="label">${capFirst(nounFor(historySpeciesKeys(perDog), true))}</div></div>
+        <div class="stat-tile"><div class="value">${fmtDuration(totals.totalSeconds)}</div><div class="label">Total time</div></div>
+        <div class="stat-tile"><div class="value">${fmtDuration(totals.avgSeconds)}</div><div class="label">Avg length</div></div>
+      </div>`;
+    state.statsPerDogRaw = perDog;
+    const byDogRows = renderByDogRows(perDog, info);
+    appEl.innerHTML = heading + tiles +
+      (perDog.length
+        ? `<h2 class="section-heading">By Dog</h2><div class="stack" id="byDogList">${byDogRows}</div>`
+        : `<p class="empty-state">No completed ${info.noun}s yet.</p>`);
+    document.getElementById('backToActivityBtn').addEventListener('click', () => {
+      state.statsView = 'byActivity';
+      renderStats();
+    });
+    if (perDog.length) wireByDogList();
+  }
+
+  // The drill-down behind "Avg length": a bar per interaction, oldest to
+  // newest, against a dashed average line. Only ever the activity the
+  // average itself is based on (walk-only, with the same all-activities
+  // fallback for a volunteer who's never logged a walk -- see
+  // walkOnlyAvgSeconds), so the chart never shows a number the tile's own
+  // average doesn't.
+  function renderStatsAvgChart(allWalks) {
+    const scopeWalks = statsBreakdownSourceWalks(allWalks) || allWalks;
+    const walkRows = scopeWalks.filter((w) => (w.activity || 'walk') === 'walk');
+    const sourceWalks = walkRows.length ? walkRows : scopeWalks;
+    const ordered = [...sourceWalks].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+    const avgSeconds = ordered.length ? ordered.reduce((s, w) => s + (w.duration_seconds || 0), 0) / ordered.length : 0;
+    const items = ordered.map((w) => ({ label: w.dog_name, seconds: w.duration_seconds || 0, sub: `${fmtDate(w.started_at)} · ${fmtClock(w.started_at)}` }));
+    const terms = termsFor(historySpeciesKeys(ordered));
+    const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(terms.noun)} length, oldest to newest</h2>`;
+    appEl.innerHTML = heading +
+      `<p class="small muted" style="margin-top:-6px;">${ordered.length} ${ordered.length === 1 ? terms.noun : terms.nouns} · avg ${fmtDuration(avgSeconds)} · tap a bar for details</p>` +
+      `<div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>`;
+    document.getElementById('backToStatsBtn').addEventListener('click', backFromStatsBreakdown);
+    wireBarChart();
+  }
+
+  // The drill-down behind "Dogs/Cats walked" on Today's Stats and the day
+  // view (Lifetime's own tile scrolls to its existing By Dog list instead).
+  function renderStatsByDogScope(allWalks) {
+    const scopeWalks = statsBreakdownSourceWalks(allWalks) || [];
+    const perDog = byDogOf(scopeWalks);
+    const keys = historySpeciesKeys(scopeWalks);
+    const terms = termsFor(keys);
+    const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(nounFor(keys, true))} ${terms.past}</h2>`;
+    appEl.innerHTML = heading +
+      (perDog.length ? `<div class="stack" id="byDogList">${renderByDogRows(perDog)}</div>` : `<p class="empty-state">No completed ${terms.nouns} yet.</p>`);
+    document.getElementById('backToStatsBtn').addEventListener('click', backFromStatsBreakdown);
+    if (perDog.length) wireByDogList();
   }
 
   function wireStatsRangeToggle() {
@@ -4505,7 +5728,7 @@
           <p class="dog-meta walk-times-display" data-id="${w.id}">${fmtClock(w.started_at)} – ${fmtClock(w.ended_at)} · ${fmtDuration(w.duration_seconds)}</p>
           ${w.edited && (w.original_started_at || w.original_ended_at) ? `<p class="small muted original-times-display hidden" data-id="${w.id}">Originally scanned: ${fmtClock(w.original_started_at)} – ${w.original_ended_at ? fmtClock(w.original_ended_at) : '-'}</p>` : ''}
           <div class="edit-times-row hidden" data-id="${w.id}" style="margin:4px 0;">
-            <select class="edit-activity" aria-label="Activity">${activityOptionsHtml(w.activity)}</select>
+            <select class="edit-activity" aria-label="Activity">${activityOptionsHtml(w.activity, speciesOf(w).activities)}</select>
             <label class="small edit-time-line">Start <input type="time" class="edit-start-time" value="${toLocalTimeInput(w.started_at)}" /></label>
             <label class="small edit-time-line">End <input type="time" class="edit-end-time" value="${w.ended_at ? toLocalTimeInput(w.ended_at) : ''}" /></label>
             <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="margin-top:4px;">Save</button>
@@ -4515,27 +5738,22 @@
           <div class="row" style="margin-top:6px;align-items:center;justify-content:flex-end;">
             <button class="btn small-btn walk-action-btn dog-notes-btn" data-dog-id="${w.dog_id}" title="${esc(w.dog_name)}'s tips and your private note" aria-label="${esc(w.dog_name)}'s notes">📝 Dog notes</button>
             <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit walk (times, activity)" aria-label="Edit walk">✎</button>
-            <button class="btn danger walk-action-btn delete-walk-btn" data-id="${w.id}" data-name="${esc(w.dog_name)}" title="Delete walk" aria-label="Delete walk">🗑</button>
+            <button class="btn danger walk-action-btn delete-walk-btn" data-id="${w.id}" data-name="${esc(w.dog_name)}" data-species="${esc(w.species || '')}" title="Delete walk" aria-label="Delete walk">🗑</button>
           </div>
         </div>
       </div>`;
   }
 
   function wireStatsWalkCards(dayKey, refresh) {
-    appEl.querySelectorAll('.dog-card[data-dogid]').forEach((card) => {
-      const openProfile = async () => {
-        try {
-          const { dog, walks } = await api(`/api/dogs/${card.dataset.dogid}?userId=${state.currentUser.id}`);
-          showProfileSheet(dog, walks);
-        } catch (err) { toast(err.message, 'error'); }
-      };
-      card.querySelector('.dog-photo').addEventListener('click', openProfile);
-      card.querySelector('.dog-name').addEventListener('click', (e) => { if (!tapOnNameControl(e)) openProfile(); });
-    });
+    // Photo / name taps on these cards: the app-wide card handler.
     document.querySelectorAll('.delete-walk-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!(await appConfirm(`Delete this walk with ${btn.dataset.name}? This can't be undone.`, { title: 'Delete walk', confirmText: 'Delete', danger: true }))) return;
+        // This walk's own species, not the volunteer's current preference --
+        // deleting a historical dog walk must never read as "delete this
+        // play session" just because Settings was switched to cats since.
+        const delTerms = termsFor([btn.dataset.species || 'dog']);
+        if (!(await appConfirm(`Delete this ${delTerms.noun} with ${btn.dataset.name}? This can't be undone.`, { title: `Delete ${delTerms.noun}`, confirmText: 'Delete', danger: true }))) return;
         try {
           await api(`/api/walks/${btn.dataset.id}`, { method: 'DELETE' });
           await refresh();
@@ -4597,8 +5815,8 @@
     return `
       <button id="showAddWalkFormBtn" class="btn" style="margin-bottom:10px;">＋ Add a walk that wasn't scanned in</button>
       <div id="addWalkForm" class="card compact hidden" style="margin-bottom:10px;">
-        <label class="small">Dog</label>
-        <input type="text" id="addWalkDogSearch" placeholder="Start typing a dog's name…" autocomplete="off" />
+        <label class="small">${esc(speciesInfo(prefSpeciesKeys()[0]).label)}${worksWithBoth() ? ' or cat' : ''}</label>
+        <input type="text" id="addWalkDogSearch" placeholder="Start typing a name…" autocomplete="off" />
         <div id="addWalkDogResults" style="max-height:150px;overflow-y:auto;margin-bottom:8px;"></div>
         <p id="addWalkSelectedDog" class="small muted"></p>
         <label class="small" for="addWalkActivity">Activity</label>
@@ -4636,11 +5854,26 @@
   // "how'd today go" than lifetime totals most of the time. Computed
   // client-side from the same walks list already fetched for the lifetime
   // view (limit=1000 easily covers one day), so no extra round-trip.
+  // Averaging duration across every kind of interaction lumps a 10-minute
+  // cuddle in with a 12-hour daycation, so this sticks to walk-only duration
+  // whenever there are any walks in the set, falling back to the overall
+  // average otherwise (a cat volunteer never has a 'walk' row).
+  function walkOnlyAvgSeconds(walks) {
+    const walkRows = walks.filter((w) => (w.activity || 'walk') === 'walk');
+    if (walkRows.length) return walkRows.reduce((s, w) => s + (w.duration_seconds || 0), 0) / walkRows.length;
+    if (!walks.length) return 0;
+    return walks.reduce((s, w) => s + (w.duration_seconds || 0), 0) / walks.length;
+  }
+
   function renderStatsToday(allWalks) {
     const todaysWalks = allWalks.filter((w) => w.ended_at && dateKey(w.started_at) === todayKey());
     const uniqueDogs = new Set(todaysWalks.map((w) => w.dog_id)).size;
     const totalSeconds = todaysWalks.reduce((s, w) => s + (w.duration_seconds || 0), 0);
-    const avgSeconds = todaysWalks.length ? totalSeconds / todaysWalks.length : 0;
+    const avgSeconds = walkOnlyAvgSeconds(todaysWalks);
+    // Wording follows the species actually seen today, not the volunteer's
+    // current Settings preference -- see historySpeciesKeys above.
+    const todayKeys = historySpeciesKeys(todaysWalks);
+    const todayTerms = termsFor(todayKeys);
     // This is the tab's default landing view -- make it unmistakable that
     // it's showing today only, not everything, before you even get to the
     // toggle button.
@@ -4648,27 +5881,32 @@
     const rangeToggle = `<button type="button" id="statsRangeToggle" class="btn primary" style="margin-bottom:10px;">View lifetime stats</button>`;
     const tiles = `
       <div class="stat-grid">
-        <div class="stat-tile"><div class="value">${todaysWalks.length}</div><div class="label">Walks today</div></div>
-        <div class="stat-tile"><div class="value">${uniqueDogs}</div><div class="label">Dogs walked</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(totalSeconds)}</div><div class="label">Total time walking</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(avgSeconds)}</div><div class="label">Avg walk length</div></div>
+        ${statDrillTile(todaysWalks.length, 'Total interactions today', 'byActivity')}
+        ${statDrillTile(uniqueDogs, `${capFirst(nounFor(todayKeys, true))} ${todayTerms.past}`, 'byDogScope')}
+        ${statDrillTile(fmtDuration(totalSeconds), `Total time ${todayTerms.ing}`, 'byActivity')}
+        ${statDrillTile(fmtDuration(avgSeconds), `Avg ${todayTerms.noun} length`, 'avgChart')}
       </div>`;
     const items = todaysWalks
       .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
       .map((w) => statsWalkCardHtml(w, '')).join('');
     appEl.innerHTML = heading + rangeToggle + tiles +
       (todaysWalks.length
-        ? `<h2 class="section-heading">Today's Walks</h2><div class="stack">${items}</div>`
-        : `<p class="empty-state">No walks yet today.</p>`) +
+        ? `<h2 class="section-heading">Today's ${titleCase(todayTerms.nouns)}</h2><div class="stack">${items}</div>`
+        : `<p class="empty-state">No ${todayTerms.nouns} yet today.</p>`) +
       `<div style="margin-top:12px;">${addWalkSectionHtml()}</div>`;
     // Same edit / delete / add controls as the per-day view, right here, so
     // fixing a walk from today doesn't mean detouring through lifetime stats.
     wireStatsWalkCards(todayKey(), () => renderStats());
     wireAddWalkSection(todayKey(), () => renderStats());
     wireStatsRangeToggle();
+    wireStatDrillTiles('today');
   }
 
-  function renderByDogRows(perDog) {
+  // activityOverride (an ACTIVITIES entry): when the list has been filtered
+  // down to one activity (the By Activity drill-down), the dog-meta line
+  // names that activity instead of guessing from species ("3 cuddles", not
+  // "3 walks" for a cat that was never walked).
+  function renderByDogRows(perDog, activityOverride) {
     const visible = state.statsPresentOnly ? perDog.filter((d) => d.stillListed) : perDog;
     if (!visible.length) return `<p class="empty-state">No dogs match this filter.</p>`;
     return visible.map((d) => {
@@ -4678,17 +5916,19 @@
         starFlag: !!d.star_flag,
         pbFlag: !!d.pb_flag
       };
+      const noun = activityOverride ? activityOverride.noun : termsOf(d).noun;
+      const nouns = activityOverride ? activityOverride.noun + 's' : termsOf(d).nouns;
       return `
       <div class="card compact" data-id="${d.id}">
         <div class="dog-card">
           <img loading="lazy" decoding="async" class="dog-photo" src="${d.photo_url ? esc(d.photo_url) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges({ ...markerDog, name: d.name })}${d.stillListed ? '' : ` <span class="badge neutral">Adopted/Removed${d.removedAt ? ' ' + fmtDate(d.removedAt) : ''}</span>`}</p>
-            <p class="dog-meta">${d.walkCount} walk${d.walkCount === 1 ? '' : 's'} · ${fmtDuration(d.totalSeconds)} total</p>
-            <p class="dog-meta">Last walked ${fmtDate(d.lastWalkedAt)}</p>
+            <p class="dog-meta">${d.walkCount} ${d.walkCount === 1 ? noun : nouns} · ${fmtDuration(d.totalSeconds)} total</p>
+            <p class="dog-meta">${activityOverride ? `Last on ${fmtDate(d.lastWalkedAt)}` : `Last ${termsOf(d).past} ${fmtDate(d.lastWalkedAt)}`}</p>
           </div>
         </div>
-        ${dogActionButtons(d.id)}
+        ${dogActionButtons(d.id, false, d.species)}
       </div>`;
     }).join('');
   }
@@ -4735,12 +5975,14 @@
     if (state.updatesRange === 'week') midnight.setDate(midnight.getDate() - midnight.getDay());
     return midnight;
   }
-  function updatesFiltered() { return state.updatesRange !== 'all' || state.updatesKinds.size > 0; }
+  // Showing only dogs or only cats counts as filtered too (the other's news stays unread).
+  function updatesFiltered() { return state.updatesRange !== 'all' || state.updatesKinds.size > 0 || updatesSpeciesKeys().length < prefSpeciesKeys().length; }
   function updatesFilterHtml(rows) {
     const since = updatesSince();
     const n = (kind) => rows.filter((r) => r.kind === kind).length;
     const parts = [[n('alert'), n('alert') === 1 ? 'alert' : 'alerts'], [n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
     return `
+      ${speciesSwitchHtml(true)}
       <div class="card compact stack" style="gap:6px;margin-bottom:10px;">
         <div class="seg seg-small" role="radiogroup" aria-label="Show updates from" style="margin:0;">
           ${UPDATES_RANGES.map(([key, label]) => `<button type="button" class="seg-btn ${state.updatesRange === key ? 'on' : ''}" data-updates-range="${key}" style="white-space:nowrap;padding:7px 4px;" role="radio" aria-checked="${state.updatesRange === key}">${label}</button>`).join('')}
@@ -4752,6 +5994,7 @@
       </div>`;
   }
   function wireUpdatesFilter() {
+    wireSpeciesSwitch(() => { state.updatesScrollTop = 0; renderUpdates(); }, true);
     appEl.querySelectorAll('[data-updates-range]').forEach((b) => b.addEventListener('click', () => {
       if (b.dataset.updatesRange === state.updatesRange) return;
       state.updatesRange = b.dataset.updatesRange;
@@ -4780,7 +6023,8 @@
       return;
     }
     if (state.tab !== myTab) return;
-    const rows = data.updates || [];
+    // Shelter alerts concern everyone; animal news follows the Dogs / Cats switch.
+    const rows = (data.updates || []).filter((r) => r.kind === 'alert' || !r.dog_id || inSpeciesView(r, updatesSpeciesKeys()));
     if (!rows.length) {
       appEl.innerHTML = updatesFiltered()
         ? updatesFilterHtml(rows) + `<p class="empty-state">No updates match these filters.</p>`
@@ -4801,23 +6045,20 @@
     function updateCardHtml(r) {
       if (r.kind === 'alert') return alertCardHtml(r);
       return `
-      <div class="card compact${r.unread ? ' update-unread' : ''}"${r.dog_id && (r.kind === 'new_dog' || r.kind === 'returned') ? ` data-id="${r.dog_id}"` : ''}>
+      <div class="card compact${r.unread ? ' update-unread' : ''}"${r.dog_id && (r.kind === 'new_dog' || r.kind === 'returned') ? ` data-id="${r.dog_id}"` : ''}${r.dog_id ? ` data-dog-id="${r.dog_id}"` : ''}>
         <div class="dog-card">
           ${r.dog_id
-            // Only the adopted-kind photo gets the lightbox trigger --
-            // new_dog/returned photos already have their own tap-to-walk/edit
-            // shortcut (wireDogActionButtons, wired via their [data-id]
-            // ancestor below) and shouldn't have two competing behaviors.
-            ? `<img loading="lazy" decoding="async" class="dog-photo small${r.kind === 'adopted' ? ' photo-bio-trigger' : ''}"${r.kind === 'adopted' ? ` data-dog-id="${r.dog_id}"` : ''} src="${r.photo_url ? esc(r.photo_url) : '/icons/icon-192.png'}" alt="" />`
+            // Photo: full screen; name/info: profile (the app-wide card taps).
+            ? `<img loading="lazy" decoding="async" class="dog-photo small" src="${r.photo_url ? esc(r.photo_url) : '/icons/icon-192.png'}" alt="" />`
             : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind, r.detail)}</div>`}
           <div class="dog-info">
-            <p class="dog-name${r.dog_id && r.kind === 'adopted' ? ' photo-bio-trigger" style="cursor:pointer;" data-dog-id="' + r.dog_id : ''}">${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? markerBadges(eventDogLike(r), true) : ''}</p>
-            ${r.personalHighlight ? '<span class="badge eligible">You walked this dog</span>' : ''}
+            <p class="dog-name"${r.dog_id ? ' style="cursor:pointer;"' : ''}>${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? speciesTagHtml(r) + ' ' + markerBadges(eventDogLike(r), true) : ''}</p>
+            ${r.personalHighlight ? `<span class="badge eligible">You ${termsOf(r).past} this ${esc(speciesOf(r).noun)}</span>` : ''}
             ${r.favorite ? '<span class="badge fav">♥ Your favorite</span>' : ''}
             <p class="dog-meta">${fmtDate(r.occurred_at)}</p>
           </div>
         </div>
-        ${r.dog_id && (r.kind === 'new_dog' || r.kind === 'returned') ? dogActionButtons(r.dog_id) : ''}
+        ${r.dog_id && (r.kind === 'new_dog' || r.kind === 'returned') ? dogActionButtons(r.dog_id, false, r.species) : ''}
         ${r.dog_id && r.kind === 'adopted' ? `
         <div class="row" style="margin-top:6px;">
           <button class="btn small-btn view-profile-btn" data-id="${r.dog_id}">View cached profile</button>
@@ -4927,13 +6168,17 @@
       return renderStats();
     }
     const dayTotalSeconds = day.walks.reduce((s, w) => s + (w.duration_seconds || 0), 0);
-    const dayAvgSeconds = day.walks.length ? dayTotalSeconds / day.walks.length : 0;
+    const dayAvgSeconds = walkOnlyAvgSeconds(day.walks);
+    // Wording follows the species actually seen that day, not the
+    // volunteer's current Settings preference -- see historySpeciesKeys above.
+    const dayKeys = historySpeciesKeys(day.walks);
+    const dayViewTerms = termsFor(dayKeys);
     const dayTiles = `
       <div class="stat-grid">
-        <div class="stat-tile"><div class="value">${day.walkCount}</div><div class="label">Walks that day</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(dayTotalSeconds)}</div><div class="label">Total time</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(dayAvgSeconds)}</div><div class="label">Avg walk length</div></div>
-        <div class="stat-tile"><div class="value">${day.dogCount}</div><div class="label">Dogs walked</div></div>
+        ${statDrillTile(day.walkCount, 'Total interactions that day', 'byActivity')}
+        ${statDrillTile(fmtDuration(dayTotalSeconds), 'Total time', 'byActivity')}
+        ${statDrillTile(fmtDuration(dayAvgSeconds), `Avg ${dayViewTerms.noun} length`, 'avgChart')}
+        ${statDrillTile(day.dogCount, `${capFirst(nounFor(dayKeys, true))} ${dayViewTerms.past}`, 'byDogScope')}
       </div>`;
 
     // Same 4 fixed shift windows as the Available list's slot grid, so a
@@ -4955,7 +6200,7 @@
         </div>`).join('')}
       </div>
       ${state.selectedShiftIndex != null ? `
-      <p class="small muted" style="margin:6px 0;">Showing only ${esc(WALK_SLOTS[state.selectedShiftIndex].label)} walks - <a href="#" id="clearShiftFilterLink">show all</a></p>` : ''}`;
+      <p class="small muted" style="margin:6px 0;">Showing only ${esc(WALK_SLOTS[state.selectedShiftIndex].label)} ${dayViewTerms.nouns} - <a href="#" id="clearShiftFilterLink">show all</a></p>` : ''}`;
 
     const shiftFilteredWalks = state.selectedShiftIndex != null
       ? day.walks.filter((w) => slotIndexForIso(w.started_at) === state.selectedShiftIndex)
@@ -4976,6 +6221,7 @@
       state.selectedShiftIndex = null;
       renderStats();
     });
+    wireStatDrillTiles('day');
     appEl.querySelectorAll('.shift-drilldown-tile').forEach((tile) => {
       tile.addEventListener('click', () => {
         const idx = Number(tile.dataset.shiftIndex);
@@ -5011,14 +6257,18 @@
       if (!q) { results.innerHTML = ''; return; }
       const matches = allDogs.filter((d) => dogNameMatches(d, q)).slice(0, 6);
       results.innerHTML = matches.map((d) => `
-        <div class="card compact dog-card add-walk-dog-result" data-id="${d.id}" data-name="${esc(d.name)}">
+        <div class="card compact dog-card add-walk-dog-result" data-id="${d.id}" data-name="${esc(d.name)}" data-species="${esc(d.species || 'dog')}">
           <img loading="lazy" decoding="async" class="dog-photo small" src="${d.photoUrl ? esc(d.photoUrl) : '/icons/icon-192.png'}" alt="" />
-          <div class="dog-info"><p class="dog-name">${esc(d.name)} ${markerBadges(d)}</p>${akaHtml(d)}</div>
+          <div class="dog-info"><p class="dog-name">${esc(d.name)} ${speciesTagHtml(d)} ${markerBadges(d)}</p>${akaHtml(d)}</div>
         </div>`).join('');
       results.querySelectorAll('.add-walk-dog-result').forEach((row) => {
         row.addEventListener('click', () => {
           addWalkSelectedDogId = row.dataset.id;
           selectedLabel.textContent = `Selected: ${row.dataset.name}`;
+          // Only what this animal can do (a cat: cuddle or matchmaking).
+          const activitySelect = document.getElementById('addWalkActivity');
+          const keys = speciesInfo(row.dataset.species).activities;
+          activitySelect.innerHTML = activityOptionsHtml(keys.includes(activitySelect.value) ? activitySelect.value : keys[0], keys);
           results.innerHTML = '';
           searchInput.value = row.dataset.name;
         });
@@ -5063,7 +6313,7 @@
     const btn = document.querySelector('.tab-btn[data-tab="walk"]');
     if (!btn) return;
     const inWalk = ['active', 'ending', 'summary'].includes(state.walk.phase);
-    btn.innerHTML = inWalk ? `${activityInfo(state.walk.activity).emoji}<span class="tab-label">Walk</span>` : '📷<span class="tab-label">Scan</span>';
+    btn.innerHTML = inWalk ? `${activityInfo(state.walk.activity).emoji}<span class="tab-label">${capFirst(termsOf(state.walk.dog).verb)}</span>` : '📷<span class="tab-label">Scan</span>';
   }
 
   let lastWalkPhase = null;
@@ -5098,7 +6348,7 @@
     appEl.innerHTML = `
       <div class="stack">
         <div class="card center">
-          <p>Scan the QR tag on a dog's kennel to check them out for a walk.</p>
+          <p>Scan the QR tag on ${nounFor(prefSpeciesKeys()) === 'animal' ? 'an animal' : `a ${nounFor(prefSpeciesKeys())}`}'s kennel to check them out for ${aNoun(myTerms())}.</p>
           <button id="scanBtn" class="btn primary big">📷 Scan Dog QR Code</button>
         </div>
       </div>`;
@@ -5270,7 +6520,7 @@
     stopQrScanner();
     const animalId = parseAnimalIdFromScan(decodedText);
     if (!animalId) {
-      appAlert('Could not read a dog ID from that code.');
+      appAlert(`Could not read ${worksWithBoth() ? 'an animal' : `a ${nounFor(prefSpeciesKeys())}`} ID from that code.`);
       state.walk.phase = 'idle';
       renderWalk();
       return;
@@ -5287,7 +6537,7 @@
   // (and drag that list's remembered scroll spot to the top with it).
   let dogLookupSeq = 0;
   async function selectDogById(animalId) {
-    appEl.innerHTML = `<p class="muted small center">Looking up dog…</p>`;
+    appEl.innerHTML = `<p class="muted small center">Looking up ${esc(nounFor(prefSpeciesKeys()))}…</p>`;
     const lookup = ++dogLookupSeq;
     const stale = () => lookup !== dogLookupSeq || state.tab !== 'walk';
     try {
@@ -5304,7 +6554,7 @@
       // a stale record could be the wrong dog, so check the card first.
       if (dog.stillListed === false) {
         const goOn = await appConfirm(
-          `${dog.name} (ID ${dog.id}) is not in the database anymore. If they were adopted and returned, they may not have been added back to the site yet. Double check that the dog you're walking matches the kennel card you scanned before you go on.`,
+          `${dog.name} (ID ${dog.id}) is not in the database anymore. If they were adopted and returned, they may not have been added back to the site yet. Double check that the ${speciesOf(dog).noun} you're with matches the kennel card you scanned before you go on.`,
           { title: '⚠️ Not on the shelter\'s site', confirmText: 'It matches, continue', cancelText: 'Scan again' }
         );
         // Not stale(): closing the dialog is itself a Back, which bumps dogLookupSeq.
@@ -5328,6 +6578,7 @@
       if (err.status === 404 && err.body && err.body.notListedYet) {
         state.walk.phase = 'unlisted';
         state.walk.unlistedId = err.body.id;
+        state.walk.unlistedSpecies = null; // a new card: ask again
         state.walk.dog = null;
         renderWalk();
         return;
@@ -5351,34 +6602,56 @@
   function renderWalkUnlisted() {
     const id = state.walk.unlistedId;
     const known = state.walk.dog; // a stand-in from an earlier walk on this card, if any
-    const startActivity = usualActivity();
+    // Which species the card is for: a stand-in already knows; otherwise the
+    // volunteer's own (asked when they work with both, see the chips below).
+    if (!state.walk.unlistedSpecies || known) state.walk.unlistedSpecies = known ? (known.species || 'dog') : prefSpeciesKeys()[0];
+    const kindKey = state.walk.unlistedSpecies;
+    const kind = speciesInfo(kindKey);
+    const startActivity = usualActivityFor({ species: kindKey });
+    const askSpecies = !known && worksWithBoth();
     appEl.innerHTML = `
       <div class="stack tight walk-confirm">
         <div class="card unlisted-card">
           <img class="dog-photo unlisted-photo" src="/dog-silhouettes/${encodeURIComponent(String(id))}.svg?v=1" alt="" />
           <p class="dog-name" style="margin:0 0 6px;">📋 New kennel card · ID ${esc(String(id))}</p>
-          <p style="margin:0 0 8px;">We don't have this dog's details yet. The shelter printed their kennel card before adding them to the online listing, which Shelter Walk checks every 30 minutes.</p>
-          <p style="margin:0;"><strong>You can still walk them.</strong> We'll keep this walk under ID ${esc(String(id))} and add it to the dog's record as soon as their details come in.</p>
+          <p style="margin:0 0 8px;">We don't have this ${esc(kind.noun)}'s details yet. The shelter printed their kennel card before adding them to the online listing, which Shelter Walk checks every 30 minutes.</p>
+          <p style="margin:0;"><strong>You can still ${(kind.terms || DOG_TERMS).verbWith} them.</strong> We'll keep this ${(kind.terms || DOG_TERMS).noun} under ID ${esc(String(id))} and add it to the ${esc(kind.noun)}'s record as soon as their details come in.</p>
         </div>
+        ${askSpecies ? `
         <div class="card compact">
+          <label class="small">This card is for a</label>
+          <div id="unlistedSpeciesPick" class="marker-row" style="gap:6px;">${Object.entries(speciesTable()).map(([key, info]) => `
+            <button type="button" class="btn small-btn filter-chip ${key === kindKey ? 'active' : ''}" data-species="${key}" style="width:auto;flex:0 0 auto;">${info.emoji} ${esc(info.label)}</button>`).join('')}</div>
+        </div>` : ''}
+        <div class="card compact">
+          ${kind.levelRules ? `
           <label class="small">Check the kennel card yourself first</label>
           <ul class="small" style="margin:6px 0 10px;padding-left:20px;">
             <li><strong>Age:</strong> puppies under 6 months old can't be walked.</li>
             <li><strong>Stickers:</strong> make sure your level is cleared for any behavior or EVO stickers on the card.</li>
-          </ul>
+          </ul>` : ''}
           <label style="display:block;">Kennel location</label>
-          ${kennelLetterPickerHtml('locationPicker', (known && known.kennelLocation) || '')}
+          ${kennelLetterPickerHtml('locationPicker', (known && known.kennelLocation) || '', { letters: kind.kennels || KENNEL_LETTERS })}
         </div>
         <div class="action-dock">
-          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity, kind.activities)}</div>
           <div class="row start-row">
             <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
             <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
           </div>
         </div>
-        <button id="backToScanBtn2" class="btn">Scan a different dog</button>
+        <button id="backToScanBtn2" class="btn">Scan a different ${esc(nounFor(prefSpeciesKeys()))}</button>
       </div>`;
     wireKennelLetterPicker('locationPicker');
+    const speciesPick = document.getElementById('unlistedSpeciesPick');
+    if (speciesPick) {
+      speciesPick.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-species]');
+        if (!chip || chip.dataset.species === state.walk.unlistedSpecies) return;
+        state.walk.unlistedSpecies = chip.dataset.species;
+        renderWalkUnlisted();
+      });
+    }
     const changeBtn = document.getElementById('changeActivityBtn');
     const pickRow = document.getElementById('activityPickRow');
     const startBtn = document.getElementById('startWalkBtn');
@@ -5402,7 +6675,7 @@
       try {
         const res = await api('/api/walks/start', {
           method: 'POST',
-          body: JSON.stringify({ dogId: id, location, userId: state.currentUser.id, activity, unlisted: true })
+          body: JSON.stringify({ dogId: id, location, userId: state.currentUser.id, activity, unlisted: true, species: kindKey })
         });
         const { dog, walks } = await api(`/api/dogs/${id}?userId=${state.currentUser.id}`);
         dog.kennelLocation = res.location;
@@ -5432,73 +6705,124 @@
 
   // Soft timing tip from the shelter's "Which dogs should I walk?" sign:
   // first walks in the morning, non-POO second walks mid-day, POO dogs'
-  // last walks after 4pm (POO asterisk close to 7pm). Never blocks anything.
+  // last walks after 4pm, POO asterisk dogs last out (5:30-7pm). Never
+  // blocks anything.
   function walkTimingHint(dog, walks) {
     const today = todayKey();
     const walksToday = (walks || []).filter((w) => w.started_at && dateKey(w.started_at) === today).length;
     const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' })
       .formatToParts(new Date());
     const hour = Number(parts.find((p) => p.type === 'hour').value) + Number(parts.find((p) => p.type === 'minute').value) / 60;
-    const poo = dog.pooStatus === 'poo' || dog.pooStatus === 'priority';
+    // All three yellow stickers (POO, POO asterisk, PB) get the same tips.
+    const poo = dog.pooStatus === 'poo' || dog.pooStatus === 'priority' || !!dog.pbFlag;
     const star = dog.pooStatus === 'priority';
 
-    // A POO dog gets a last walk after 4pm (close to 7pm for the asterisk
-    // ones) either way, whether this is its 1st or 2nd walk today -- so a
-    // mid-day slot spent on one is a non-POO dog that may miss its only
-    // walk of the day. Unlike the other branches below, this applies
-    // regardless of walksToday.
+    // A POO asterisk dog is the last out at night (5:30-7pm), so a walk
+    // from 4 to 5:30pm gets its own warning. Any other time it gets the
+    // same yellow tips as any POO dog.
+    if (star && hour >= 16 && hour < 17.5) {
+      return 'POO* dogs should be walked between 5:30-7 PM so they\'re the last out at night.';
+    }
+
+    // A POO dog gets a last walk after 4pm either way, whether this is its
+    // 1st or 2nd walk today -- so a mid-day slot spent on one is a non-POO
+    // dog that may miss its only walk of the day. Unlike the other branches
+    // below, this applies regardless of walksToday.
     if (poo && hour >= 11 && hour < 16) {
-      return star
-        ? 'POO asterisk dogs still get a walk close to 7pm either way. If you can, save this mid-day slot for a non-POO dog instead -- otherwise they may not get a second walk today. A quick potty break is fine if that\'s all this one needs.'
-        : 'POO dogs still get a walk after 4pm either way. If you can, save this mid-day slot for a non-POO dog instead -- otherwise they may not get a second walk today. A quick potty break is fine if that\'s all this one needs.';
+      return 'POOs will have a guaranteed walk from 4-7 PM. Since it is midday, focus on 2nd walks for non-POO dogs first.';
     }
 
     if (walksToday !== 1) return '';
-    if (hour < 11) {
-      if (star) return '';
-      return poo
-        ? 'This dog already has a walk logged today. Mornings are for first walks, and POO dogs\' second walk is best after 4pm, so they go out late.'
-        : 'This dog already has a walk logged today. Mornings are for first walks; non-POO second walks are best mid-day (11am to 4pm).';
-    }
-    if (hour < 16) return ''; // non-POO 2nd walk now is ideal; the POO case is handled above
+    if (hour < 16) return ''; // non-POO 2nd walk mid-day is ideal; the POO case is handled above
     if (!poo) return 'Evenings are for POO dogs\' last walks. If any POO dogs still need theirs, consider walking them first.';
-    if (star && hour < 18) return 'A POO asterisk dog\'s last walk is best close to 7pm. POO dogs with only 1 walk come first.';
     return '';
   }
 
   const startActivityLabel = (key) => `${activityInfo(key).emoji} Start ${activityInfo(key).label}`;
 
+  // Same rule serializeDog uses for `eligible`/`notEligibleReason`, mirrored
+  // here ONLY so toggling a marker (PB, a blue sticker) updates the bar the
+  // instant it's tapped, before anything is saved. The server stays the
+  // source of truth: this preview is thrown away and re-checked for real
+  // against the saved dog (see the Start Walk handler below), so it can
+  // never be used to actually get a walk past the real rule.
+  function previewEligibility(dog, pending, level) {
+    const hasEvo = (pending.blueMarkers || []).includes('blue_evo');
+    const hasAnyBlue = (pending.blueMarkers || []).length > 0;
+    if (hasEvo && !level.allowEvo) return { eligible: false, reason: 'evo_restricted' };
+    if (hasAnyBlue && !level.allowBlue) return { eligible: false, reason: 'blue_restricted' };
+    if (dog.isPendingAdoption && !level.allowPending) return { eligible: false, reason: 'pending_restricted' };
+    if (dog.isStrayHold && !pending.pbFlag && !dog.isAlumni) return { eligible: false, reason: 'stray_hold' };
+    if (pending.pbFlag) return level.allowPb ? { eligible: true, reason: null } : { eligible: false, reason: 'pb_restricted' };
+    if (dog.effectiveDaysInShelter == null) return { eligible: null, reason: null };
+    return dog.effectiveDaysInShelter >= level.minDays ? { eligible: true, reason: null } : { eligible: false, reason: 'days' };
+  }
+
   function renderWalkConfirm() {
     const dog = state.walk.dog;
-    const eligible = dog.eligible;
     const tooYoung = dog.tooYoung;
-    const startActivity = usualActivity();
-    const isEvo = (dog.blueMarkers || []).includes('blue_evo');
-    // EVO (experienced volunteers only) overrides every other background —
-    // it's the one caution that must never be missed, even over the hard
-    // puppy block.
-    appEl.classList.toggle('evo-caution-bg', isEvo);
-    appEl.classList.toggle('age-block', !isEvo && tooYoung);
-    appEl.classList.toggle('caution-stripes', !isEvo && !tooYoung && !eligible);
-    // PB overrides the days-in-shelter caution (handled server-side via
-    // `eligible`), but still needs its own "short walk only" reminder.
-    appEl.classList.toggle('pb-only-bg', !isEvo && !tooYoung && dog.pbFlag);
-    let eligibilityBadge;
-    if (tooYoung) {
-      eligibilityBadge = `<span class="badge blocked">🚫 Too young to walk (${esc(dog.age)})</span>`;
-    } else if (eligible) {
-      eligibilityBadge = `<span class="badge eligible">Eligible to walk ✓</span>`;
-    } else {
-      eligibilityBadge = `<span class="badge caution">⚠ ${esc(notEligibleReasonText(dog))}</span>`;
+    const kind = speciesOf(dog);
+    const startActivity = usualActivityFor(dog);
+    // Set once loadExperienceLevels() resolves (cached after the first call
+    // anywhere in the app, so usually already warm) -- lets marker taps
+    // preview eligibility locally; see refreshEligibilityDisplay below.
+    let previewLevel = null;
+
+    function eligibilityBadgeHtml() {
+      if (!kind.levelRules) return ''; // any volunteer may visit any of them
+      if (tooYoung) return `<span class="badge blocked">🚫 Too young to walk (${esc(dog.age)})</span>`;
+      if (dog.eligible) return `<span class="badge eligible">Eligible to walk ✓</span>`;
+      return `<span class="badge caution">⚠ ${esc(notEligibleReasonText(dog))}</span>`;
+    }
+    // Redraws everything that depends on eligibility/markers, called once
+    // right after the initial render and again after every marker tap --
+    // DOM patches rather than a full re-render, so an in-progress edit
+    // elsewhere on the screen (e.g. the kennel-location picker) is never
+    // disturbed. If a level is loaded, a pending marker change (not yet
+    // saved) is previewed into `dog.eligible` first -- see previewEligibility
+    // above. That's a local guess only: the real value is always re-fetched
+    // from the server before a walk can actually start (see Start Walk).
+    function refreshEligibilityDisplay() {
+      const pending = state.walk.pendingMarkers;
+      if (!tooYoung && previewLevel) {
+        const { eligible, reason } = previewEligibility(dog, pending, previewLevel);
+        if (eligible != null) { dog.eligible = eligible; dog.notEligibleReason = reason; }
+      }
+      const isEvo = (pending.blueMarkers || []).includes('blue_evo');
+      // EVO (experienced volunteers only) overrides every other background —
+      // it's the one caution that must never be missed, even over the hard
+      // puppy block.
+      appEl.classList.toggle('evo-caution-bg', isEvo);
+      appEl.classList.toggle('age-block', !isEvo && tooYoung);
+      appEl.classList.toggle('caution-stripes', !isEvo && !tooYoung && dog.eligible === false);
+      // PB overrides the days-in-shelter caution (handled server-side via
+      // `eligible`), but still needs its own "short walk only" reminder.
+      appEl.classList.toggle('pb-only-bg', !isEvo && !tooYoung && pending.pbFlag);
+      const badgeEl = document.getElementById('eligibilityBadge');
+      if (badgeEl) badgeEl.innerHTML = eligibilityBadgeHtml();
+      const banner = document.getElementById('pbWarningBanner');
+      if (banner) banner.classList.toggle('hidden', !pending.pbFlag);
+      // A dog not cleared for this level can't be walked at all -- disabling
+      // Start (rather than only catching it on click) means ticking PB back
+      // off immediately blocks it again too, same as ticking it on unblocks it.
+      const startBtnEl = document.getElementById('startWalkBtn');
+      if (startBtnEl && !tooYoung) startBtnEl.disabled = dog.eligible === false;
+    }
+    if (kind.levelRules) {
+      loadExperienceLevels().then((levels) => {
+        previewLevel = levels.find((l) => l.key === (state.currentUser.experienceLevel || 'beginner')) || levels[0] || null;
+      }).catch(() => {});
     }
 
-    const timingHint = walkTimingHint(dog, state.walk.allWalks);
+    // The timing tips are about POO dogs' walks: nothing to say without stickers.
+    const timingHint = kind.stickers ? walkTimingHint(dog, state.walk.allWalks) : '';
 
     appEl.innerHTML = `
       <div class="stack tight walk-confirm">
         ${tooYoung ? `<div class="card compact hard-block-banner"><strong>🚫 Puppies under 6 months old can't be walked - no exceptions.</strong></div>` : ''}
-        ${!tooYoung && dog.pbFlag ? `<div class="pb-warning-banner">Potty Break Only: short, potty-focused walk only</div>` : ''}
-        ${dog.stillListed === false ? `<div class="timing-hint" role="note">📋 ${esc(dog.name)} isn't on the shelter's site right now. You can still walk them, and this walk will be added to their record.</div>` : ''}
+        ${!tooYoung && kind.stickers ? `<div id="pbWarningBanner" class="pb-warning-banner hidden">Potty Break Only: short, potty-focused walk only</div>` : ''}
+        ${dog.handlingWarning ? `<div class="card compact hard-block-banner handling-warning" role="alert"><strong>⚠ You were with ${esc(dog.handlingWarning.name)} (an ${esc(dog.handlingWarning.adult)}) at ${esc(fmtClock(dog.handlingWarning.at))}.</strong> ${esc(dog.handlingWarning.young.charAt(0).toUpperCase() + dog.handlingWarning.young.slice(1))}s first, then ${esc(dog.handlingWarning.adult)}s: wash up and change before ${esc(dog.name)}.</div>` : ''}
+        ${dog.stillListed === false ? `<div class="timing-hint" role="note">📋 ${esc(dog.name)} isn't on the shelter's site right now. You can still ${termsOf(dog).verbWith} them, and this ${termsOf(dog).noun} will be added to their record.</div>` : ''}
         ${!tooYoung && timingHint ? `<div class="timing-hint" role="note">ℹ️ ${esc(timingHint)} <button type="button" class="link-btn" id="timingHintGuideBtn">Which dogs should I walk?</button></div>` : ''}
         <div class="card compact" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
@@ -5506,15 +6830,15 @@
               <path d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.03 7.03 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.14 7.14 0 0 0-.06.94 7.14 7.14 0 0 0 .06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/>
             </svg>
           </button>` : ''}
-          <div class="dog-card">
-            <img loading="lazy" decoding="async" class="dog-photo photo-bio-trigger" data-dog-id="${dog.id}" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
+          <div class="dog-card" data-dog-id="${dog.id}">
+            <img loading="lazy" decoding="async" class="dog-photo" src="${dog.photoUrl ? esc(dog.photoUrl) : '/icons/icon-192.png'}" alt="" />
             <div class="dog-info">
-              <p class="dog-name photo-bio-trigger" data-dog-id="${dog.id}" style="cursor:pointer;">${esc(dog.name)} ${markerBadges(dog)}</p>
+              <p class="dog-name" style="cursor:pointer;">${esc(dog.name)} ${speciesTagHtml(dog)} ${markerBadges(dog)}</p>
               ${akaHtml(dog)}
               <p class="dog-meta">${esc(dog.breed || '')} · ${esc(dog.sex || '')} · ${esc(dog.age || '')} · ID ${dog.id}</p>
               <p class="dog-meta">${shelterDaysHtml(dog)} in shelter</p>
               ${dog.currentWalk && dog.currentWalk.userId !== state.currentUser.id ? currentWalkBadge(dog) : ''}
-              ${eligibilityBadge}
+              <span id="eligibilityBadge">${eligibilityBadgeHtml()}</span>${youngBadgeHtml(dog)}
             </div>
           </div>
         </div>
@@ -5524,7 +6848,7 @@
             <h3 style="margin-top:0;">Advanced settings</h3>
             <label class="small" style="display:flex;align-items:center;gap:6px;">
               <input type="checkbox" id="alumniCheck" ${dog.isAlumni ? 'checked' : ''} />
-              Alumni (returned dog) - add bonus days toward eligibility
+              Alumni (returned dog) - add bonus days toward eligibility, and allow walking through a stray hold
             </label>
             <div id="alumniBonusRow" class="${dog.isAlumni ? '' : 'hidden'}" style="margin-top:8px;">
               <label class="small" for="alumniBonusSelect">Bonus days</label>
@@ -5542,13 +6866,16 @@
           </div>
         </div>` : ''}
         <div class="card compact">
-          <p class="small" style="margin:0 0 4px;">${walksTogetherText(dog)}</p>
-          <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
+          <div class="notes-card-head">
+            <p class="small">${walksTogetherText(dog)}</p>
+            ${showsPlaygroup(dog) ? `<button type="button" class="btn small-btn pg-mini-btn playgroup-notes-btn" data-dog-id="${dog.id}" data-short>${playgroupButtonLabel((dog.playgroupCounts || {}).notes, true)}</button>` : ''}
+          </div>
+          <div class="dog-notes-mount dog-notes-compact">${dogNotesShellHtml()}</div>
         </div>
         <div class="card compact">
-          ${markerPickerHtml()}
-          <label style="display:block;margin-top:14px;">Kennel location</label>
-          ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung })}
+          ${kind.stickers ? markerPickerHtml() : ''}
+          <label style="display:block;${kind.stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
+          ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung, letters: kennelsOf(dog) })}
           <div id="saveAllRow" class="row hidden" style="margin-top:10px;align-items:center;gap:10px;">
             <button id="saveAllBtn" class="btn">Save Changes</button>
             <span id="saveAllCheckmark" class="save-checkmark hidden" aria-hidden="true">✓</span>
@@ -5557,15 +6884,20 @@
         </div>
         ${tooYoung ? `<button id="startWalkBtn" class="btn primary big" disabled>Cannot Walk This Dog</button>` : `
         <div class="action-dock">
-          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity)}</div>
+          <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity, kind.activities)}</div>
           <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
           <div class="row start-row">
             <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
             <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
           </div>
         </div>`}
-        <button id="backToScanBtn2" class="btn">Scan a different dog</button>
+        <button id="backToScanBtn2" class="btn">Scan a different ${esc(nounFor(prefSpeciesKeys()))}</button>
       </div>`;
+
+    // Paints the background/badge/banner/button-disabled state for what's
+    // already on screen (the badge text itself was already right from the
+    // template above; this adds the parts that need a live DOM node).
+    refreshEligibilityDisplay();
 
     // Save Changes only appears once something on this screen actually
     // differs from what was loaded — nothing to save otherwise.
@@ -5578,7 +6910,7 @@
       const dirty = JSON.stringify(state.walk.pendingMarkers) !== initialMarkersJson || currentLocation !== initialLocation;
       row.classList.toggle('hidden', !dirty);
     }
-    wireMarkerPicker(state.walk.pendingMarkers, checkDirty);
+    wireMarkerPicker(state.walk.pendingMarkers, () => { checkDirty(); refreshEligibilityDisplay(); });
     mountDogNotes(appEl.querySelector('.dog-notes-mount'), dog, state.walk.allWalks);
     const timingGuideBtn = document.getElementById('timingHintGuideBtn');
     if (timingGuideBtn) timingGuideBtn.addEventListener('click', () => openGuide('which dogs'));
@@ -5607,8 +6939,13 @@
           });
           dog.isAlumni = updated.isAlumni;
           dog.alumniBonusDays = updated.alumniBonusDays;
-          dog.effectiveDaysInShelter = dog.daysInShelter + (dog.isAlumni ? dog.alumniBonusDays : 0);
+          // Same formula as effectiveDays in server.js's dogEligibility --
+          // previousDaysInShelter (automatic, banked on a detected return)
+          // stacks with the alumni bonus (manual), so both have to be
+          // included here too or this recompute silently drops the former.
+          dog.effectiveDaysInShelter = dog.daysInShelter + (dog.isAlumni ? dog.alumniBonusDays : 0) + (dog.previousDaysInShelter || 0);
           if (updated.eligible != null) dog.eligible = updated.eligible;
+          dog.notEligibleReason = updated.notEligibleReason;
           // Close on save rather than reopening the popup after the
           // re-render — leaving it open made it easy to miss that anything
           // happened at all.
@@ -5620,11 +6957,14 @@
       });
     }
 
+    // A species without stickers has nothing to save here.
     async function saveMarkers() {
+      if (!kind.stickers) return null;
       return api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.walk.pendingMarkers) });
     }
 
     async function applyMarkerUpdate(updated) {
+      if (!updated) return;
       dog.blueMarkers = updated.blueMarkers;
       dog.pooStatus = updated.pooStatus;
       dog.starFlag = updated.starFlag;
@@ -5696,20 +7036,37 @@
     const startBtn = document.getElementById('startWalkBtn');
     startBtn.addEventListener('click', async () => {
       const activity = startBtn.dataset.activity || 'walk';
-      // Not a hard block (that's tooYoung, which already disables this
-      // button) -- just make sure it's a deliberate choice, since the
-      // caution background alone is easy to miss in the moment.
-      if (!dog.tooYoung && dog.eligible === false) {
-        const proceed = await appConfirm(
-          `Based on your current experience level, you're not cleared to walk ${dog.name} right now (${notEligibleReasonText(dog)}). You can change your level any time from Settings (the gear icon, top right).`,
-          { title: 'Not cleared for this dog', confirmText: 'Walk anyway', cancelText: 'Cancel', danger: true }
-        );
+      // Not a hard block -- just make sure it's a deliberate choice, since
+      // the warning banner alone is easy to miss in the moment.
+      if (dog.handlingWarning) {
+        const proceed = await appConfirm(handlingWarningText(dog), {
+          title: `⚠ ${dog.handlingWarning.adult.charAt(0).toUpperCase() + dog.handlingWarning.adult.slice(1)} before a ${dog.handlingWarning.young}`,
+          confirmText: "I've washed up and changed", cancelText: 'Cancel', danger: true
+        });
         if (!proceed) return;
       }
       const location = kennelLetterPickerValue('locationPicker');
       startBtn.disabled = true;
+      // Save whatever's pending (e.g. a PB tap that was never explicitly
+      // "Saved") before checking eligibility, so a change that allows or
+      // blocks this walk is checked with its own effect already in place —
+      // never against the state from before it was made. Not cleared for
+      // this dog is a hard stop, no override: re-check with the server's
+      // own fresh answer, not the local preview, before starting.
       try {
-        await saveMarkers();
+        const markerUpdate = await saveMarkers();
+        await applyMarkerUpdate(markerUpdate);
+      } catch (err) {
+        appAlert(`Couldn't save: ${err.message}`);
+        startBtn.disabled = false;
+        return;
+      }
+      if (!dog.tooYoung && dog.eligible === false) {
+        appAlert(`${dog.name} isn't cleared to walk at your experience level right now (${notEligibleReasonText(dog)}). You can change your level any time from Settings (the gear icon, top right), or ask a privileged volunteer to adjust this dog's markers.`);
+        renderWalkConfirm();
+        return;
+      }
+      try {
         const res = await api('/api/walks/start', {
           method: 'POST',
           body: JSON.stringify({ dogId: dog.id, location, userId: state.currentUser.id, activity })
@@ -5739,10 +7096,12 @@
   // same chips as the Available list's "Kennel wing" filter. Tapping the
   // selected letter again clears it, unless the picker is made with
   // required: true. The current value lives on the picker's data-value.
+  // letters: the species' own (dogs A-E, cats A-D); the default is the dog
+  // wings, which Audit Mode walks.
   const KENNEL_LETTERS = ['A', 'B', 'C', 'D', 'E'];
-  function kennelLetterPickerHtml(pickerId, selected, { disabled = false } = {}) {
-    const value = KENNEL_LETTERS.includes(selected) ? selected : '';
-    return `<div id="${pickerId}" class="marker-row" style="gap:6px;" data-value="${value}">${KENNEL_LETTERS.map((letter) => `
+  function kennelLetterPickerHtml(pickerId, selected, { disabled = false, letters = KENNEL_LETTERS } = {}) {
+    const value = letters.includes(selected) ? selected : '';
+    return `<div id="${pickerId}" class="marker-row" style="gap:6px;" data-value="${value}">${letters.map((letter) => `
       <button type="button" class="btn small-btn filter-chip ${value === letter ? 'active' : ''}" data-letter="${letter}" style="width:auto;flex:0 0 44px;" ${disabled ? 'disabled' : ''}>${letter}</button>`).join('')}</div>`;
   }
   function kennelLetterPickerValue(pickerId) {
@@ -5853,16 +7212,19 @@
           <p class="walk-dog-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
           ${akaHtml(w.dog, 'center')}
           <p class="muted small center" style="margin-top:-6px;">ID ${w.dog.id}</p>
-          ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This walk will be added to their record once the shelter lists them.</p>`
-            : w.dog.stillListed === false ? `<p class="small center unlisted-note">📋 Not on the shelter's site right now. This walk will still be added to their record.</p>` : ''}
+          ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This ${activityInfo(w.activity).noun} will be added to their record once the shelter lists them.</p>`
+            : w.dog.stillListed === false ? `<p class="small center unlisted-note">📋 Not on the shelter's site right now. This ${activityInfo(w.activity).noun} will still be added to their record.</p>` : ''}
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
           <div class="timer-display" id="timerDisplay">00:00</div>
+          ${speciesOf(w.dog).visitMinutes ? `<p class="small center muted visit-hint" id="visitHint">${speciesOf(w.dog).visitMinutes[0]} to ${speciesOf(w.dog).visitMinutes[1]} minutes is usually best</p>` : ''}
         </div>
+        ${relockNeeded(w.dog) ? `<div class="card compact relock-banner" role="note">🔒 <strong>Being adopted:</strong> their condo stays locked. Lock it again when you're done.</div>` : ''}
         <div class="card compact">
           <label class="small">Doing something else?</label>
-          <div id="activityChoice" class="marker-row activity-chips">${activityChipsHtml(w.activity || 'walk')}</div>
+          <div id="activityChoice" class="marker-row activity-chips">${activityChipsHtml(w.activity || 'walk', speciesOf(w.dog).activities)}</div>
           <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
         </div>
+        <button type="button" id="walkPlaygroupBtn" class="btn primary playgroup-notes-btn${w.activity === 'playgroup' ? '' : ' hidden'}" data-dog-id="${w.dog.id}" data-session>${playgroupSessionButtonLabel((w.dog.playgroupCounts || {}).notes)}</button>
         <div class="card compact autostop-card" id="autoStopCard">
           <span class="small" id="autoStopText"></span>
           <button type="button" id="extendWalkBtn" class="btn small-btn">＋10 min</button>
@@ -5874,7 +7236,7 @@
           <div class="dog-notes-mount hidden"></div>
         </div>
         <button id="viewProfileBtn" class="btn">View Full Profile</button>
-        <button id="earlierWalksBtn" class="btn">✎ Edit an earlier walk / notes</button>
+        <button id="earlierWalksBtn" class="btn">✎ Edit an earlier activity / notes</button>
         <div class="action-dock"><button id="endWalkBtn" class="btn danger big">End ${activityInfo(w.activity).label}</button></div>
         <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
       </div>`;
@@ -5900,6 +7262,7 @@
           topbarTitle.textContent = `${a.label} in Progress`;
           updateWalkTabLabel();
           syncMakeUsualBtn(makeUsualBtn, activity);
+          document.getElementById('walkPlaygroupBtn').classList.toggle('hidden', activity !== 'playgroup');
           toast(`Switched to ${a.emoji} ${a.label}`);
         } catch (err) { toast(err.message, 'error'); }
       });
@@ -5937,7 +7300,7 @@
       renderWalk();
     });
     document.getElementById('cancelWalkBtn').addEventListener('click', async () => {
-      if (!(await appConfirm(`Cancel this walk with ${w.dog.name}? It won't be recorded.`, { title: 'Cancel walk', confirmText: 'Cancel walk', cancelText: 'Keep walking', danger: true }))) return;
+      if (!(await appConfirm(`Cancel this ${activityInfo(state.walk.activity).noun} with ${w.dog.name}? It won't be recorded.`, { title: `Cancel ${activityInfo(state.walk.activity).noun}`, confirmText: `Cancel ${activityInfo(state.walk.activity).noun}`, cancelText: 'Keep going', danger: true }))) return;
       try {
         await api(`/api/walks/${w.walkId}`, { method: 'DELETE' });
         clearInterval(timerInterval);
@@ -5963,11 +7326,20 @@
 
     if (timerInterval) clearInterval(timerInterval);
     const startedMs = new Date(w.startedAt).getTime();
-    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + 30 * 60000);
+    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + 45 * 60000);
     const tick = () => {
       const el = document.getElementById('timerDisplay');
       if (!el) { clearInterval(timerInterval); return; }
       el.textContent = fmtElapsed((Date.now() - startedMs) / 1000);
+      // Cats: a gentle "time to wrap up" once past the suggested length.
+      const visit = speciesOf(state.walk.dog).visitMinutes;
+      const hint = document.getElementById('visitHint');
+      if (visit && hint) {
+        const long = Date.now() - startedMs >= visit[1] * 60000;
+        el.classList.toggle('visit-long', long);
+        hint.classList.toggle('visit-long', long);
+        hint.textContent = long ? `${visit[1]} minutes: a good time to say goodbye` : `${visit[0]} to ${visit[1]} minutes is usually best`;
+      }
       const left = (stopsMs() - Date.now()) / 1000;
       const text = document.getElementById('autoStopText');
       const card = document.getElementById('autoStopCard');
@@ -6038,7 +7410,7 @@
           <p class="walk-dog-name">${esc(w.dog.name)}</p>
           ${wrapUp ? `
           <p class="small autostop-note">⏱ ${stoppedAtClosing
-    ? `Walks end at ${fmtClock(w.closesAt)}, so this one stopped automatically then.`
+    ? `${capFirst(termsOf(w.dog).nouns)} end at ${fmtClock(w.closesAt)}, so this one stopped automatically then.`
     : `This ${activityInfo(w.activity).noun} reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.`}</p>
           <label>When did the ${activityInfo(w.activity).noun} end?</label>
           <div id="endTimeChoice" class="marker-row" style="gap:6px;">
@@ -6047,10 +7419,15 @@
             <button type="button" class="btn small-btn filter-chip" data-end="pick" style="width:auto;flex:1 1 0;">Pick a time</button>
           </div>
           <input type="time" id="walkEndTime" class="hidden" value="${toLocalTimeInput(w.wrapUpEndedAt)}" style="margin-top:6px;" />
-          <p class="small muted" id="walkEndSummary" style="margin:4px 0 10px;"></p>` : '<p class="center muted">Walk finished. Add any notes before saving.</p>'}
-          <label for="walkNotes">Note for other walkers (optional)</label>
-          <textarea id="walkNotes" placeholder="e.g. Pulls on leash, loves other dogs, needs a firmer walker"></textarea>
-          <p class="small muted" style="margin:2px 0 10px;">Shared with every walker. Your name is not shown.</p>
+          <p class="small muted" id="walkEndSummary" style="margin:4px 0 10px;"></p>` : `<p class="center muted">${esc(activityInfo(w.activity).label)} finished. Add any notes before saving.</p>`}
+          ${wrapUpChecklistHtml(w.dog)}
+          ${w.activity === 'playgroup' ? `<div id="walkPlaygroupNote">
+            <label>Play group note (optional)</label>
+            ${pgEditorHtml({ showDate: false, placeholder: `How did ${w.dog.name} do? Type @ to tag a dog they played with.` })}
+          </div>` : ''}
+          <label for="walkNotes">Note for other volunteers (optional)</label>
+          <textarea id="walkNotes" placeholder="${esc(speciesOf(w.dog).notePlaceholder || '')}"></textarea>
+          <p class="small muted" style="margin:2px 0 10px;">Shared with every volunteer. Your name is not shown.</p>
           <label for="walkPrivateNote">Private note for yourself (optional)</label>
           <textarea id="walkPrivateNote" placeholder="Only you can see this"></textarea>
         </div>
@@ -6076,7 +7453,7 @@
         const summary = document.getElementById('walkEndSummary');
         if (!summary) { clearInterval(summaryTimer); return; }
         const secs = (new Date(chosenEnd() || w.wrapUpEndedAt).getTime() - startedMs) / 1000;
-        summary.textContent = `Walk time: ${fmtDuration(secs)}`;
+        summary.textContent = `${activityInfo(w.activity).label} time: ${fmtDuration(secs)}`;
       };
       document.querySelectorAll('#endTimeChoice [data-end]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -6092,15 +7469,18 @@
       summaryTimer = setInterval(updateEndSummary, 15000); // "Just now" keeps moving
     }
 
+    const pgBox = document.getElementById('walkPlaygroupNote');
+    const pgEditor = pgBox ? wirePgEditor(pgBox, { ownId: w.dog.id }) : null;
     document.getElementById('saveWalkBtn').addEventListener('click', async () => {
       const notes = document.getElementById('walkNotes').value.trim();
+      const playgroupNote = pgEditor ? pgEditor.body() : '';
       const privateNote = document.getElementById('walkPrivateNote').value.trim();
       const endedAt = wrapUp ? chosenEnd() : null;
       if (endedAt && choice === 'pick') {
         const ms = new Date(endedAt).getTime();
         if (ms > Date.now()) { appAlert("The end time can't be in the future."); return; }
-        if (ms > startedMs + maxHours * 3600000) { appAlert(`${w.activity === 'daycation' ? 'Daycations' : 'Walks'} can't be longer than ${maxHours} hours.`); return; }
-        if (ms > closesMs) { appAlert(`Walks end by ${fmtClock(w.closesAt)}, so the end time can't be later than that.`); return; }
+        if (ms > startedMs + maxHours * 3600000) { appAlert(`${w.activity === 'daycation' ? 'Daycations' : capFirst(termsOf(w.dog).nouns)} can't be longer than ${maxHours} hours.`); return; }
+        if (ms > closesMs) { appAlert(`${capFirst(termsOf(w.dog).nouns)} end by ${fmtClock(w.closesAt)}, so the end time can't be later than that.`); return; }
       }
       const body = wrapUp ? { notes, ...(endedAt ? { endedAt } : {}) } : { notes, endTappedAt: tappedAt };
       try {
@@ -6123,6 +7503,11 @@
           api(`/api/dogs/${w.dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body: privateNote, append: true }) })
             .catch(() => toast("Your private note couldn't be saved.", 'error'));
         }
+        if (playgroupNote) {
+          // Dated the day play group started; never blocks saving the session.
+          api(`/api/dogs/${w.dog.id}/playgroup-notes`, { method: 'POST', body: JSON.stringify({ body: playgroupNote, noteDate: dateKey(w.startedAt), signed: pgEditor.signed() }) })
+            .catch(() => toast("Your play group note couldn't be saved.", 'error'));
+        }
         // You just walked them yourself — mark today's checkoff automatically
         // so they don't sit in the Available list looking like they still need it.
         try {
@@ -6136,7 +7521,7 @@
       }
     });
     document.getElementById('cancelWalkBtn').addEventListener('click', async () => {
-      if (!(await appConfirm(`Cancel this walk with ${w.dog.name}? It won't be recorded.`, { title: 'Cancel walk', confirmText: 'Cancel walk', cancelText: 'Keep walking', danger: true }))) return;
+      if (!(await appConfirm(`Cancel this ${activityInfo(state.walk.activity).noun} with ${w.dog.name}? It won't be recorded.`, { title: `Cancel ${activityInfo(state.walk.activity).noun}`, confirmText: `Cancel ${activityInfo(state.walk.activity).noun}`, cancelText: 'Keep going', danger: true }))) return;
       try {
         await api(`/api/walks/${w.walkId}`, { method: 'DELETE' });
         state.walk = { phase: 'scanning', dog: null, walkId: null, startedAt: null, location: null };
@@ -6153,7 +7538,7 @@
       <div class="card center">
         <p class="walk-dog-name">Great ${activityInfo(w.activity).noun} with ${esc(w.dog.name)}! ${activityInfo(w.activity).emoji}🎉</p>
         <p class="muted">Started at ${fmtClock(w.startedAt)} · Duration: ${fmtDuration(w.durationSeconds)}</p>
-        ${w.autoStopped ? `<p class="small autostop-note">⏱ This walk was stopped automatically after ${fmtDuration(w.durationSeconds)}. If it ran longer, you can fix the time from Stats (tap the pencil on the walk).</p>` : ''}
+        ${w.autoStopped ? `<p class="small autostop-note">⏱ This ${activityInfo(w.activity).noun} was stopped automatically after ${fmtDuration(w.durationSeconds)}. If it ran longer, you can fix the time from Stats (tap the pencil on it).</p>` : ''}
         <button id="doneBtn" class="btn primary big">📷 Scan Next Dog</button>
         <button id="deleteWalkBtn" class="btn danger">Cancel / Delete This ${activityInfo(w.activity).label}</button>
       </div>`;
@@ -6162,7 +7547,7 @@
       renderWalk();
     });
     document.getElementById('deleteWalkBtn').addEventListener('click', async () => {
-      if (!(await appConfirm(`Delete this walk with ${w.dog.name}? This can't be undone.`, { title: 'Delete walk', confirmText: 'Delete', danger: true }))) return;
+      if (!(await appConfirm(`Delete this ${activityInfo(w.activity).noun} with ${w.dog.name}? This can't be undone.`, { title: `Delete ${activityInfo(w.activity).noun}`, confirmText: 'Delete', danger: true }))) return;
       try {
         await api(`/api/walks/${w.walkId}`, { method: 'DELETE' });
         state.walk = { phase: 'scanning', dog: null, walkId: null, startedAt: null, location: null };
@@ -6290,8 +7675,8 @@
     try { if (localStorage.getItem(DAY_NOTICE_KEY) === seenKey) return false; } catch (err) { /* show it */ }
     const title = t.closed ? '🚫 The shelter is closed today' : '🕒 Today is different';
     const lines = [];
-    if (t.closed) lines.push('There are no dog walks today.');
-    else lines.push(`Walks today: ${t.hoursLabel}.`);
+    if (t.closed) lines.push(`There are no ${myTerms().nouns} today.`);
+    else lines.push(`${capFirst(myTerms().nouns)} today: ${t.hoursLabel}.`);
     if (t.note) lines.push(t.note);
     await appAlert(lines.join('\n\n'), title);
     try { localStorage.setItem(DAY_NOTICE_KEY, seenKey); } catch (err) { /* fine */ }

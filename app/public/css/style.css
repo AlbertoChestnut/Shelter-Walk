@@ -1262,6 +1262,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .tip-item:last-child { border-bottom: none; }
 .tip-bullet { color: var(--green-num); flex: 0 0 auto; line-height: 1.35; }
 .tip-text { flex: 1; overflow-wrap: anywhere; }
+.tip-text a, .note-body a, .note-cell a { color: var(--green-text); }
 .tip-item-walk .tip-text { opacity: 0.85; }
 .tip-date { font-size: 0.75rem; opacity: 0.6; white-space: nowrap; }
 
@@ -1370,3 +1371,179 @@ html[data-theme="dark"] { --trend-listed: #3987e5; --trend-floor: #d95926; --tre
 .trend-table th, .trend-table td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--border); }
 .trend-table th:first-child, .trend-table td:first-child { text-align: left; }
 .trend-table th { color: var(--muted); font-weight: 600; }
+
+/* Duration-per-interaction bar chart (the "Avg length" drill-down): one bar
+   per walk/cuddle/etc in order, a dashed average line, tap a bar for a tip.
+   Single series (duration), so one hue -- no legend needed. */
+.bar-chart { position: relative; overflow-x: auto; touch-action: pan-x; -webkit-overflow-scrolling: touch; }
+.bar-chart svg { display: block; height: auto; }
+.bar-chart-bar { fill: var(--green); cursor: pointer; }
+.bar-chart-bar.active { fill: var(--green-dark); }
+.bar-chart-avg { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.bar-chart-avg-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* Which species a card is, shown only to someone who sees dogs and cats. */
+.species-tag { font-size: 0.95em; vertical-align: -1px; }
+.species-switch { margin-bottom: 8px; }
+
+/* A kitten (cats' handling order: kittens before adult cats). */
+.badge.young { background: #fdf0e1; color: #8a4b08; }
+html[data-theme="dark"] .badge.young { background: #4a3218; color: #ffd9ad; }
+
+/* Animal cards: the photo opens full screen, the info area the profile. */
+.dog-card .dog-photo, .dog-card .dog-info { cursor: pointer; }
+.search-result .dog-info, .add-walk-dog-result .dog-info { cursor: default; }
+
+/* Play group notes popup: wider than the other popups, since each entry
+   runs a few sentences. */
+#playgroupPopup .popup-card { max-width: 560px; }
+.pg-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.pg-entry { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.pg-entry:last-child { border-bottom: none; }
+.pg-entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pg-entry-head .tip-item-actions { margin-left: auto; }
+.pg-entry-date { font-weight: 700; font-size: 0.85rem; color: var(--green-text); }
+.pg-entry-body { overflow-wrap: anywhere; font-size: 0.92rem; line-height: 1.45; margin-top: 4px; }
+.pg-entry-body p, .pg-preview p { margin: 0 0 8px; }
+.pg-entry-body p:last-child, .pg-preview p:last-child { margin-bottom: 0; }
+.pg-entry-body ul, .pg-entry-body ol, .pg-preview ul, .pg-preview ol { margin: 0 0 8px; padding-left: 20px; }
+.pg-entry-body li, .pg-preview li { margin-bottom: 2px; }
+.pg-entry-snippet { opacity: 0.85; }
+.pg-expand { display: block; padding-top: 0; margin-top: -2px; }
+.pg-entry-author { font-size: 0.8rem; opacity: 0.7; margin-top: 4px; text-align: right; }
+.pg-entry-author::before { content: "— "; }
+.pg-tag { background: none; border: none; padding: 0; font: inherit; font-weight: 700; color: var(--green-text); cursor: pointer; }
+.pg-section { margin: 20px 0 0; font-size: 0.95rem; }
+.pg-back { display: block; margin-bottom: 4px; }
+.pg-add { margin-top: 4px; }
+.pg-editor { margin: 6px 0 8px; }
+.pg-date-label { display: block; margin-bottom: 6px; }
+.pg-date { margin-top: 4px; }
+.pg-md-toolbar { margin-bottom: 6px; }
+.pg-text-wrap { position: relative; }
+/* A contenteditable div now, not a textarea -- it doesn't pick up the
+   shared input/textarea rule above, so it needs its own. */
+.pg-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 7.5em;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+  font-family: inherit;
+  background: var(--card-bg);
+  color: var(--text);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.pg-text:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.pg-text.pg-text-empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+/* A name recognized in plain text (no @), waiting to be confirmed or
+   dismissed -- still ordinary editable text underneath. */
+.pg-autotag { outline: 2px solid var(--green); outline-offset: 1px; border-radius: 3px; cursor: pointer; background: rgba(47, 111, 79, 0.08); }
+html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
+.pg-autotag-pop { position: fixed; z-index: 60; }
+.pg-autotag-pop .pg-autotag-decline { color: var(--red); }
+.pg-preview { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; margin-top: 8px; font-size: 0.92rem; max-height: 180px; overflow-y: auto; }
+.pg-hint { margin: 4px 0 6px; }
+.pg-sign { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; margin: 4px 0 8px; }
+.pg-sign input { width: auto; margin: 0; }
+.pg-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.pg-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pg-suggest-item:last-child { border-bottom: none; }
+.pg-suggest-item:hover, .pg-suggest-item:focus-visible { background: rgba(127, 127, 127, 0.12); }
+.pg-suggest-item img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
+.pg-suggest-name { flex: 1; font-weight: 600; }
+
+/* Cat visits: the timer goes amber past the suggested length (species.js
+   visitMinutes); a mid-adoption cat's locked condo; end-screen reminders. */
+.timer-display.visit-long, .visit-hint.visit-long { color: var(--amber); }
+.visit-hint.visit-long { font-weight: 700; }
+.relock-banner { border-left: 4px solid var(--amber); }
+.wrap-up-checks { border: 1px solid var(--border, rgba(127, 127, 127, 0.35)); border-radius: 8px; padding: 6px 10px 8px; margin: 0 0 10px; }
+.wrap-up-checks legend { padding: 0 4px; font-weight: 600; }
+.wrap-up-checks label { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-weight: normal; }
+.wrap-up-checks input { width: auto; margin: 0; }
+
+/* Full-screen play group note editor: pinned to the top, sized by script to
+   the space above the keyboard, with the text box taking what's left. */
+.popup-overlay.pg-fs-overlay { z-index: 70; padding: 0; align-items: flex-start; background: var(--card-bg); }
+.pg-fs {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* Room under the sign-with-my-name row so the phone's gesture bar
+     doesn't sit on it. */
+  padding: 10px 12px calc(22px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  background: var(--card-bg);
+}
+.pg-fs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pg-fs-bar .btn { width: auto; flex: 0 0 auto; }
+.pg-fs-title { flex: 1; text-align: center; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-fs .pg-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; margin: 0; }
+.pg-fs .pg-text-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.pg-fs .pg-text { flex: 1; height: auto !important; min-height: 6em; font-size: 1rem; overflow-y: auto; }
+/* Tag suggestions sit above the box here, not below it (that's under the keyboard). */
+.pg-fs .pg-suggest { position: static; order: -1; margin-bottom: 6px; max-height: 40%; }
+.pg-fs .pg-hint { margin: 4px 0 2px; }
+.pg-fs .pg-sign { margin: 2px 0 0; }
+.pg-fs .pg-preview { flex: 0 0 auto; max-height: 25vh; }
+
+/* Scan screen: the dog's notes, tighter so the screen stays short. */
+.notes-label { display: block; margin-top: 12px; }
+.tip-help { margin: 4px 0 0; }
+.notes-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.notes-card-head p { margin: 0; }
+.pg-mini-btn { width: auto; flex: 0 0 auto; padding: 4px 10px; min-height: 32px; font-size: 0.8rem; }
+.dog-notes-compact .notes-label { margin-top: 6px; font-size: 0.75rem; }
+.dog-notes-compact .notes-label .badge { font-size: 0.68rem; padding: 1px 6px; }
+.dog-notes-compact .tip-list { margin-top: 2px; }
+.dog-notes-compact .tip-item { padding: 3px 2px; font-size: 0.82rem; line-height: 1.3; }
+.dog-notes-compact .mini-icon-btn { min-height: 24px; padding: 2px 5px; font-size: 0.85rem; }
+.dog-notes-compact .tip-help { display: none; }
+.dog-notes-compact .tip-add-row { margin-top: 4px; gap: 6px; }
+.dog-notes-compact .tip-add-row .tip-input { padding: 5px 8px; font-size: 0.85rem; }
+.dog-notes-compact .tip-add-row .btn { padding: 5px 12px; min-height: 32px; font-size: 0.85rem; }
+
+/* Play group date: Today / Yesterday chips and a picker for older days. */
+.pg-date-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.pg-date-row .pg-date { width: auto; flex: 1 1 130px; padding: 6px 8px; margin: 0; }
+.pg-day-chip { border: 1px solid var(--border); background: var(--card-bg); color: var(--text); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 0.85rem; min-height: 34px; cursor: pointer; }
+.pg-day-chip.active { background: var(--green-btn); border-color: var(--green-btn); color: #fff; }
+/* A note's date is its own picker: tap it to move the note to another day. */
+.pg-entry-date-edit { position: relative; cursor: pointer; border-bottom: 1px dashed currentColor; }
+.pg-redate { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; padding: 0; margin: 0; border: 0; cursor: pointer; }
+.pg-desk-link { margin: 12px 0 0; }
+.pg-suggest-item.active { background: rgba(127, 127, 127, 0.16); }

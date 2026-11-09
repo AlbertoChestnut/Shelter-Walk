@@ -27,7 +27,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.waitForSelector('.visit-month');
     const months = await p.$$eval('.visit-month', (els) => els.map((e) => `${e.dataset.month}:${e.open ? 'open' : 'shut'}`));
     ok(months.join() === '2026-10:open,2026-09:shut,2026-03:shut', 'whole history, by month, newest open: ' + months);
-    ok(/2 days · 6 walks/.test(await p.textContent('.visit-month[data-month="2026-09"] summary')), 'month row shows its totals');
+    ok(/2 days · 6 engagements/.test(await p.textContent('.visit-month[data-month="2026-09"] summary')), 'month row shows its totals');
     await p.screenshot({ path: '/tmp/_tm1.png', fullPage: true });
     await p.click('.visit-month[data-month="2026-03"] summary');
     await p.click('.together-day[data-date="2026-03-05"]');

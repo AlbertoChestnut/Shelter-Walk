@@ -94,12 +94,18 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
   }
   // Exact shape: totals only. Adding a field here should be a conscious, reviewed decision.
   assert.deepEqual(Object.keys(r.json).sort(), ['allTime', 'days', 'minCell', 'today']);
-  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['dogs', 'seconds', 'since', 'walks']);
+  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgSeconds', 'byActivity', 'dogs', 'seconds', 'since', 'walks']);
+  for (const a of r.json.allTime.byActivity) {
+    assert.deepEqual(Object.keys(a).sort(), ['activity', 'avgSeconds', 'count', 'totalSeconds']);
+    assert.ok(a.count >= r.json.minCell, 'an activity type below the threshold must not be broken out');
+  }
   for (const day of r.json.days) {
-    assert.deepEqual(Object.keys(day).sort(), ['dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
-    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['dogs', 'label', 'seconds', 'walks']);
+    assert.deepEqual(Object.keys(day).sort(), ['avgSeconds', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
+    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['avgSeconds', 'dogs', 'label', 'seconds', 'walks']);
   }
   assert.equal(r.json.allTime.walks, 5, 'everyone\'s walks are combined');
+  assert.equal(r.json.allTime.avgSeconds, 1200, 'the seeded walks are all 20 minutes');
+  assert.deepEqual(r.json.allTime.byActivity, [{ activity: 'walk', count: 5, totalSeconds: 6000, avgSeconds: 1200 }]);
   // The whole history (grouped by month in the app) has the same shape.
   const all = await call('GET', '/api/impact?days=all');
   assert.equal(all.status, 200);
@@ -193,6 +199,10 @@ test('shared tips carry no author, private notes are visible only to their write
   const allBob = await call('GET', '/api/notes', { user: BOB });
   assert.equal(allBob.status, 200);
   const bobDog1 = allBob.json.dogs.find((g) => g.dog.id === 1);
+  // The dog's own species travels with the note, so "From a walk" vs. "From
+  // a play session" follows the dog, never whichever species the reader's
+  // Settings happens to be set to right now.
+  assert.equal(bobDog1.dog.species, 'dog');
   assert.ok(bobDog1.notes.some((n) => n.kind === 'tip' && n.body === TIP && n.at));
   assert.ok(!allBob.text.includes(SECRET), "Bob can't see Alice's private note");
   for (const g of allBob.json.dogs) for (const n of g.notes) assert.deepEqual(Object.keys(n).filter((k) => !['kind', 'id', 'body', 'at'].includes(k)), [], 'no author fields on any note');
@@ -276,7 +286,7 @@ test('a day\'s walks are listed in order with no walker identity; only your own 
     assert.ok(!text.includes(forbidden), `day detail must not contain "${forbidden}"`);
   }
   for (const w of asCarol.json.walks) {
-    assert.deepEqual(Object.keys(w).sort(), ['blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'endedAt', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'starFlag', 'startedAt']);
+    assert.deepEqual(Object.keys(w).sort(), ['activity', 'blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'endedAt', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'starFlag', 'startedAt']);
   }
   assert.deepEqual(asCarol.json.walks.map((w) => w.order), asCarol.json.walks.map((_, i) => i + 1), 'numbered in order');
   const starts = asCarol.json.walks.map((w) => w.startedAt);

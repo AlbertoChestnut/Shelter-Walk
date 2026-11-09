@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Play Group Desk</title>
+<meta name="theme-color" content="#2f6f4f" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="stylesheet" href="/css/playgroup.css" />
+<link rel="stylesheet" href="/css/desk-nav.css" />
+<script src="/js/theme-init.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>🥎 Shelter Walk <span class="muted">Play group desk</span></h1>
+  <nav class="section-tabs">
+    <button type="button" class="tab-btn active" data-view="write">Write notes</button>
+    <button type="button" class="tab-btn" data-view="sessions">All sessions</button>
+  </nav>
+  <div id="deskNav" class="desk-nav"></div>
+</header>
+
+<main>
+  <section id="writeView" class="write-layout">
+    <aside class="dog-list-pane">
+      <input type="search" id="dogSearch" placeholder="Find a dog  ( / )" autocomplete="off" aria-label="Find a dog" />
+      <div class="list-tools">
+        <label class="small"><input type="checkbox" id="onlyWithNotes" /> Only dogs with notes</label>
+        <select id="dogSort" class="small" aria-label="Sort dogs">
+          <option value="name">A to Z</option>
+          <option value="kennel">Kennel</option>
+          <option value="latest">Latest note</option>
+        </select>
+      </div>
+      <ul id="dogList" class="dog-list" role="listbox" aria-label="Dogs"></ul>
+    </aside>
+    <section id="dogPane" class="dog-pane">
+      <div class="empty-state">
+        <p>Pick a dog on the left to read and add play group notes.</p>
+        <p class="muted small">Tip: press <kbd>/</kbd> to search, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save a note. Type <kbd>@</kbd> in a note to tag another dog.</p>
+      </div>
+    </section>
+  </section>
+
+  <section id="sessionsView" class="sessions hidden">
+    <div class="sessions-tools">
+      <label class="small">From <input type="date" id="fromDate" /></label>
+      <label class="small">To <input type="date" id="toDate" /></label>
+      <div class="range-chips">
+        <button type="button" class="chip" data-range="7">Last 7 days</button>
+        <button type="button" class="chip" data-range="30">Last 30 days</button>
+        <button type="button" class="chip" data-range="year">This year</button>
+        <button type="button" class="chip" data-range="all">All</button>
+      </div>
+      <input type="search" id="sessionSearch" placeholder="Search dog, note or name" aria-label="Search notes" />
+      <a id="exportBtn" class="btn primary" href="/api/playgroup-notes/export.xlsx">⬇ Export to Excel</a>
+    </div>
+    <p id="sessionCount" class="muted small"></p>
+    <div class="table-wrap">
+      <table class="sessions-table">
+        <thead><tr><th>Date</th><th>Dog</th><th>Note</th><th>Dogs tagged</th><th>Signed by</th></tr></thead>
+        <tbody id="sessionRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<script src="/js/pg-tags.js"></script>
+<script src="/js/playgroup.js"></script>
+<script src="/js/desk-nav.js"></script>
+<!-- MODULE_SCRIPTS -->
+</body>
+</html>

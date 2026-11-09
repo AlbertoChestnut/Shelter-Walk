@@ -453,6 +453,31 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_dog_notes_private ON dog_notes(dog_id, user_id) WHERE visibility = 'private';
 `);
 
+// Play group notes (see playgroupNotes.js): dated entries, one per session
+// or pasted history, readable by every walker. Anonymous unless the writer
+// chose to sign it (signed = 1 shows their name). Tags of other dogs are
+// written into the body as @[dogId]; playgroup_mentions indexes them so each
+// dog can list what other dogs' notes said about it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS playgroup_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dog_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    signed INTEGER NOT NULL DEFAULT 0,
+    note_date TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_playgroup_notes_dog ON playgroup_notes(dog_id);
+  CREATE TABLE IF NOT EXISTS playgroup_mentions (
+    note_id INTEGER NOT NULL REFERENCES playgroup_notes(id) ON DELETE CASCADE,
+    dog_id INTEGER NOT NULL,
+    PRIMARY KEY (note_id, dog_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_playgroup_mentions_dog ON playgroup_mentions(dog_id);
+`);
+
 // Dogs a walker has hearted. Personal, like private notes: drives the
 // "My favorites" filter and the favorite_* push notices (see scraper.js).
 // Kept after a dog leaves the listing, so a favorite that comes back is
@@ -505,6 +530,26 @@ if (!walkColumns.includes('alerted_minutes')) db.exec('ALTER TABLE walks ADD COL
 if (!dogColumns.includes('previous_names')) {
   db.exec("ALTER TABLE dogs ADD COLUMN previous_names TEXT NOT NULL DEFAULT '[]'");
 }
+// species: 'dog' or 'cat' (species.js). The table keeps its old name -- it
+// holds every animal now -- and everything from before cats is a dog.
+if (!dogColumns.includes('species')) {
+  db.exec("ALTER TABLE dogs ADD COLUMN species TEXT NOT NULL DEFAULT 'dog'");
+}
+// species_pref: who this volunteer works with -- 'dog', 'cat' or 'both'.
+// Decides which animals their lists and Updates show (scanning works for any).
+if (!userColumns.includes('species_pref')) {
+  db.exec("ALTER TABLE users ADD COLUMN species_pref TEXT NOT NULL DEFAULT 'dog'");
+}
+// desktop_view: the page this person starts on when they open the site on a
+// computer (desktopViews.js). NULL = the default for who they are.
+if (!userColumns.includes('desktop_view')) {
+  db.exec('ALTER TABLE users ADD COLUMN desktop_view TEXT');
+}
+// video_url: a YouTube link found in the dog's summary on the shelter's own
+// page (scraper.js), so their profile can link straight to it.
+if (!dogColumns.includes('video_url')) {
+  db.exec('ALTER TABLE dogs ADD COLUMN video_url TEXT');
+}
 if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'previous_names_backfilled'").get()) {
   const { isRename, withPreviousName } = require('./dogNames');
   const firstNames = db.prepare(`
@@ -520,6 +565,58 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'previous_names_backfilled'"
       if (m && isRename(m[1], r.name)) setPrevious.run(withPreviousName('[]', m[1], r.name), r.id);
     }
     db.prepare("INSERT INTO app_meta (key, value) VALUES ('previous_names_backfilled', '1')").run();
+  })();
+}
+
+// Sticker on/off events (see server.js logStickerChanges) only exist from
+// when that logging started -- a dog already wearing a sticker (star, PB,
+// POO, a blue letter, EVO included) before then would otherwise show no
+// history for it at all on the timeline. One-time backfill: for every
+// sticker currently on with no sticker_on event yet, add one dated to this
+// stay's start -- the earliest point being on it can honestly be pinned to.
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'sticker_events_backfilled'").get()) {
+  const STICKER_LABELS = {
+    star: 'Good for beginners (star)',
+    pb: 'PB: Potty break OK',
+    poo: 'POO: Potty Outside Only',
+    poo_priority: 'POO: priority (first out, last in)',
+    blue_c: 'Blue: Difficult to collar',
+    blue_d: 'Blue: Door dasher',
+    blue_e: 'Blue: Energetic',
+    blue_h: 'Blue: Humpy',
+    blue_j: 'Blue: Jumpy',
+    blue_m: 'Blue: Mouthy',
+    blue_p: 'Blue: Puller',
+    blue_q: 'Blue: Quirky',
+    blue_r: 'Blue: Reactive',
+    blue_s: 'Blue: Shy / shutdown',
+    blue_evo: 'Blue: Experienced volunteer only'
+  };
+  const stickerRows = db.prepare(`
+    SELECT shelter_buddy_id AS id, blue_markers, poo_status, star_flag, pb_flag,
+           COALESCE(date_in_shelter, first_seen_at) AS since
+    FROM dogs
+  `).all();
+  const hasStickerEvent = db.prepare(
+    "SELECT 1 FROM shelter_events WHERE dog_id = ? AND kind = 'sticker_on' AND detail = ? LIMIT 1"
+  );
+  const insertBackfillEvent = db.prepare(
+    "INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES ('sticker_on', ?, ?, ?, ?)"
+  );
+  db.transaction(() => {
+    for (const row of stickerRows) {
+      if (!row.since) continue;
+      const keys = JSON.parse(row.blue_markers || '[]').filter((m) => m !== 'blue');
+      if (row.star_flag) keys.push('star');
+      if (row.pb_flag) keys.push('pb');
+      if (row.poo_status === 'poo') keys.push('poo');
+      if (row.poo_status === 'priority') keys.push('poo_priority');
+      for (const key of keys) {
+        if (hasStickerEvent.get(row.id, key)) continue;
+        insertBackfillEvent.run(row.id, STICKER_LABELS[key] || key, key, row.since);
+      }
+    }
+    db.prepare("INSERT INTO app_meta (key, value) VALUES ('sticker_events_backfilled', '1')").run();
   })();
 }
 
@@ -568,6 +665,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_walks_started ON walks(started_at);
   CREATE INDEX IF NOT EXISTS idx_events_occurred ON shelter_events(occurred_at);
   CREATE INDEX IF NOT EXISTS idx_dogs_listed ON dogs(still_listed);
+`);
+
+// The module system (src/modules.js): which optional modules (app/modules/*)
+// are turned on, and their admin-entered config. A dedicated table rather
+// than the dead `settings` KV table or app_meta, matching this app's usual
+// one-table-per-concern style (see shelter_weekly_hours above). A module's
+// own tables are created by the module itself via its `migrate()` context
+// helper, tracked here per (module, migration) so re-enabling a module after
+// a code update only re-applies what's new.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS modules (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    config TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE TABLE IF NOT EXISTS module_migrations (
+    module_id TEXT NOT NULL,
+    migration_id TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    PRIMARY KEY (module_id, migration_id)
+  );
 `);
 
 module.exports = db;

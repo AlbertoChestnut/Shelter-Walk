@@ -83,6 +83,8 @@ function register(app, { db }) {
     // them anyway.
     db.prepare("DELETE FROM dog_notes WHERE user_id = ? AND visibility = 'private'").run(userId);
     db.prepare('UPDATE dog_notes SET user_id = 0 WHERE user_id = ?').run(userId);
+    // Play group notes stay too; signed ones lose the name.
+    db.prepare('UPDATE playgroup_notes SET user_id = 0, signed = 0 WHERE user_id = ?').run(userId);
   });
 
   const anonymize = db.transaction((userId, name) => {

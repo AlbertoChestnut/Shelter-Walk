@@ -36,6 +36,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.goto(base, { waitUntil: 'networkidle' });
     await p.click('.tab-btn[data-tab="updates"]');
     const count = async (n) => { await p.waitForFunction((n) => { const e = document.querySelector('.result-count strong'); return e && e.textContent === String(n); }, n); return p.$eval('.result-count', (e) => e.textContent.trim()); };
+    await p.waitForSelector('[data-updates-range]');
     ok(await p.locator('[data-updates-range]').count() === 3, 'ranges are All / Today / This week only');
     ok((await count(extra ? 4 : 3)).startsWith(`${extra ? 4 : 3} updates`), 'All follows Settings (returned hidden)');
     await p.click('[data-updates-range="today"]');

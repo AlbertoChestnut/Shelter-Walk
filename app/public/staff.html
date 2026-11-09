@@ -8,6 +8,7 @@
 <meta name="color-scheme" content="light dark" />
 <link rel="icon" href="/icons/icon-192.png" />
 <link rel="stylesheet" href="/css/staff.css" />
+<link rel="stylesheet" href="/css/desk-nav.css" />
 <script src="/js/theme-init.js"></script>
 </head>
 <body>
@@ -18,9 +19,11 @@
     <button class="tab-btn active" data-section="live">Live board</button>
     <button class="tab-btn" data-section="reports">Reports</button>
     <button class="tab-btn" data-section="hours">Hours &amp; alerts</button>
+    <button class="tab-btn" data-section="settings">Settings</button>
   </nav>
   <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
   <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
+  <div id="deskNav" class="desk-nav"></div>
 </header>
 
 <main id="app">
@@ -159,8 +162,18 @@
       </div>
     </div>
   </section>
+
+  <section id="settingsSection" class="panel hidden">
+    <h2>Modules</h2>
+    <p class="muted small">Optional functionality, each in its own package under <code>app/modules/</code>. Turning one on or off takes effect right away — no restart.</p>
+    <div id="moduleList" class="module-list"></div>
+    <!-- MODULE_STAFF_PANELS -->
+  </section>
 </main>
 
 <script src="/js/staff.js"></script>
+<script src="/js/staff-settings.js"></script>
+<script src="/js/desk-nav.js"></script>
+<!-- MODULE_SCRIPTS -->
 </body>
 </html>

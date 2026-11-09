@@ -1,0 +1,225 @@
+/* Play group desk: a desktop page, separate from the phone app's style.css.
+   Color tokens are copied from style.css (same as staff.css does). */
+:root {
+  --green: #2f6f4f;
+  --green-text: #2f6f4f;
+  --amber: #8a5a10;
+  --red: #b3392c;
+  --bg: #f6f7f5;
+  --card-bg: #ffffff;
+  --text: #1c211f;
+  --muted: #5d6862;
+  --border: #e1e5e0;
+  --hover: rgba(47, 111, 79, 0.08);
+  --radius: 12px;
+  color-scheme: light dark;
+}
+html[data-theme="dark"] {
+  --green: #3f8a63;
+  --green-text: #6fc194;
+  --amber: #d9a441;
+  --red: #e6857a;
+  --bg: #16181a;
+  --card-bg: #24272a;
+  --text: #eef0ee;
+  --muted: #9aa39c;
+  --border: #383c3f;
+  --hover: rgba(111, 193, 148, 0.1);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+.hidden { display: none !important; }
+.nowrap { white-space: nowrap; }
+.warn { color: var(--amber); margin: 4px 0 0; }
+kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 0.8em; background: var(--card-bg); }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card-bg);
+}
+.topbar h1 { font-size: 1.15rem; margin: 0; }
+.topbar h1 .muted { font-weight: 400; }
+.section-tabs { display: flex; gap: 8px; }
+.tab-btn, .chip {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.chip { padding: 5px 12px; font-size: 0.85rem; }
+.tab-btn.active, .chip.active { background: var(--green); color: #fff; border-color: var(--green); }
+
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+.btn:disabled { opacity: 0.6; cursor: default; }
+.link-btn { background: none; border: none; padding: 2px 4px; color: var(--green-text); font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.link-btn.danger { color: var(--red); }
+input[type="search"], input[type="date"], select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+textarea { width: 100%; line-height: 1.45; resize: vertical; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+
+/* Write notes: dog list on the left, the open dog on the right. */
+.write-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr; }
+.dog-list-pane { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--card-bg); padding: 12px; gap: 8px; }
+.dog-list-pane input[type="search"] { width: 100%; }
+.list-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dog-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.dog-row {
+  display: grid;
+  grid-template-columns: 1fr auto 32px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dog-row:hover { background: var(--hover); }
+.dog-row.active { background: var(--green); color: #fff; }
+.dog-row.active .dog-row-meta { color: #fff; }
+.dog-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dog-row-meta { font-size: 0.8rem; color: var(--muted); }
+.dog-row-count { font-size: 0.78rem; font-weight: 700; text-align: center; border-radius: 999px; background: var(--hover); padding: 1px 0; }
+.dog-row-count.none { background: none; }
+.badge { font-size: 0.7rem; font-weight: 600; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; opacity: 0.75; }
+
+.dog-pane { overflow-y: auto; padding: 20px 28px 40px; }
+.dog-pane > * { max-width: 900px; }
+.empty-state { margin-top: 60px; text-align: center; max-width: none; }
+.dog-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.dog-head img { width: 72px; height: 72px; border-radius: 12px; object-fit: cover; }
+.dog-head h2 { margin: 0; }
+.dog-head p { margin: 2px 0 0; }
+.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+h3 { margin: 22px 0 6px; font-size: 1rem; }
+
+/* A contenteditable div now, not a textarea -- it doesn't pick up the
+   shared input/textarea rule above, so it needs its own. */
+.desk-editor .pg-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 9em;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 0.98rem;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--card-bg);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.pg-text.pg-text-empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+.pg-autotag { outline: 2px solid var(--green); outline-offset: 1px; border-radius: 3px; cursor: pointer; background: rgba(47, 111, 79, 0.08); }
+html[data-theme="dark"] .pg-autotag { background: rgba(63, 138, 99, 0.16); }
+.pg-autotag-pop { position: fixed; z-index: 60; }
+.pg-autotag-pop .pg-autotag-decline { color: var(--red); }
+.desk-editor-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.desk-editor-foot > :first-child { margin-right: auto; }
+
+.notes { list-style: none; margin: 0; padding: 0; }
+.note { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.note:last-child { border-bottom: none; }
+.note .desk-editor { margin-top: 4px; }
+.note-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.note-date { font-weight: 700; font-size: 0.9rem; color: var(--green-text); }
+.note-actions { margin-left: auto; display: flex; gap: 6px; }
+.note-body { overflow-wrap: anywhere; line-height: 1.5; margin-top: 4px; }
+.note-body a, .note-cell a, .pg-preview a { color: var(--green-text); }
+.note-body p, .note-cell p, .pg-preview p { margin: 0 0 8px; }
+.note-body p:last-child, .note-cell p:last-child, .pg-preview p:last-child { margin-bottom: 0; }
+.note-body ul, .note-body ol, .note-cell ul, .note-cell ol, .pg-preview ul, .pg-preview ol { margin: 0 0 8px; padding-left: 22px; }
+.note-body li, .note-cell li, .pg-preview li { margin-bottom: 2px; }
+.note-snippet { opacity: 0.85; }
+.pg-expand { display: block; margin-top: -2px; }
+
+/* Shared with the phone app's markup (pg-tags.js). */
+.pg-tag { background: none; border: none; padding: 0; font: inherit; font-weight: 700; color: var(--green-text); cursor: pointer; }
+.pg-tag:hover { text-decoration: underline; }
+.pg-date-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.pg-day-chip { border: 1px solid var(--border); background: var(--card-bg); color: var(--text); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 0.85rem; cursor: pointer; }
+.pg-day-chip.active { background: var(--green); border-color: var(--green); color: #fff; }
+.pg-md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.pg-md-toolbar .btn { padding: 5px 12px; font-size: 0.85rem; font-weight: 400; }
+.pg-text-wrap { position: relative; }
+.pg-preview { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; margin-top: 8px; font-size: 0.92rem; }
+.pg-suggest { position: absolute; left: 0; width: 360px; max-width: 100%; top: 100%; z-index: 5; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); max-height: 280px; overflow-y: auto; }
+.pg-suggest-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; background: none; border: none; border-bottom: 1px solid var(--border); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.pg-suggest-item:last-child { border-bottom: none; }
+.pg-suggest-item:hover, .pg-suggest-item.active { background: var(--hover); }
+.pg-suggest-item img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.pg-suggest-name { flex: 1; font-weight: 600; }
+.note-date.editable { position: relative; cursor: pointer; border-bottom: 1px dashed currentColor; }
+.pg-redate { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; padding: 0; margin: 0; border: 0; cursor: pointer; }
+
+/* All sessions */
+.sessions { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 24px; gap: 8px; }
+.sessions-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.range-chips { display: flex; gap: 6px; }
+#sessionSearch { flex: 1; min-width: 200px; }
+.sessions > p { margin: 0; }
+.table-wrap { flex: 1; min-height: 0; overflow: auto; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.sessions-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.sessions-table th { position: sticky; top: 0; background: var(--card-bg); text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 0.8rem; color: var(--muted); }
+.sessions-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sessions-table tr:last-child td { border-bottom: none; }
+.note-cell { overflow-wrap: anywhere; min-width: 320px; line-height: 1.45; }
+
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1c211f; color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); z-index: 20; }
+.toast.error { background: var(--red); }
+
+/* Narrow windows: list above the dog. */
+@media (max-width: 760px) {
+  .write-layout { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
+  .dog-list-pane { border-right: none; border-bottom: 1px solid var(--border); }
+  .dog-pane { padding: 16px; }
+}

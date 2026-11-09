@@ -18,6 +18,8 @@
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const { MIN_CELL } = require('./impact');
+// Shelter context (new dogs, adoptions) counts dogs only, like the Shelter trends.
+const { DOG_EVENTS_WHERE } = require('./shelterTrends');
 
 const TZ = 'America/New_York';
 const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -157,6 +159,7 @@ function shelterContextInRange(db, from, to) {
   const rows = db.prepare(`
     SELECT kind, occurred_at FROM shelter_events
     WHERE kind IN ('new_dog', 'adopted', 'returned', 'removed') AND occurred_at >= ? AND occurred_at < ?
+      AND ${DOG_EVENTS_WHERE}
   `).all(paddedFrom, paddedTo);
   const counts = { new_dog: 0, adopted: 0, returned: 0, removed: 0 };
   for (const r of rows) {

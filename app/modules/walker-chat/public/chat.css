@@ -1,0 +1,116 @@
+.wc-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 500;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--green-btn);
+  color: #fff;
+  font-size: 1.3rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wc-toggle .wc-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--red-fill);
+  color: #fff;
+  font-size: 0.65rem;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wc-toggle .wc-badge:empty { display: none; }
+
+.wc-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 78px;
+  z-index: 500;
+  width: min(320px, calc(100vw - 32px));
+  height: min(420px, calc(100vh - 140px));
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.wc-panel[hidden] { display: none; }
+
+.wc-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.wc-head .wc-close { background: none; border: none; color: var(--muted); font-size: 1rem; cursor: pointer; }
+
+.wc-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wc-msg { max-width: 85%; }
+.wc-msg .wc-author { font-size: 0.72rem; color: var(--muted); margin-bottom: 1px; }
+.wc-msg .wc-bubble {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 9px;
+  font-size: 0.88rem;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+.wc-msg.wc-mine { align-self: flex-end; }
+.wc-msg.wc-mine .wc-author { text-align: right; }
+.wc-msg.wc-mine .wc-bubble { background: var(--green-btn); color: #fff; border-color: var(--green-dark); }
+
+.wc-typing {
+  min-height: 16px;
+  padding: 0 12px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.wc-form {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.wc-form input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+.wc-form button {
+  border: none;
+  border-radius: 8px;
+  background: var(--green-btn);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 0.88rem;
+}
+.wc-form button:disabled { opacity: 0.5; }

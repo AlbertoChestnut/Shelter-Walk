@@ -96,7 +96,9 @@
       document.getElementById('liveSection').classList.toggle('hidden', section !== 'live');
       document.getElementById('reportsSection').classList.toggle('hidden', section !== 'reports');
       document.getElementById('hoursSection').classList.toggle('hidden', section !== 'hours');
+      document.getElementById('settingsSection').classList.toggle('hidden', section !== 'settings');
       if (section === 'hours') loadSchedule();
+      if (section === 'settings' && window.loadModuleSettings) window.loadModuleSettings();
       if (section === 'live') fitToScreen();
       else resetZoom();
     });

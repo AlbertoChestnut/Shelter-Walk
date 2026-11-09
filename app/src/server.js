@@ -13,8 +13,12 @@ const shelterTrends = require('./shelterTrends');
 const staffDashboard = require('./staffDashboard');
 const shelterSchedule = require('./shelterSchedule');
 const notes = require('./notes');
+const playgroupNotes = require('./playgroupNotes');
+const desktopViews = require('./desktopViews');
 const feedback = require('./feedback');
 const account = require('./account');
+const species = require('./species');
+const modulesCore = require('./modules');
 // Every walk notice (started, length alerts, time warning, auto-stopped) shares this tag,
 // so each one replaces the last on the phone rather than piling up.
 const WALK_PUSH_TAG = 'walk';
@@ -68,29 +72,53 @@ process.on('uncaughtException', (err) => {
 // always picked up immediately, regardless of any browser/proxy cache sitting
 // in between (their Cache-Control headers can't be trusted to be honored).
 const ASSET_VERSION = String(Date.now());
-const INDEX_HTML = fs
-  .readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8')
+
+// The module system (src/modules.js): optional features that live under
+// app/modules/<id>/ instead of core. Discovered once at startup; which ones
+// are *enabled* is read live from `moduleState` everywhere below, not baked
+// in here, so a toggle in the Settings tab takes effect immediately.
+const discoveredModules = modulesCore.discoverModules(path.join(__dirname, '..', 'modules'));
+const moduleState = modulesCore.loadModuleState(db, discoveredModules);
+modulesCore.mountModuleStatics(app, discoveredModules);
+
+// A test copy of the site sets STAGE_BANNER (e.g. "STAGE") so nobody mistakes
+// it for the real one: a fixed strip on every page and a tab-title prefix.
+const STAGE_BANNER = (process.env.STAGE_BANNER || '').replace(/[^\w .:-]/g, '').slice(0, 40);
+function withStageBanner(html) {
+  if (!STAGE_BANNER) return html;
+  return html
+    .replace('<title>', `<title>[${STAGE_BANNER}] `)
+    .replace('<body>', '<body><div style="position:fixed;top:0;left:0;right:0;z-index:2147483647;pointer-events:none;'
+      + 'background:#b45309;color:#fff;font:700 11px/16px system-ui,sans-serif;text-align:center;letter-spacing:.08em">'
+      + `${STAGE_BANNER} &middot; TEST DATA ONLY</div>`);
+}
+
+const INDEX_BASE = withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'))
   .replace('__BUILD__', ASSET_VERSION)
   .replace('/css/style.css', `/css/style.css?v=${ASSET_VERSION}`)
   .replace('/js/html5-qrcode.min.js', `/js/html5-qrcode.min.js?v=${ASSET_VERSION}`)
+  .replace('/js/pg-tags.js', `/js/pg-tags.js?v=${ASSET_VERSION}`)
   .replace('/js/app.js', `/js/app.js?v=${ASSET_VERSION}`);
 
 function sendIndex(req, res) {
   res.set('Cache-Control', 'no-cache, must-revalidate');
-  res.type('html').send(INDEX_HTML);
+  // The module tags are the one piece filled in per-request, not baked into
+  // the const above at startup -- so enabling/disabling a module in the
+  // Settings tab shows up on the very next load, no restart needed.
+  res.type('html').send(INDEX_BASE.replace('<!-- MODULE_SCRIPTS -->', modulesCore.assetTagsHtml(discoveredModules, moduleState, ASSET_VERSION, 'index')));
 }
 
-// Good enough to decide "should this land on the staff dashboard instead",
-// not anything security-sensitive -- iPadOS Safari's UA doesn't look mobile,
-// so an iPad lands on the mobile app same as before, which is fine.
-const MOBILE_UA_RE = /Mobi|Android|iPhone|iPod|Windows Phone/i;
-
-// A staff account opening the site itself (not a bookmarked /scan) on a
-// non-mobile browser almost always means "put me on the ops dashboard," not
-// the phone-first volunteer app -- so send them straight to /staff instead.
+// Opening the site itself on a computer lands on that person's start page
+// (desktopViews.js): the volunteer app, the play group desk, or for staff
+// the staff dashboard. Phones always get the app. /app and /scan are the app
+// itself, never redirected, so every page's "Volunteer app" link works.
 function sendRoot(req, res) {
-  if (req.headers['x-auth-staff'] === '1' && !MOBILE_UA_RE.test(req.headers['user-agent'] || '')) {
-    return res.redirect('/staff');
+  if (!desktopViews.isMobile(req)) {
+    const isStaff = req.headers['x-auth-staff'] === '1';
+    const user = resolveAuthedUser(req);
+    const view = desktopViews.startView(user && user.desktopView, isStaff);
+    if (view !== 'app') return res.redirect(desktopViews.pathFor(view));
   }
   sendIndex(req, res);
 }
@@ -100,15 +128,20 @@ function sendRoot(req, res) {
 // /staff, the same way /scan is a bookmarkable shortcut. The X-Auth-Staff
 // check here is defense-in-depth only; the real gate is Caddy's forward_auth
 // (see the X-Auth-Email/X-Auth-Staff comment above resolveAuthedUser below).
-const STAFF_HTML = fs
-  .readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8')
+const STAFF_BASE = withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8'))
   .replace('/css/staff.css', `/css/staff.css?v=${ASSET_VERSION}`)
-  .replace('/js/staff.js', `/js/staff.js?v=${ASSET_VERSION}`);
+  .replace('/js/staff.js', `/js/staff.js?v=${ASSET_VERSION}`)
+  .replace('/css/desk-nav.css', `/css/desk-nav.css?v=${ASSET_VERSION}`)
+  .replace('/js/desk-nav.js', `/js/desk-nav.js?v=${ASSET_VERSION}`);
 
 function sendStaff(req, res) {
   if (req.headers['x-auth-staff'] !== '1') return res.status(403).type('text/plain').send('Staff only.');
   res.set('Cache-Control', 'no-cache, must-revalidate');
-  res.type('html').send(STAFF_HTML);
+  const html = STAFF_BASE
+    .replace('<!-- MODULE_STAFF_PANELS -->', modulesCore.staffPanelHtml(discoveredModules, moduleState, ASSET_VERSION))
+    .replace('<!-- MODULE_SCRIPTS -->', modulesCore.assetTagsHtml(discoveredModules, moduleState, ASSET_VERSION, 'staff'));
+  res.type('html').send(html);
 }
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
@@ -125,7 +158,21 @@ app.get('/', sendRoot);
 // Bookmarkable shortcut straight into the QR scanner -- deliberately not
 // routed through sendRoot, so it always opens the scanner even for staff.
 app.get('/scan', sendIndex);
+app.get('/app', sendIndex);
 app.get('/staff', sendStaff);
+// The play group desk: a computer-sized page for typing up and exporting play
+// group notes. Open to every walker, like the notes themselves.
+const PLAYGROUP_BASE = withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'playgroup.html'), 'utf8'))
+  .replace('/css/playgroup.css', `/css/playgroup.css?v=${ASSET_VERSION}`)
+  .replace('/js/pg-tags.js', `/js/pg-tags.js?v=${ASSET_VERSION}`)
+  .replace('/js/playgroup.js', `/js/playgroup.js?v=${ASSET_VERSION}`)
+  .replace('/css/desk-nav.css', `/css/desk-nav.css?v=${ASSET_VERSION}`)
+  .replace('/js/desk-nav.js', `/js/desk-nav.js?v=${ASSET_VERSION}`);
+app.get('/playgroup', (req, res) => {
+  res.set('Cache-Control', 'no-cache, must-revalidate');
+  res.type('html').send(PLAYGROUP_BASE.replace('<!-- MODULE_SCRIPTS -->', modulesCore.assetTagsHtml(discoveredModules, moduleState, ASSET_VERSION, 'playgroup')));
+});
 
 // `asOf` freezes the count at a specific moment (a delisted dog's
 // removed_at) instead of always counting up to right now -- otherwise a
@@ -205,9 +252,13 @@ const LEVEL_UP_HOURS = 20;
 function levelUpOffer(userId) {
   const user = db.prepare('SELECT experience_level, level_up_offered_at FROM users WHERE id = ?').get(userId);
   if (!user || user.experience_level !== 'beginner' || user.level_up_offered_at) return false;
-  const { seconds } = db.prepare(
-    'SELECT COALESCE(SUM(duration_seconds), 0) AS seconds FROM walks WHERE user_id = ? AND ended_at IS NOT NULL'
-  ).get(userId);
+  // Only time with animals that have levels (dogs) counts: cat visits have
+  // no skill levels or hour requirements.
+  const levelKinds = species.SPECIES_KEYS.filter((k) => species.SPECIES[k].levelRules);
+  const { seconds } = db.prepare(`
+    SELECT COALESCE(SUM(w.duration_seconds), 0) AS seconds FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+    WHERE w.user_id = ? AND w.ended_at IS NOT NULL AND d.species IN (${levelKinds.map(() => '?').join(', ')})
+  `).get(userId, ...levelKinds);
   return seconds >= LEVEL_UP_HOURS * 3600;
 }
 
@@ -222,16 +273,22 @@ const getCheckoff = db.prepare(`
   SELECT 1 FROM session_checkoffs WHERE dog_id = ? AND date_key = ?
 `);
 
-// Kennel locations are just the wing letter (A-E) -- many dogs share one,
-// so there's no "one dog per spot" bumping any more. Accepts a full code
-// or the kennel-card "Da12" quirk and keeps only the letter; anything that
-// doesn't come down to A-E is null (caller decides whether that's an error).
-const KENNEL_LETTERS = ['A', 'B', 'C', 'D', 'E'];
-function kennelLetter(raw) {
+// Kennel locations are just the wing letter (dogs A-E, cats A-D, see
+// species.js) -- many animals share one, so there's no "one dog per spot"
+// bumping any more. Accepts a full code or the kennel-card "Da12" quirk and
+// keeps only the letter; anything that doesn't come down to one of the
+// species' letters is null (caller decides whether that's an error).
+const KENNEL_LETTERS = species.SPECIES.dog.kennels; // Audit Mode's wings
+function kennelLetter(raw, kind) {
+  const letters = species.speciesInfo(kind).kennels;
   let v = String(raw || '').trim().toUpperCase();
   if (/^D[A-E]\d/.test(v)) v = v.slice(1);
-  return KENNEL_LETTERS.includes(v[0]) ? v[0] : null;
+  return letters.includes(v[0]) ? v[0] : null;
 }
+const kennelLetterError = (kind) => {
+  const letters = species.speciesInfo(kind).kennels;
+  return `Pick a kennel letter, ${letters[0]} to ${letters[letters.length - 1]}.`;
+};
 
 function setKennelLocation(dogId, letter) {
   const dog = db.prepare('SELECT shelter_buddy_id, name FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
@@ -242,9 +299,17 @@ function setKennelLocation(dogId, letter) {
 
 // No photo yet (not listed, or listed without one): the dog's own drawn
 // silhouette (silhouette.js), so several such dogs still look different.
+// The ?v= is the cached file's mtime: /cached-images is served with a 30-day
+// max-age, so without it, a browser that already loaded a dog's old photo
+// would keep showing it long after the shelter's new one replaced it on disk
+// -- same URL, so no revalidation. Changing the file changes the mtime,
+// which changes this URL, which busts that cache immediately.
 function cachedPhotoUrl(dogId, rawUrl) {
   const cachedPath = path.join(IMAGES_DIR, `${dogId}.jpg`);
-  if (fs.existsSync(cachedPath)) return `/cached-images/${dogId}.jpg`;
+  try {
+    const v = Math.floor(fs.statSync(cachedPath).mtimeMs);
+    return `/cached-images/${dogId}.jpg?v=${v}`;
+  } catch (err) { /* not cached (yet) -- fall through */ }
   return rawUrl || silhouetteUrl(dogId);
 }
 
@@ -268,6 +333,17 @@ function activityFrom(value) {
   if (value === undefined || value === null || value === '') return 'walk';
   return ACTIVITIES.includes(value) ? value : null;
 }
+// The same, for one animal: only that species' activities count, and a
+// request with none gets the species' first one (a cat's is a cuddle).
+function activityForAnimal(value, row) {
+  const allowed = species.speciesInfo(row && row.species).activities;
+  if (value === undefined || value === null || value === '') return allowed[0];
+  return allowed.includes(value) ? value : null;
+}
+const activityError = (row) => {
+  const info = species.speciesInfo(row && row.species);
+  return `A ${info.noun} can only have: ${info.activities.join(', ')}.`;
+};
 
 const getActiveWalk = db.prepare(`
   SELECT w.user_id AS userId, w.started_at AS startedAt, w.activity,
@@ -289,8 +365,92 @@ const getRecentWalkCount = db.prepare(`
 `);
 const RECENT_WALK_WINDOW_DAYS = 7;
 
-function serializeDog(row, experienceLevel, todayKey, userId) {
+// Disease control (species.js youngFirst): kittens may be handled before
+// adult cats, never after. If this volunteer was with an adult cat during the
+// last 16 hours (this shift, in practice), opening a kitten carries a warning
+// naming that adult: { name, at, young, adult }. It never blocks anything.
+const getLatestAdultToday = db.prepare(`
+  SELECT d.name, d.tags, d.species, w.started_at AS at FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+  WHERE w.user_id = ? AND d.species = ? AND w.started_at >= ? ORDER BY w.started_at DESC
+`);
+function handlingWarningFor(row, userId) {
+  const rule = species.speciesInfo(row.species).youngFirst;
+  if (!rule || !userId || !species.isYoung(row)) return null;
+  const since = new Date(Date.now() - 16 * 3600000).toISOString(); // today's shift, roughly
+  const adult = getLatestAdultToday.all(userId, row.species, since).find((w) => !species.isYoung(w));
+  return adult ? { name: adult.name, at: adult.at, young: rule.young, adult: rule.adult } : null;
+}
+
+// Precedence: too young (hard, no override) > EVO not allowed (hard, not
+// even PB) > any blue marker not allowed (hard) > pending adoption not
+// allowed (hard, beginners only) > stray hold (only PB dogs on stray hold
+// can be walked, unless Alumni -- see below) > PB (overrides the day
+// threshold when this level permits PB dogs at all) > day threshold.
+// Pulled out of serializeDog so /api/walks/start can enforce this exact
+// rule too: a dog not cleared for a volunteer's level must not be walkable
+// at all, not just flagged in the UI. One function means the badge shown
+// before starting a walk and the hard rule enforced when starting it can
+// never disagree.
+function dogEligibility(row, experienceLevel) {
+  const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
+  // A species without stickers shows none (its sticker columns are left as
+  // they are, just not used), and one without level rules is open to everyone.
+  const kind = species.speciesInfo(row.species);
+  const ageMonths = parseAgeMonths(row.age);
+  const ageMonthsHard = kind.levelRules && ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS;
+  const blueMarkers = kind.stickers && row.blue_markers ? JSON.parse(row.blue_markers) : [];
+  const hasEvo = blueMarkers.includes('blue_evo');
+  const hasAnyBlue = blueMarkers.length > 0;
+  const pbFlag = kind.stickers && !!row.pb_flag;
+  const tags = row.tags ? JSON.parse(row.tags) : [];
+  const isPendingAdoption = tags.includes(PENDING_ADOPTION_TAG);
+  const isStrayHold = tags.includes(STRAY_HOLD_TAG);
   const days = daysInShelter(row.date_in_shelter, row.still_listed ? null : row.removed_at);
+  // Alumni (manual, capped 1-15) and previous_days_in_shelter (automatic,
+  // uncapped, banked by the scraper on a detected return) both add on top
+  // of actual current-stay days -- different mechanisms answering different
+  // questions, see the previous_days_in_shelter migration note in db.js.
+  const effectiveDays = days != null
+    ? days + (row.alumni_flag ? (row.alumni_bonus_days || 0) : 0) + (row.previous_days_in_shelter || 0)
+    : days;
+
+  let eligible;
+  let notEligibleReason = null;
+  if (!kind.levelRules) {
+    eligible = true;
+  } else if (ageMonthsHard) {
+    eligible = false;
+    notEligibleReason = 'too_young';
+  } else if (hasEvo && !level.allowEvo) {
+    eligible = false;
+    notEligibleReason = 'evo_restricted';
+  } else if (hasAnyBlue && !level.allowBlue) {
+    eligible = false;
+    notEligibleReason = 'blue_restricted';
+  } else if (isPendingAdoption && !level.allowPending) {
+    eligible = false;
+    notEligibleReason = 'pending_restricted';
+    // Alumni is a privileged-only override: a staff member vouching that a
+    // known returning dog doesn't need to sit out their new stray hold, so
+    // it bypasses the hold here too, not just the day threshold below.
+  } else if (isStrayHold && !pbFlag && !row.alumni_flag) {
+    eligible = false;
+    notEligibleReason = 'stray_hold';
+  } else if (pbFlag) {
+    eligible = level.allowPb;
+    notEligibleReason = eligible ? null : 'pb_restricted';
+  } else {
+    eligible = effectiveDays != null ? effectiveDays >= level.minDays : null;
+    notEligibleReason = eligible ? null : 'days';
+  }
+
+  return {
+    eligible, notEligibleReason, level, kind, ageMonthsHard, blueMarkers, hasEvo, hasAnyBlue,
+    pbFlag, tags, isPendingAdoption, isStrayHold, days, effectiveDays
+  };
+}
+
+function serializeDog(row, experienceLevel, todayKey, userId) {
   const ageMonths = parseAgeMonths(row.age);
   const walkStats = db.prepare(`
     SELECT COUNT(*) AS count, MAX(started_at) AS last_started_at
@@ -309,56 +469,15 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
   const walkedByMe = myStats.count > 0;
   const isFavorite = userIdInt ? !!getFavorite.get(row.shelter_buddy_id, userIdInt) : false;
 
-  const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
-  const ageMonthsHard = ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS;
-  const blueMarkers = row.blue_markers ? JSON.parse(row.blue_markers) : [];
-  const hasEvo = blueMarkers.includes('blue_evo');
-  const hasAnyBlue = blueMarkers.length > 0;
-  const pbFlag = !!row.pb_flag;
-  const tags = row.tags ? JSON.parse(row.tags) : [];
-  const isPendingAdoption = tags.includes(PENDING_ADOPTION_TAG);
-  const isStrayHold = tags.includes(STRAY_HOLD_TAG);
-  // Alumni (manual, capped 1-15) and previous_days_in_shelter (automatic,
-  // uncapped, banked by the scraper on a detected return) both add on top
-  // of actual current-stay days -- different mechanisms answering different
-  // questions, see the previous_days_in_shelter migration note in db.js.
-  const effectiveDays = days != null
-    ? days + (row.alumni_flag ? (row.alumni_bonus_days || 0) : 0) + (row.previous_days_in_shelter || 0)
-    : days;
-
-  // Precedence: too young (hard, no override) > EVO not allowed (hard,
-  // not even PB) > any blue marker not allowed (hard) > pending adoption
-  // not allowed (hard, beginners only) > stray hold (only PB dogs on stray
-  // hold can be walked) > PB (overrides the day threshold
-  // when this level permits PB dogs at all) > day threshold.
-  let eligible;
-  let notEligibleReason = null;
-  if (ageMonthsHard) {
-    eligible = false;
-    notEligibleReason = 'too_young';
-  } else if (hasEvo && !level.allowEvo) {
-    eligible = false;
-    notEligibleReason = 'evo_restricted';
-  } else if (hasAnyBlue && !level.allowBlue) {
-    eligible = false;
-    notEligibleReason = 'blue_restricted';
-  } else if (isPendingAdoption && !level.allowPending) {
-    eligible = false;
-    notEligibleReason = 'pending_restricted';
-  } else if (isStrayHold && !pbFlag) {
-    eligible = false;
-    notEligibleReason = 'stray_hold';
-  } else if (pbFlag) {
-    eligible = level.allowPb;
-    notEligibleReason = eligible ? null : 'pb_restricted';
-  } else {
-    eligible = effectiveDays != null ? effectiveDays >= level.minDays : null;
-    notEligibleReason = eligible ? null : 'days';
-  }
+  const {
+    eligible, notEligibleReason, level, kind, ageMonthsHard, blueMarkers,
+    pbFlag, tags, isPendingAdoption, isStrayHold, days, effectiveDays
+  } = dogEligibility(row, experienceLevel);
 
   return {
     id: row.shelter_buddy_id,
     name: row.name,
+    species: species.validSpecies(row.species) ? row.species : species.DEFAULT_SPECIES,
     previousNames: JSON.parse(row.previous_names || '[]'),
     sex: row.sex,
     age: row.age,
@@ -372,12 +491,17 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     summary: row.summary,
     tags,
     photoUrl: resolvePhotoUrl(row),
+    // A YouTube video from the dog's page on the shelter's own site, if they
+    // have one (scraper.js) -- a direct link, since the iframe embed itself
+    // is stripped out of `summary` for safety (see sanitizeHtml in app.js).
+    videoUrl: row.video_url || null,
     stillListed: !!row.still_listed,
     awaitingListing: !!row.awaiting_listing,
     removedAt: row.removed_at || null,
     // Alumni (returned dog, privileged-only): bonus days count toward
     // eligibility on top of actual time in shelter, without changing the
-    // real daysInShelter figure shown elsewhere.
+    // real daysInShelter figure shown elsewhere. Also lifts the stray-hold
+    // block entirely (see dogEligibility) -- not just the day threshold.
     isAlumni: !!row.alumni_flag,
     alumniBonusDays: row.alumni_bonus_days || 0,
     // Automatic, uncapped credit from prior stay(s) -- set when the scraper
@@ -390,15 +514,19 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     // 'blue_restricted' | 'pending_restricted' | 'stray_hold' | 'pb_restricted' |
     // 'days' | null (when eligible).
     notEligibleReason,
-    minDaysForLevel: level.minDays,
+    minDaysForLevel: kind.levelRules ? level.minDays : null,
     // Hard rule, no override: puppies under 6 months old can never be walked.
     tooYoung: ageMonthsHard,
     blueMarkers,
-    pooStatus: row.poo_status || 'none',
-    starFlag: !!row.star_flag,
+    pooStatus: (kind.stickers && row.poo_status) || 'none',
+    starFlag: kind.stickers && !!row.star_flag,
     pbFlag,
     isPendingAdoption,
     isStrayHold,
+    // A kitten (species.js youngFirst): shown on cards, and the handling-order
+    // warning below is about it.
+    isYoung: species.isYoung(row),
+    handlingWarning: handlingWarningFor(row, userIdInt),
     kennelLocation: row.kennel_location || null,
     checkedOffToday: todayKey ? !!getCheckoff.get(row.shelter_buddy_id, todayKey) : false,
     walkCount: walkStats.count,
@@ -435,7 +563,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
 // deterministic: anyone with both this app's pepper and Django's database
 // COULD reconstruct which walker profile belongs to which login account
 // -- that's a real, accepted tradeoff now, not an oversight.
-const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity';
+const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, species_pref AS speciesPref, desktop_view AS desktopView';
 
 // Resolves (and if needed, creates or links) the walker profile for the
 // trusted X-Auth-Email header. Returns null if the header is missing, e.g.
@@ -477,7 +605,8 @@ function resolveAuthedUser(req) {
       ).run(name, nowIso, emailHash, nowIso);
       row = {
         id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false,
-        onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk'
+        onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk',
+        speciesPref: species.DEFAULT_SPECIES_PREF
       };
       notifyAdmins({ title: '👋 New account', body: `${name} just opened Shelter Walk for the first time.`, tag: `signup-${row.id}` });
     }
@@ -542,6 +671,7 @@ impact.register(app, { db });
 impact.registerDay(app, { db, cachedPhotoUrl });
 shelterTrends.register(app, { db });
 const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
+const playgroupApi = playgroupNotes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
 feedback.register(app, { db, isStaffOrPrivileged, push });
 account.register(app, { db });
 
@@ -554,7 +684,16 @@ app.get('/api/me', (req, res) => {
   // shelterwalk.com's login-level "staff" flag (from Django), a different
   // thing from this app's own isPrivileged/canAudit permissions.
   const isStaff = req.headers['x-auth-staff'] === '1';
-  res.json({ ...user, isStaff, levelUpOffer: levelUpOffer(user.id) });
+  // The species table (species.js) rides along, so the app's rules for what
+  // each animal can do always match the server's.
+  // The pages this person can use on a computer and which one they start on
+  // (Settings, and the switcher on the desktop pages).
+  const desktop = {
+    views: desktopViews.available(isStaff).map(({ key, label, path: p }) => ({ key, label, path: p })),
+    start: desktopViews.startView(user.desktopView, isStaff),
+    chosen: user.desktopView && desktopViews.isValid(user.desktopView, isStaff) ? user.desktopView : null
+  };
+  res.json({ ...user, isStaff, desktop, levelUpOffer: levelUpOffer(user.id), species: species.SPECIES });
 });
 
 // The Profile section's two fields save together as one first/last pair.
@@ -886,13 +1025,28 @@ app.put('/api/users/:id/permissions', (req, res) => {
   res.json({ id, isPrivileged: !!isPrivileged, canAudit: !!canAudit });
 });
 
-// Either or both of: experienceLevel, defaultActivity (the scan screen's
-// usual activity).
+// Any of: experienceLevel, defaultActivity (the scan screen's usual
+// activity), speciesPref (who they work with: dog, cat or both), desktopView
+// (start page on a computer; null = the default).
 app.put('/api/users/:id/settings', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { experienceLevel, defaultActivity } = req.body;
-  if (experienceLevel === undefined && defaultActivity === undefined) {
-    return res.status(400).json({ error: 'Nothing to save: send experienceLevel and/or defaultActivity.' });
+  const { experienceLevel, defaultActivity, speciesPref, desktopView } = req.body;
+  if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined && desktopView === undefined) {
+    return res.status(400).json({ error: 'Nothing to save: send experienceLevel, defaultActivity, speciesPref and/or desktopView.' });
+  }
+  if (desktopView !== undefined) {
+    if (desktopView !== null && !desktopViews.isValid(desktopView, req.headers['x-auth-staff'] === '1')) {
+      return res.status(400).json({ error: `desktopView must be one of: ${desktopViews.available(req.headers['x-auth-staff'] === '1').map((v) => v.key).join(', ')}` });
+    }
+    if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined) {
+      const info = db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
+      if (!info.changes) return res.status(404).json({ error: 'User not found' });
+      return res.json({ id, desktopView });
+    }
+    db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
+  }
+  if (speciesPref !== undefined && !species.SPECIES_PREFS.includes(speciesPref)) {
+    return res.status(400).json({ error: `speciesPref must be one of: ${species.SPECIES_PREFS.join(', ')}` });
   }
   if (experienceLevel !== undefined && !Object.prototype.hasOwnProperty.call(EXPERIENCE_LEVELS, experienceLevel)) {
     return res.status(400).json({ error: `experienceLevel must be one of: ${Object.keys(EXPERIENCE_LEVELS).join(', ')}` });
@@ -900,13 +1054,15 @@ app.put('/api/users/:id/settings', (req, res) => {
   if (defaultActivity !== undefined && !ACTIVITIES.includes(defaultActivity)) {
     return res.status(400).json({ error: `defaultActivity must be one of: ${ACTIVITIES.join(', ')}` });
   }
-  const user = db.prepare('SELECT experience_level, default_activity FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT experience_level, default_activity, species_pref FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const next = {
     experienceLevel: experienceLevel !== undefined ? experienceLevel : user.experience_level,
-    defaultActivity: defaultActivity !== undefined ? defaultActivity : user.default_activity
+    defaultActivity: defaultActivity !== undefined ? defaultActivity : user.default_activity,
+    speciesPref: speciesPref !== undefined ? speciesPref : user.species_pref
   };
-  db.prepare('UPDATE users SET experience_level = ?, default_activity = ? WHERE id = ?').run(next.experienceLevel, next.defaultActivity, id);
+  db.prepare('UPDATE users SET experience_level = ?, default_activity = ?, species_pref = ? WHERE id = ?')
+    .run(next.experienceLevel, next.defaultActivity, next.speciesPref, id);
   res.json({ id, ...next });
 });
 
@@ -926,13 +1082,21 @@ function validDateKey(v) {
 // The shelter's Animal IDs (kennel card QR/barcode) are 4-9 digit numbers.
 const looksLikeAnimalId = (id) => Number.isInteger(id) && id >= 1000 && id <= 999999999;
 
+// Only the species the signed-in volunteer works with (Settings). Looking up
+// one animal by ID (a scan) works for any species.
+function speciesWhere(req) {
+  const kinds = species.speciesForPref(req.me && req.me.speciesPref);
+  return { sql: `species IN (${kinds.map(() => '?').join(', ')})`, params: kinds };
+}
+
 app.get('/api/dogs', (req, res) => {
   const experienceLevel = resolveExperienceLevel(req.query.userId);
   const onlyEligible = req.query.eligible === 'true';
   const onlyListed = req.query.all !== 'true';
   const todayKey = validDateKey(req.query.dateKey);
+  const kinds = speciesWhere(req);
   // Stand-ins for not-yet-listed kennel cards aren't real dogs yet: no list shows them.
-  let rows = db.prepare('SELECT * FROM dogs WHERE awaiting_listing = 0' + (onlyListed ? ' AND still_listed = 1' : '')).all();
+  let rows = db.prepare(`SELECT * FROM dogs WHERE awaiting_listing = 0 AND ${kinds.sql}` + (onlyListed ? ' AND still_listed = 1' : '')).all(...kinds.params);
   let dogs = rows.map((r) => serializeDog(r, experienceLevel, todayKey, req.query.userId));
   if (onlyEligible) {
     dogs = dogs.filter((d) => d.eligible);
@@ -956,6 +1120,8 @@ app.get('/api/dogs/:id', (req, res) => {
     SELECT id, location, started_at, ended_at, duration_seconds, notes
     FROM walks WHERE dog_id = ? ORDER BY started_at DESC
   `).all(id);
+  dog.playgroupCounts = playgroupApi.counts(id);
+  Object.assign(dog, modulesCore.runDogEnrichers(id, moduleState));
   res.json({ dog, walks, notes: notesApi.notesFor(id, req.me.id) });
 });
 
@@ -978,45 +1144,59 @@ app.get('/api/dogs/:id/qr.svg', async (req, res) => {
   }
 });
 
-// The "returned" icon's breakdown popup: this dog's earlier stay(s), for
-// dogs the scraper has seen leave and come back. Built from the shared
-// shelter_events log (the same rows the Updates feed reads), not a separate
-// table -- there's no per-stay ledger, so a prior stay is reconstructed as
-// the span between a 'new_dog'/'returned' event and the 'adopted'/'removed'
-// event that follows it. Capped to the last 6 months so this stays a short,
-// readable list even for a dog with a long history, rather than growing
-// forever as the shelter's event log does.
+// The "log" icon's popup: this dog's full tracked timeline -- arrivals,
+// pending adoptions (and ones that fell through), adoptions, returns, and
+// plain removals. Built from the shared shelter_events log (the same rows
+// the Updates feed reads), not a separate table. Capped to the last 6
+// months so this stays a short, readable list even for a dog with a long
+// history, rather than growing forever as the event log does.
 const STAY_HISTORY_MONTHS = 6;
+const STICKER_EVENT_KINDS = ['sticker_on', 'sticker_off', 'sticker_auto_off'];
+// A sticker switched on and back off (or off then on) within the same
+// calendar day leaves nothing to show -- the dog ends the day exactly as it
+// started, so both events are dropped rather than cluttering the timeline
+// with a no-op. Grouped by day (not a rolling 24h window) and by sticker
+// (`detail`), independent of every other sticker.
+function collapseSameDaySticker(rows) {
+  const groups = new Map(); // "day|key" -> rows[]
+  for (const row of rows) {
+    const key = `${row.occurredAt.slice(0, 10)}|${row.detail}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const kept = [];
+  for (const group of groups.values()) {
+    const hasOn = group.some((r) => r.kind === 'sticker_on');
+    const hasOff = group.some((r) => r.kind === 'sticker_off' || r.kind === 'sticker_auto_off');
+    if (hasOn && hasOff) continue;
+    kept.push(...group);
+  }
+  return kept.sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+}
 app.get('/api/dogs/:id/stay-history', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = db.prepare('SELECT date_in_shelter, still_listed, removed_at, previous_days_in_shelter FROM dogs WHERE shelter_buddy_id = ?').get(id);
-  if (!row) return res.status(404).json({ error: 'Dog not found' });
+  const dog = db.prepare('SELECT shelter_buddy_id FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const since = new Date();
   since.setMonth(since.getMonth() - STAY_HISTORY_MONTHS);
   const events = db.prepare(`
-    SELECT kind, occurred_at AS occurredAt FROM shelter_events
-    WHERE dog_id = ? AND kind IN ('new_dog', 'returned', 'adopted', 'removed') AND occurred_at >= ?
+    SELECT kind, title, detail, occurred_at AS occurredAt FROM shelter_events
+    WHERE dog_id = ? AND kind IN ('new_dog', 'returned', 'adopted', 'removed', 'pending_adoption', 'pending_canceled')
+      AND occurred_at >= ?
     ORDER BY occurred_at ASC, id ASC
   `).all(id, since.toISOString());
-  // Only stays that ended before this current one started -- the current
-  // stay itself is described by the dog's own date_in_shelter/still_listed
-  // fields already shown alongside this popup, so it isn't repeated here.
-  const priorEvents = events.filter((e) => e.occurredAt < row.date_in_shelter);
-  const priorStays = [];
-  let openedAt = null;
-  for (const e of priorEvents) {
-    if (e.kind === 'new_dog' || e.kind === 'returned') {
-      openedAt = e.occurredAt;
-    } else if (openedAt) {
-      priorStays.push({ arrivedAt: openedAt, leftAt: e.occurredAt });
-      openedAt = null;
-    }
-  }
-  res.json({
-    months: STAY_HISTORY_MONTHS,
-    priorStays,
-    previousDaysInShelter: row.previous_days_in_shelter || 0
-  });
+  // Toggleable separately on the timeline (see showStayLogPopup in app.js)
+  // since most volunteers care about arrivals/adoptions, not every sticker
+  // flip -- kept in its own list rather than merged into `events` so the
+  // client can show/hide it without another round trip.
+  const stickerRows = db.prepare(`
+    SELECT kind, title, detail, occurred_at AS occurredAt FROM shelter_events
+    WHERE dog_id = ? AND kind IN (${STICKER_EVENT_KINDS.map(() => '?').join(', ')})
+      AND occurred_at >= ?
+    ORDER BY occurred_at ASC, id ASC
+  `).all(id, ...STICKER_EVENT_KINDS, since.toISOString());
+  const stickerEvents = collapseSameDaySticker(stickerRows);
+  res.json({ months: STAY_HISTORY_MONTHS, events, stickerEvents });
 });
 
 // "Our walks together" stats for the profile sheet's graph link -- personal
@@ -1045,14 +1225,14 @@ app.get('/api/dogs/:id/walk-stats', (req, res) => {
 // with a time next to it could give away who wrote it.
 app.get('/api/dogs/:id/walk-history', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const dog = db.prepare('SELECT name FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  const dog = db.prepare('SELECT name, species FROM dogs WHERE shelter_buddy_id = ?').get(id);
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const walks = db.prepare(`
     SELECT started_at AS startedAt, ended_at AS endedAt, duration_seconds AS durationSeconds, activity,
            CASE WHEN user_id = ? THEN 1 ELSE 0 END AS mine
     FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL ORDER BY started_at DESC
   `).all(req.me.id, id).map((w) => ({ ...w, mine: w.mine === 1 }));
-  res.json({ name: dog.name, walks });
+  res.json({ name: dog.name, species: dog.species, walks });
 });
 
 // blank + alphabetical letter codes, with the EVO rectangle last.
@@ -1061,9 +1241,67 @@ const VALID_BLUE_MARKERS = [
   'blue_m', 'blue_p', 'blue_q', 'blue_r', 'blue_s', 'blue_evo'
 ];
 const VALID_POO_STATUSES = ['none', 'poo', 'priority'];
+
+// Human-readable label for each individually-tracked sticker, used only for
+// the "turned on/off" events on a dog's timeline (see /api/dogs/:id/stay-
+// history) -- independent of the icon/letter shown on the kennel card
+// itself (see BLUE_MARKER_NAMES in app.js).
+const STICKER_LABELS = {
+  star: 'Good for beginners (star)',
+  pb: 'PB: Potty break OK',
+  poo: 'POO: Potty Outside Only',
+  poo_priority: 'POO: priority (first out, last in)',
+  blue_c: 'Blue: Difficult to collar',
+  blue_d: 'Blue: Door dasher',
+  blue_e: 'Blue: Energetic',
+  blue_h: 'Blue: Humpy',
+  blue_j: 'Blue: Jumpy',
+  blue_m: 'Blue: Mouthy',
+  blue_p: 'Blue: Puller',
+  blue_q: 'Blue: Quirky',
+  blue_r: 'Blue: Reactive',
+  blue_s: 'Blue: Shy / shutdown',
+  blue_evo: 'Blue: Experienced volunteer only'
+};
+const insertStickerEvent = db.prepare(
+  'INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES (?, ?, ?, ?, ?)'
+);
+// One event per sticker that actually changed, not one event for the whole
+// PUT -- so the timeline (and its same-day on/off collapsing, see
+// /api/dogs/:id/stay-history) can treat "turned the star on" and "turned PB
+// off" as separate, independently-cancelable entries even when both happen
+// in the same request. POO's plain/priority pair is modeled as two
+// independent booleans here (never both on at once) so it collapses the
+// same way every other sticker does.
+function logStickerChanges(dogId, before, after) {
+  const beforeBlue = new Set(before.blueMarkers);
+  const afterBlue = new Set(after.blueMarkers);
+  const changes = [];
+  for (const key of VALID_BLUE_MARKERS) {
+    if (key === 'blue') continue; // never toggled directly, only implied client-side
+    if (beforeBlue.has(key) !== afterBlue.has(key)) changes.push([key, afterBlue.has(key)]);
+  }
+  if (before.starFlag !== after.starFlag) changes.push(['star', after.starFlag]);
+  if (before.pbFlag !== after.pbFlag) changes.push(['pb', after.pbFlag]);
+  if (before.pooStatus !== after.pooStatus) {
+    if (before.pooStatus === 'poo') changes.push(['poo', false]);
+    if (before.pooStatus === 'priority') changes.push(['poo_priority', false]);
+    if (after.pooStatus === 'poo') changes.push(['poo', true]);
+    if (after.pooStatus === 'priority') changes.push(['poo_priority', true]);
+  }
+  if (!changes.length) return;
+  const now = new Date().toISOString();
+  for (const [key, on] of changes) {
+    insertStickerEvent.run(on ? 'sticker_on' : 'sticker_off', dogId, STICKER_LABELS[key] || key, key, now);
+  }
+}
 app.put('/api/dogs/:id/markers', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { blueMarkers, pooStatus, starFlag, pbFlag } = req.body;
+  const animal = db.prepare('SELECT species, blue_markers, poo_status, star_flag, pb_flag FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  if (animal && !species.speciesInfo(animal.species).stickers) {
+    return res.status(400).json({ error: `${species.speciesInfo(animal.species).plural} don't have kennel card stickers.` });
+  }
   if (!Array.isArray(blueMarkers) || blueMarkers.some((m) => !VALID_BLUE_MARKERS.includes(m))) {
     return res.status(400).json({ error: `blueMarkers must be an array of: ${VALID_BLUE_MARKERS.join(', ')}` });
   }
@@ -1075,6 +1313,12 @@ app.put('/api/dogs/:id/markers', (req, res) => {
     UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ? WHERE shelter_buddy_id = ?
   `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, id);
   if (info.changes === 0) return res.status(404).json({ error: 'Dog not found' });
+  logStickerChanges(id, {
+    blueMarkers: JSON.parse(animal.blue_markers || '[]'),
+    pooStatus: animal.poo_status,
+    starFlag: !!animal.star_flag,
+    pbFlag: !!animal.pb_flag
+  }, { blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
   res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
 });
 
@@ -1103,9 +1347,10 @@ app.put('/api/dogs/:id/alumni', (req, res) => {
 // noting where they are right now, not walking them).
 app.put('/api/dogs/:id/location', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const letter = kennelLetter(req.body.location);
+  const animal = db.prepare('SELECT species FROM dogs WHERE shelter_buddy_id = ?').get(id);
+  const letter = kennelLetter(req.body.location, animal && animal.species);
   if (!letter) {
-    return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
+    return res.status(400).json({ error: kennelLetterError(animal && animal.species) });
   }
   const result = setKennelLocation(id, letter);
   if (!result) return res.status(404).json({ error: 'Dog not found' });
@@ -1120,11 +1365,12 @@ app.post('/api/audit/clear-unscanned', (req, res) => {
   if (!(req.headers['x-auth-staff'] === '1' || (req.me && (req.me.canAudit || req.me.isPrivileged)))) {
     return res.status(403).json({ error: 'Audit access is needed for this.' });
   }
-  const letter = kennelLetter(req.body.letter);
+  const letter = kennelLetter(req.body.letter, 'dog');
   if (!letter || String(req.body.letter).trim().length !== 1) return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
   const scanned = new Set((Array.isArray(req.body.scannedIds) ? req.body.scannedIds : []).map((id) => parseInt(id, 10)).filter(Number.isFinite));
   if (!scanned.size) return res.status(400).json({ error: 'No dogs were scanned in this wing.' });
-  const unscanned = db.prepare('SELECT shelter_buddy_id AS id, name FROM dogs WHERE kennel_location = ? ORDER BY name')
+  // Audit Mode walks the dog wings: a cat filed under the same letter is left alone.
+  const unscanned = db.prepare("SELECT shelter_buddy_id AS id, name FROM dogs WHERE kennel_location = ? AND species = 'dog' ORDER BY name")
     .all(letter).filter((d) => !scanned.has(d.id));
   if (!req.body.dryRun && unscanned.length) {
     const clear = db.prepare('UPDATE dogs SET kennel_location = NULL WHERE shelter_buddy_id = ? AND kennel_location = ?');
@@ -1255,17 +1501,25 @@ app.get('/api/updates', (req, res) => {
   // outright -- not happy news, not actionable, shouldn't show up at all.
   // The scraper stopped writing new ones of these; this also hides any
   // already sitting in the table from before that change.
+  // Only news about the species this volunteer works with; shelter-wide
+  // alerts (no animal) always show.
+  const kindsOf = speciesWhere(req);
   let rows = db.prepare(`
-    SELECT e.id, e.kind, e.dog_id, d.name AS dog_name, d.photo_url,
+    SELECT e.id, e.kind, e.dog_id, d.name AS dog_name, d.photo_url, d.species,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
     WHERE e.kind IN (${kindList.map(() => '?').join(', ')}) AND e.occurred_at >= ?
+      AND (d.shelter_buddy_id IS NULL OR d.${kindsOf.sql})
     ORDER BY e.occurred_at DESC, e.id DESC
     LIMIT ?
-  `).all(...kindList, since, limit * 4);
-  rows.forEach((r) => { if (r.dog_id) r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url); });
+  `).all(...kindList, since, ...kindsOf.params, limit * 4);
+  rows.forEach((r) => {
+    if (r.dog_id) r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
+    // No stickers for a species without them, same as serializeDog.
+    if (r.species && !species.speciesInfo(r.species).stickers) Object.assign(r, { blue_markers: '[]', poo_status: 'none', star_flag: 0, pb_flag: 0 });
+  });
 
   let prefEnabled = false;
   let walkedDogIds = new Set();
@@ -1306,9 +1560,11 @@ app.get('/api/updates/unread-count', (req, res) => {
   if (!userId) return res.status(400).json({ error: 'userId is required' });
   const userRow = db.prepare('SELECT updates_last_seen_at FROM users WHERE id = ?').get(userId);
   const lastSeenAt = userRow ? userRow.updates_last_seen_at : null;
-  const count = lastSeenAt
-    ? db.prepare("SELECT COUNT(*) AS c FROM shelter_events WHERE kind != 'removed' AND occurred_at > ?").get(lastSeenAt).c
-    : db.prepare("SELECT COUNT(*) AS c FROM shelter_events WHERE kind != 'removed'").get().c;
+  const kindsOf = speciesWhere(req);
+  const count = db.prepare(`
+    SELECT COUNT(*) AS c FROM shelter_events e LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
+    WHERE e.kind != 'removed' AND e.occurred_at > ? AND (d.shelter_buddy_id IS NULL OR d.${kindsOf.sql})
+  `).get(lastSeenAt || '', ...kindsOf.params).c;
   res.json({ count });
 });
 
@@ -1352,8 +1608,7 @@ app.post('/api/walks/start', (req, res) => {
   if (!dogId || !userId) {
     return res.status(400).json({ error: 'dogId and userId are required' });
   }
-  const activity = activityFrom(req.body.activity);
-  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
+  if (!activityFrom(req.body.activity)) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
   const hoursError = walkHours.walkHoursError(new Date().toISOString(), null);
   if (hoursError) return res.status(409).json({ error: hoursError });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
@@ -1361,20 +1616,38 @@ app.post('/api/walks/start', (req, res) => {
   let dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   // A kennel card the shelter's listing doesn't have yet: walk them on the
   // card's Animal ID through a stand-in row (see awaiting_listing in db.js).
+  // The walker says which species the card is for; the listing corrects it.
   if (!dog && req.body.unlisted === true && looksLikeAnimalId(Number(dogId))) {
+    const kind = species.validSpecies(req.body.species) ? req.body.species : species.DEFAULT_SPECIES;
     const nowIso = new Date().toISOString();
-    db.prepare(`INSERT INTO dogs (shelter_buddy_id, name, still_listed, awaiting_listing, first_seen_at, last_seen_at)
-      VALUES (?, ?, 0, 1, ?, ?)`).run(Number(dogId), `Dog #${Number(dogId)}`, nowIso, nowIso);
+    db.prepare(`INSERT INTO dogs (shelter_buddy_id, name, species, still_listed, awaiting_listing, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, 0, 1, ?, ?)`).run(Number(dogId), `${species.speciesInfo(kind).label} #${Number(dogId)}`, kind, nowIso, nowIso);
     dog = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   }
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
+  const activity = activityForAnimal(req.body.activity, dog);
+  if (!activity) return res.status(400).json({ error: activityError(dog) });
   // A dog off the listing (say, just returned, before the shelter's site
   // catches up) can still be walked: the walk is filed under their ID like
   // any other, and the scraper treats them as a return when they reappear.
 
   const ageMonths = parseAgeMonths(dog.age);
-  if (ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS) {
+  if (species.speciesInfo(dog.species).levelRules && ageMonths != null && ageMonths < MIN_WALK_AGE_MONTHS) {
     return res.status(403).json({ error: `${dog.name} is too young to walk (${dog.age}). Puppies under 6 months old can't be walked, no exceptions.` });
+  }
+
+  // A dog not cleared for this volunteer's level can't be started at all --
+  // a hard rule enforced here, not just a caution the UI shows and lets you
+  // click past. Checked against the dog's current row, i.e. after any
+  // marker change (PB, blue stickers, ...) the walker just saved, so a
+  // change that allows or blocks this walk is always checked with its own
+  // effect already in place.
+  const { eligible, notEligibleReason } = dogEligibility(dog, resolveExperienceLevel(userId));
+  if (eligible === false) {
+    return res.status(403).json({
+      error: `${dog.name} isn't cleared to walk at your experience level right now.`,
+      notEligibleReason
+    });
   }
 
   // Per-user, not global — two different people can each have their own
@@ -1396,9 +1669,9 @@ app.post('/api/walks/start', (req, res) => {
   // Location is optional -- if it's left blank, leave the dog's existing
   // kennel letter (if any) alone rather than overwriting it with nothing.
   const hasLocation = location != null && String(location).trim() !== '';
-  const trimmedLocation = hasLocation ? kennelLetter(location) : '';
+  const trimmedLocation = hasLocation ? kennelLetter(location, dog.species) : '';
   if (hasLocation && !trimmedLocation) {
-    return res.status(400).json({ error: 'Pick a kennel letter, A to E.' });
+    return res.status(400).json({ error: kennelLetterError(dog.species) });
   }
   if (trimmedLocation) setKennelLocation(dogId, trimmedLocation);
 
@@ -1456,7 +1729,7 @@ app.post('/api/walks/:id/extend', (req, res) => {
     return res.status(409).json({ error: `Daycations already run up to ${DAYCATION_MINUTES / 60} hours, so there's no time to add.` });
   }
   if (new Date(walkStopsAt(walk)).getTime() === walkClosesMs(walk)) {
-    return res.status(409).json({ error: `Walks end at ${walkHours.walkWindow(walk.started_at).closeLabel}, so this one can't go any longer.` });
+    return res.status(409).json({ error: `The shelter closes at ${walkHours.walkWindow(walk.started_at).closeLabel}, so this one can't go any longer.` });
   }
   if (walkLimitMinutes(walk) + EXTEND_MINUTES > MAX_TOTAL_MINUTES) {
     return res.status(409).json({ error: `Walks can be extended up to ${MAX_TOTAL_MINUTES / 60} hours in total.` });
@@ -1544,8 +1817,9 @@ app.put('/api/walks/:id', (req, res) => {
   const endedAt = req.body.endedAt !== undefined ? req.body.endedAt : walk.ended_at;
   const location = req.body.location !== undefined ? String(req.body.location).trim() : walk.location;
   const notes = req.body.notes !== undefined ? (req.body.notes ? String(req.body.notes).trim() : null) : walk.notes;
-  const activity = req.body.activity !== undefined ? activityFrom(req.body.activity) : walk.activity;
-  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
+  const animal = db.prepare('SELECT species FROM dogs WHERE shelter_buddy_id = ?').get(walk.dog_id);
+  const activity = req.body.activity !== undefined ? activityForAnimal(req.body.activity, animal) : walk.activity;
+  if (!activity) return res.status(400).json({ error: activityError(animal) });
   if (endedAt && (endedAt !== walk.ended_at || startedAt !== walk.started_at)) {
     const checked = walkEndTime(endedAt, startedAt, Date.now());
     if (checked.error) return res.status(400).json({ error: checked.error });
@@ -1594,14 +1868,14 @@ app.post('/api/walks/manual', (req, res) => {
   if (!dogId || !userId || !startedAt || !endedAt) {
     return res.status(400).json({ error: 'dogId, userId, startedAt, and endedAt are all required' });
   }
-  const dog = db.prepare('SELECT shelter_buddy_id FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
+  const dog = db.prepare('SELECT shelter_buddy_id, species FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
   const checked = walkEndTime(endedAt, startedAt, Date.now());
   if (checked.error) return res.status(400).json({ error: checked.error });
-  const activity = activityFrom(req.body.activity);
-  if (!activity) return res.status(400).json({ error: `activity must be one of: ${ACTIVITIES.join(', ')}` });
+  const activity = activityForAnimal(req.body.activity, dog);
+  if (!activity) return res.status(400).json({ error: activityError(dog) });
   const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
   if (hoursError) return res.status(400).json({ error: hoursError });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
@@ -1636,12 +1910,15 @@ app.get('/api/walks', (req, res) => {
   if (userId) { conditions.push('w.user_id = ?'); params.push(userId); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
-    SELECT w.*, d.name AS dog_name, d.photo_url, d.breed,
+    SELECT w.*, d.name AS dog_name, d.photo_url, d.breed, d.species,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     ${where} ORDER BY w.started_at DESC LIMIT ?
   `).all(...params, limit);
-  rows.forEach((r) => { r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url); });
+  rows.forEach((r) => {
+    r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
+    if (!species.speciesInfo(r.species).stickers) Object.assign(r, { blue_markers: '[]', poo_status: 'none', star_flag: 0, pb_flag: 0 });
+  });
   res.json({ walks: rows });
 });
 
@@ -1681,31 +1958,61 @@ app.put('/api/walks/:id/user', (req, res) => {
 });
 
 // ---- Stats (personal to each user) ----
+// "totalWalks"/"totalSeconds" are every kind of interaction added together
+// (a walk, a cuddle, a playgroup turn, a 12-hour daycation -- all count the
+// same toward "time spent with them"). But averaging duration across all of
+// those lumps a 10-minute cuddle in with a 12-hour daycation, so the average
+// is walk-only when the volunteer has any walks, falling back to their
+// overall average otherwise (a cat volunteer never has a 'walk' row).
 app.get('/api/stats', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   if (!userId) return res.status(400).json({ error: 'userId is required' });
+  // An optional filter down to one activity, for the "by activity" drill-down.
+  const activity = ACTIVITIES.includes(req.query.activity) ? req.query.activity : null;
 
   const totals = db.prepare(`
     SELECT COUNT(*) AS totalWalks, COUNT(DISTINCT dog_id) AS uniqueDogs,
            COALESCE(SUM(duration_seconds), 0) AS totalSeconds,
+           COALESCE(AVG(duration_seconds), 0) AS avgAllSeconds
+    FROM walks WHERE ended_at IS NOT NULL AND user_id = ?
+      ${activity ? 'AND activity = ?' : ''}
+  `).get(...(activity ? [userId, activity] : [userId]));
+
+  // Already scoped to one activity (the "by activity" drill-down): its own
+  // average is exactly what the label says, no walk-only substitution needed.
+  if (activity) {
+    totals.avgSeconds = totals.avgAllSeconds;
+  } else {
+    const walkOnly = db.prepare(`
+      SELECT COUNT(*) AS walkCount, COALESCE(AVG(duration_seconds), 0) AS avgSeconds
+      FROM walks WHERE ended_at IS NOT NULL AND user_id = ? AND activity = 'walk'
+    `).get(userId);
+    totals.avgSeconds = walkOnly.walkCount > 0 ? walkOnly.avgSeconds : totals.avgAllSeconds;
+  }
+  delete totals.avgAllSeconds;
+
+  const byActivity = db.prepare(`
+    SELECT activity, COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds,
            COALESCE(AVG(duration_seconds), 0) AS avgSeconds
     FROM walks WHERE ended_at IS NOT NULL AND user_id = ?
-  `).get(userId);
+    GROUP BY activity ORDER BY count DESC
+  `).all(userId);
 
   const perDog = db.prepare(`
     SELECT d.shelter_buddy_id AS id, d.name, d.photo_url, d.still_listed AS stillListed,
-           d.removed_at AS removedAt,
+           d.removed_at AS removedAt, d.species,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
            COUNT(w.id) AS walkCount, MAX(w.started_at) AS lastWalkedAt,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     WHERE w.ended_at IS NOT NULL AND w.user_id = ?
+      ${activity ? 'AND w.activity = ?' : ''}
     GROUP BY d.shelter_buddy_id
     ORDER BY walkCount DESC, lastWalkedAt DESC
-  `).all(userId);
+  `).all(...(activity ? [userId, activity] : [userId]));
   perDog.forEach((r) => { r.photo_url = cachedPhotoUrl(r.id, r.photo_url); r.stillListed = !!r.stillListed; });
 
-  res.json({ totals, perDog });
+  res.json({ totals, perDog, byActivity });
 });
 
 // ---- Manual scrape trigger ----
@@ -1730,7 +2037,7 @@ app.post('/api/scrape/run', async (req, res) => {
 });
 
 app.get('/api/scrape/status', (req, res) => {
-  const row = db.prepare('SELECT MAX(last_seen_at) AS lastScrapeAt, COUNT(*) AS dogCount FROM dogs WHERE still_listed = 1').get();
+  const row = db.prepare("SELECT MAX(last_seen_at) AS lastScrapeAt, COALESCE(SUM(species = 'dog'), 0) AS dogCount, COALESCE(SUM(species = 'cat'), 0) AS catCount FROM dogs WHERE still_listed = 1").get();
   res.json(row);
 });
 
@@ -1806,7 +2113,11 @@ app.use((err, req, res, next) => {
 // The walker can add EXTEND_MINUTES at a time (before it stops) for a longer
 // walk. A walk the system ended is flagged auto_stopped, and is recorded as
 // running exactly to its limit -- not to whenever we noticed.
-const AUTO_STOP_MINUTES = 30;
+const AUTO_STOP_MINUTES = 45; // walks, cuddles, play group (was 30 until 2026-11-06, owner)
+// Activities whose default limit isn't AUTO_STOP_MINUTES: matchmaking (meeting
+// a possible adopter) usually runs longer than a walk (owner, 2026-11-06).
+// +10 min and the 3-hour cap work the same way on top of it.
+const ACTIVITY_LIMIT_MINUTES = { matchmaking: 60 };
 const EXTEND_MINUTES = 10;
 const MAX_TOTAL_MINUTES = 180;
 const WARN_MINUTES_BEFORE = 3;
@@ -1817,7 +2128,9 @@ const WRAP_UP_HOURS = 12;
 // it runs up to DAYCATION_MINUTES with no extending, no length alerts, and
 // isn't stopped at closing time (it still has to start during walking hours).
 const DAYCATION_MINUTES = 12 * 60;
-const walkLimitMinutes = (w) => (w.activity === 'daycation' ? DAYCATION_MINUTES : AUTO_STOP_MINUTES + (w.extend_minutes || 0));
+const walkLimitMinutes = (w) => (w.activity === 'daycation'
+  ? DAYCATION_MINUTES
+  : (ACTIVITY_LIMIT_MINUTES[w.activity] || AUTO_STOP_MINUTES) + (w.extend_minutes || 0));
 // Closing time for the walk's day, in ms. Staff can move a day's closing
 // time while walks are out; one that started after the new closing time
 // isn't held to it (it would otherwise stop before it began).
@@ -1862,6 +2175,9 @@ function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time ca
 // the walk, or the server was down) is skipped rather than sent stale.
 const ALERT_GRACE_MS = 2 * 60000;
 const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at play group', daycation: 'on a daycation' };
+// What notifications call each activity ("End cuddle", "Cuddles stop after...").
+const ACTIVITY_NOUNS = { walk: 'walk', cuddle: 'cuddle', matchmaking: 'matchmaking session', playgroup: 'play group', daycation: 'daycation' };
+const activityNoun = (activity) => ACTIVITY_NOUNS[activity] || 'walk';
 // Buttons on the walk alerts. Android shows them (iPhone ignores them, so the
 // tap-to-open path must still do everything); sw.js handles each one.
 const walkAlertActions = (w) => ({
@@ -1869,7 +2185,7 @@ const walkAlertActions = (w) => ({
   dogName: w.dog_name || null,
   actions: w.activity === 'daycation'
     ? [{ action: 'end', title: 'End daycation' }]
-    : [{ action: 'extend', title: '+10 min' }, { action: 'end', title: 'End walk' }]
+    : [{ action: 'extend', title: '+10 min' }, { action: 'end', title: `End ${activityNoun(w.activity)}` }]
 });
 
 function enforceWalkLimits() {
@@ -1894,7 +2210,7 @@ function enforceWalkLimits() {
       if (now - (startedMs + minutes * 60000) <= ALERT_GRACE_MS) {
         const returnTo = w.location || w.kennel_location;
         push.sendPushToUser(w.user_id, {
-          title: `${w.dog_name || 'Your walk'}: ${minutes} minutes`,
+          title: `${w.dog_name || `Your ${activityNoun(w.activity)}`}: ${minutes} minutes`,
           body: `You've been ${ACTIVITY_VERBS[w.activity] || 'walking'} for ${minutes} minutes.${returnTo ? ` Return to: ${returnTo}` : ''}`,
           url: '/',
           tag: WALK_PUSH_TAG,
@@ -1910,12 +2226,12 @@ function enforceWalkLimits() {
       console.warn(`[server] auto-stopped walk ${w.id} after ${Math.round(seconds / 60)} min${atClosing ? ' (closing time)' : ''}`);
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
-          title: `${w.dog_name || 'Your walk'}: stopped automatically`,
+          title: `${w.dog_name || `Your ${activityNoun(w.activity)}`}: stopped automatically`,
           body: atClosing
-            ? `Walks end at ${walkHours.walkWindow(w.started_at).closeLabel}. Open the app to say when it really ended.`
+            ? `The shelter closes at ${walkHours.walkWindow(w.started_at).closeLabel}. Open the app to say when it really ended.`
             : w.activity === 'daycation'
               ? `Daycations stop after ${DAYCATION_MINUTES / 60} hours. Open the app to say when it really ended.`
-              : `Walks stop after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
+              : `A ${activityNoun(w.activity)} stops after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
           url: '/',
           tag: WALK_PUSH_TAG
         }).catch(() => {});
@@ -1924,8 +2240,8 @@ function enforceWalkLimits() {
       db.prepare('UPDATE walks SET warned = 1 WHERE id = ?').run(w.id);
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
-          title: `${w.dog_name || 'Your walk'}: ${WARN_MINUTES_BEFORE} minutes left`,
-          body: w.activity === 'daycation' ? 'The daycation will stop on its own. End it when the dog is back.' : 'Add more time, or the walk will stop on its own.',
+          title: `${w.dog_name || `Your ${activityNoun(w.activity)}`}: ${WARN_MINUTES_BEFORE} minutes left`,
+          body: w.activity === 'daycation' ? 'The daycation will stop on its own. End it when the dog is back.' : `Add more time, or the ${activityNoun(w.activity)} will stop on its own.`,
           url: '/',
           tag: WALK_PUSH_TAG,
           ...walkAlertActions(w)
@@ -1942,6 +2258,24 @@ try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sw
 // it needs enforceWalkLimits, which isn't defined until just above this line.
 staffDashboard.register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, ACTIVITY_VERBS, ACTIVITIES });
 shelterSchedule.register(app, { db, push });
+
+// The module system: GET/PUT /api/modules (the Settings tab's backend), then
+// every discovered module's own register(app, ctx), regardless of its
+// enabled state -- Express has no way to un-register a route once added, so
+// a disabled module's routes/jobs stay mounted but check ctx.isEnabled()/
+// enabledGuard themselves (see src/modules.js), which is what makes
+// toggling take effect immediately instead of needing a restart. Loaded
+// last, same reasoning as staffDashboard/shelterSchedule just above: a
+// module may depend on core state (enforceWalkLimits, kennelLetter, ...)
+// that isn't defined until this point in the file.
+modulesCore.registerModuleAdminRoutes(app, discoveredModules, moduleState, db);
+for (const m of discoveredModules) {
+  const ctx = modulesCore.buildModuleCtx(m.id, {
+    db, state: moduleState,
+    legacyExtras: { cachedPhotoUrl, isStaffOrPrivileged, resolveAuthedUser, push }
+  });
+  m.register(app, ctx);
+}
 
 // Scrape history is only useful for health checks; keep 90 days.
 function pruneOldRecords() {

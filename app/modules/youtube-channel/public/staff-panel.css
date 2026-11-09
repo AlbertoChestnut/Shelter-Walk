@@ -1,0 +1,7 @@
+.yt-review { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.yt-pending-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.yt-pending-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px;
+}
+.yt-pending-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }

@@ -40,6 +40,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.locator('#backToScanBtn2').scrollIntoViewIfNeeded();
     await p.screenshot({ path: '/tmp/_fb1.png' });
 
+    // The scan screens have no green bar (so no 👤): open it from Available.
+    await p.click('[data-tab="available"]'); await p.waitForTimeout(300);
     await p.click('#userBtn');
     ok(await p.locator('#feedbackInboxRow').isHidden(), 'volunteers don\'t see the Feedback inbox');
     await p.click('.account-menu-row[data-page="feedback"]');

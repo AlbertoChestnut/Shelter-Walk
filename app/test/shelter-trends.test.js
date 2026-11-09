@@ -48,10 +48,12 @@ test('recordDailyCounts keeps the latest count of each day', () => {
   const Database = require('better-sqlite3');
   const { recordDailyCounts } = require('../src/shelterTrends');
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE dogs (shelter_buddy_id INTEGER PRIMARY KEY, location TEXT, still_listed INTEGER, awaiting_listing INTEGER DEFAULT 0);
+  db.exec(`CREATE TABLE dogs (shelter_buddy_id INTEGER PRIMARY KEY, location TEXT, still_listed INTEGER, awaiting_listing INTEGER DEFAULT 0, species TEXT NOT NULL DEFAULT 'dog');
     CREATE TABLE shelter_daily_counts (date_key TEXT PRIMARY KEY, listed INTEGER NOT NULL, in_foster INTEGER NOT NULL, recorded_at TEXT NOT NULL);`);
   const ins = db.prepare('INSERT INTO dogs (shelter_buddy_id, location, still_listed, awaiting_listing) VALUES (?, ?, ?, ?)');
   ins.run(1, 'Shelter', 1, 0); ins.run(2, 'In Foster', 1, 0); ins.run(3, 'In Foster', 0, 0); ins.run(4, 'Shelter', 0, 1);
+  // Cats don't count toward the (dog) shelter numbers.
+  db.prepare("INSERT INTO dogs (shelter_buddy_id, location, still_listed, species) VALUES (9, 'Shelter', 1, 'cat')").run();
   recordDailyCounts(db, new Date('2026-10-02T20:00:00Z'));
   ins.run(5, 'In Foster', 1, 0);
   recordDailyCounts(db, new Date('2026-10-02T14:00:00Z')); // an older backfill doesn't overwrite

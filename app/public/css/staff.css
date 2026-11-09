@@ -387,6 +387,16 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
 .form-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .primary-btn { background: var(--green); color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 0.95rem; cursor: pointer; }
 .link-btn { background: none; border: none; color: var(--red); cursor: pointer; font-size: 0.85rem; padding: 2px 4px; }
+
+/* Settings: modules */
+.module-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.module-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.module-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.module-card label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.module-config { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.module-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.module-field input { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 0.95rem; }
+.module-panel { margin-top: 20px; }
 .link-btn[data-edit-day] { color: var(--green); }
 .hours-list { list-style: none; margin: 0; padding: 0; }
 .hours-list li { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }

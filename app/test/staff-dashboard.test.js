@@ -78,6 +78,47 @@ test('opening "/" on desktop sends a staff account straight to /staff, but never
   assert.equal(scanDesktop.status, 200, '/scan always opens the scanner, even for staff on desktop');
 });
 
+test('a chosen start page on a computer: play group desk, app, staff; /app is never redirected', async () => {
+  const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+  const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+  const root = (user, staff, ua = DESKTOP_UA, url = '/') => fetch(base + url, { headers: { 'x-auth-email': user, ...(staff ? { 'x-auth-staff': '1' } : {}), 'user-agent': ua }, redirect: 'manual' });
+  const me = async (user, staff) => (await call('GET', '/api/me', { user, staff })).json;
+
+  // What each person may pick: staff get the staff dashboard too.
+  assert.deepEqual((await me(WALKER_B, false)).desktop.views.map((v) => v.key), ['app', 'playgroup']);
+  assert.deepEqual((await me(WALKER_A, true)).desktop.views.map((v) => v.key), ['app', 'playgroup', 'staff']);
+  assert.equal((await me(WALKER_A, true)).desktop.start, 'staff');
+  assert.equal((await me(WALKER_B, false)).desktop.start, 'app');
+
+  // Staff picks the play group desk.
+  assert.equal((await call('PUT', `/api/users/${ids.a}/settings`, { user: WALKER_A, staff: true, body: { desktopView: 'playgroup' } })).status, 200);
+  let r = await root(WALKER_A, true);
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('location'), '/playgroup');
+  assert.equal((await root(WALKER_A, true, IPHONE_UA)).status, 200, 'phones still get the app');
+  assert.equal((await root(WALKER_A, true, DESKTOP_UA, '/app')).status, 200, '/app is the app, never redirected');
+  assert.equal((await root(WALKER_A, true, DESKTOP_UA, '/staff')).status, 200, 'the staff dashboard is still one click away');
+
+  // ...then the app.
+  await call('PUT', `/api/users/${ids.a}/settings`, { user: WALKER_A, staff: true, body: { desktopView: 'app' } });
+  assert.equal((await root(WALKER_A, true)).status, 200);
+
+  // A walker can pick the desk, not the staff dashboard.
+  assert.equal((await call('PUT', `/api/users/${ids.b}/settings`, { user: WALKER_B, body: { desktopView: 'staff' } })).status, 400);
+  assert.equal((await call('PUT', `/api/users/${ids.b}/settings`, { user: WALKER_B, body: { desktopView: 'playgroup' } })).status, 200);
+  r = await root(WALKER_B, false);
+  assert.equal(r.headers.get('location'), '/playgroup');
+  assert.equal((await me(WALKER_B, false)).desktop.chosen, 'playgroup');
+
+  // Clearing it goes back to the default.
+  await call('PUT', `/api/users/${ids.b}/settings`, { user: WALKER_B, body: { desktopView: null } });
+  assert.equal((await root(WALKER_B, false)).status, 200);
+  await call('PUT', `/api/users/${ids.a}/settings`, { user: WALKER_A, staff: true, body: { desktopView: null } });
+  assert.equal((await root(WALKER_A, true)).headers.get('location'), '/staff');
+  // Other settings saved alongside are untouched by this.
+  assert.equal((await me(WALKER_B, false)).speciesPref, 'dog');
+});
+
 test('live board groups active walks by location and honors hide_name_while_walking', async () => {
   const startA = await call('POST', '/api/walks/start', { user: WALKER_A, body: { dogId: 1, userId: ids.a, location: 'A' } });
   assert.equal(startA.status, 200);

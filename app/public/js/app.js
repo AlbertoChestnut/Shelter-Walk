@@ -114,6 +114,7 @@
     updatesKinds: new Set(), // event kinds picked on the feed's type chips (empty = every kind)
     savedFilters: [],
     statsView: 'summary',
+    statsSpecies: null, // 'dog' | 'cat' | 'all' on My stats / Together (null = from Settings)
     statsPresentOnly: true,
     statsOpenMonths: null, // 'YYYY-MM' keys expanded under Shelter Visits (null = just the newest)
     togetherOpenMonths: null, // same, for Together's past days
@@ -2593,8 +2594,98 @@
   //  - Private note: one per walker per dog, visible only to its writer.
   // Notes left for other walkers at the end of past walks are listed too,
   // with the same edit/delete (only the note changes, never the walk).
+
+  // ---------- "@" tags in everyday notes ----------
+  // Shared tips, private notes and the note left at the end of a walk or
+  // play session can tag other animals, the same way play group notes do
+  // (pg-tags.js): typed as "@Name", saved as "@[id]", shown as the animal's
+  // current name and tappable to open them. Cats share condos and rooms far
+  // more than dogs share kennels, so a note on one often matters to the
+  // others (owner, 2026-11-09). The server drops tags to unknown animals.
+  let taggablePromise = null;
+  function taggableAnimals() {
+    if (!taggablePromise) {
+      taggablePromise = api('/api/dogs?all=true')
+        .then((d) => d.dogs.filter((a) => a.stillListed || a.location === 'In Foster'))
+        .catch(() => { taggablePromise = null; return []; });
+    }
+    return taggablePromise;
+  }
+  // Note text as HTML: escaped, YouTube links, and tags as the animal's name
+  // (`tagged`: id -> { name }, sent by the server next to the notes).
+  function noteBodyHtml(body, tagged) {
+    return linkifyYouTube(esc(body)).replace(/@\[(\d+)\]/g, (all, id) => (tagged && tagged[id]
+      ? `<button type="button" class="pg-tag note-tag" data-tag-animal="${id}">@${esc(tagged[id].name)}</button>`
+      : `@${id}`));
+  }
+  // Tapping a tag opens that animal's profile, wherever the note is shown
+  // (capture phase, so a card the note sits on doesn't open its own animal).
+  document.addEventListener('click', async (e) => {
+    const tag = e.target.closest && e.target.closest('.note-tag[data-tag-animal]');
+    if (!tag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const popup = tag.closest('.overlay, [id$="Popup"]');
+    try {
+      const { dog, walks } = await api(`/api/dogs/${tag.dataset.tagAnimal}?userId=${state.currentUser.id}`);
+      if (popup && popup.id === 'markerInfoPopup') closeOverlay(popup);
+      showProfileSheet(dog, walks);
+    } catch (err) { toast(err.message, 'error'); }
+  }, true);
+  const tagHint = () => `Type @ (or just a name) to tag another ${nounFor(prefSpeciesKeys())}`;
+  function noteTagBoxHtml({ text = '', placeholder = '', cls = '', id = '' } = {}) {
+    return `<div class="pg-text-wrap note-tag-wrap">
+      <div${id ? ` id="${id}"` : ''} class="pg-text note-tag-text ${cls}" data-placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}">${esc(text)}</div>
+      <div class="pg-suggest hidden" role="listbox" aria-label="Animals to tag"></div>
+    </div>`;
+  }
+  // Wires the @ picker on one noteTagBoxHtml. `body` (stored text, tags as
+  // @[id]) starts the box with that note in it; `tagged` names its tags.
+  // Ctrl/Cmd+Enter calls onSubmit, Escape (with no suggestions open) onCancel.
+  function wireNoteTagBox(wrap, { ownId = null, body = '', tagged = {}, onSubmit, onCancel } = {}) {
+    const el = wrap.querySelector('.pg-text');
+    const start = body ? window.PgTags.toEditable(body, tagged) : { text: '', picks: new Map() };
+    if (body) el.textContent = start.text;
+    const tags = window.PgTags.wireTagPicker(el, wrap.querySelector('.pg-suggest'), { getDogs: taggableAnimals, picks: start.picks, ownId });
+    // A name typed without "@" gets the same tap-to-tag suggestion as in
+    // play group notes.
+    window.PgTags.wireAutoTagger(el, { getDogs: taggableAnimals, ownId, picks: start.picks, declineLabel: "Don't tag" });
+    el.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented) return;
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && onSubmit) { e.preventDefault(); onSubmit(); }
+      if (e.key === 'Escape' && onCancel) { e.preventDefault(); onCancel(); }
+    });
+    const focusEnd = () => {
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    return { el, body: () => tags.body(), focus: focusEnd };
+  }
+
   function dogNotesShellHtml() {
     return `<div class="dog-notes"><p class="muted small center">Loading notes…</p></div>`;
+  }
+
+  // Notes on other animals that tag this one (shared ones, and your own
+  // private notes), newest first, so a cat's roommates' notes show up on it.
+  function mentionsHtml(mentions, tagged) {
+    if (!mentions || !mentions.length) return '';
+    const kindOf = (m) => {
+      if (m.kind === 'tip') return 'tips';
+      if (m.kind === 'private') return 'your private note';
+      if (m.kind === 'playgroup') return 'play group';
+      return `${termsOf(m.from).noun} notes`;
+    };
+    return `<label class="small muted notes-label">Tagged in other notes <span class="badge neutral">${mentions.length}</span></label>
+      <ul class="tip-list">${mentions.map((m) => `<li class="tip-item tip-item-walk">
+        <span class="tip-bullet">•</span>
+        <span class="tip-text">${noteBodyHtml(m.body, { ...tagged, [m.from.id]: m.from })} <span class="tip-date">in <button type="button" class="pg-tag note-tag" data-tag-animal="${m.from.id}">${esc(m.from.name)}</button>'s ${kindOf(m)} · ${fmtNoteDate(m.at)}</span></span>
+      </li>`).join('')}</ul>`;
   }
 
   async function mountDogNotes(container, dog, walks) {
@@ -2607,6 +2698,7 @@
       return;
     }
     const reload = () => mountDogNotes(container, dog, walks);
+    const tagged = { ...(data.tagged || {}), [dog.id]: dog };
     // Walk notes come from the walks the caller passed in, so keep those in
     // step with what was just saved (reload re-reads only the tips).
     const patchWalkNote = (walkId, body) => {
@@ -2624,7 +2716,7 @@
     const isWalkKind = (kind) => kind === 'walk' || kind === 'playgroup';
     const tipRows = items.map((n) => `<li class="tip-item${isWalkKind(n.kind) ? ' tip-item-walk' : ''}" ${isWalkKind(n.kind) ? 'data-walk' : 'data-tip'}="${n.id}">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${linkifyYouTube(esc(n.body))} ${noteDateHtml(n.when, n.updatedAt)}</span>
+           <span class="tip-text">${noteBodyHtml(n.body, tagged)} ${noteDateHtml(n.when, n.updatedAt)}</span>
            <span class="tip-item-actions">
              <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
              <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
@@ -2635,8 +2727,8 @@
       <ul class="tip-list">
         ${tipRows}
       </ul>
-      <div class="tip-add-row">
-        <input type="text" class="tip-input" maxlength="1000" placeholder="Add a tip about ${esc(dog.name)}…" />
+      <div class="tip-add-row tip-add-main">
+        ${noteTagBoxHtml({ placeholder: `Add a tip about ${dog.name}… ${tagHint()}`, cls: 'tip-input' })}
         <button type="button" class="btn small-btn primary tip-add-btn">Add</button>
       </div>
       <p class="small muted tip-help">Anonymous - can be edited or deleted by anyone.</p>
@@ -2644,22 +2736,24 @@
       <ul class="tip-list">
         ${data.privateNote ? `<li class="tip-item" data-private="1">
              <span class="tip-bullet">•</span>
-             <span class="tip-text">${linkifyYouTube(esc(data.privateNote.body))} <span class="tip-date">updated ${fmtNoteDate(data.privateNote.updatedAt)}</span></span>
+             <span class="tip-text">${noteBodyHtml(data.privateNote.body, tagged)} <span class="tip-date">updated ${fmtNoteDate(data.privateNote.updatedAt)}</span></span>
              <span class="tip-item-actions">
                <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit your private note">✎</button>
                <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete your private note">✕</button>
              </span>
            </li>` : ''}
       </ul>
-      <div class="tip-add-row private-note-add-row"${data.privateNote ? ' style="display:none;"' : ''}>
-        <input type="text" class="tip-input private-note-input" maxlength="4000" placeholder="Reminders just for you (what works with ${esc(dog.name)}, where you left off…)" />
+      ${data.privateNote ? '' : `<div class="tip-add-row private-note-add-row">
+        ${noteTagBoxHtml({ placeholder: `Reminders just for you (what works with ${dog.name}, where you left off…)`, cls: 'tip-input private-note-input' })}
         <button type="button" class="btn small-btn primary private-note-add-btn">Add</button>
-      </div>`;
+      </div>`}
+      ${mentionsHtml(data.mentions, tagged)}`;
 
-    const input = container.querySelector('.tip-add-row:not(.private-note-add-row) .tip-input');
-    const addTip = async () => {
-      const body = input.value.trim();
-      if (!body) { input.focus(); return; }
+    let addTip = null;
+    const tipBox = wireNoteTagBox(container.querySelector('.tip-add-main'), { ownId: dog.id, onSubmit: () => addTip() });
+    addTip = async () => {
+      const body = tipBox.body();
+      if (!body) { tipBox.focus(); return; }
       try {
         await api(`/api/dogs/${dog.id}/notes`, { method: 'POST', body: JSON.stringify({ body }) });
         toast('Tip added');
@@ -2667,7 +2761,6 @@
       } catch (err) { toast(err.message, 'error'); }
     };
     container.querySelector('.tip-add-btn').addEventListener('click', addTip);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTip(); } });
 
     // Edit a tip in place: the bullet becomes a one-line textbox with Save/Cancel.
     // Notes from walks work the same way, through their own route.
@@ -2679,26 +2772,22 @@
       li.querySelector('[data-act="edit"]').addEventListener('click', () => {
         li.classList.add('editing');
         li.innerHTML = `
-          <input type="text" class="tip-edit-input" maxlength="1000" value="${esc(current)}" />
+          ${noteTagBoxHtml({ cls: 'tip-edit-input' })}
           <span class="tip-item-actions">
             <button type="button" class="mini-icon-btn" data-act="save" aria-label="Save">✓</button>
             <button type="button" class="mini-icon-btn" data-act="cancel" aria-label="Cancel">✕</button>
           </span>`;
-        const inp = li.querySelector('.tip-edit-input');
-        inp.focus();
-        inp.setSelectionRange(inp.value.length, inp.value.length);
-        const save = async () => {
-          const next = inp.value.trim();
+        let save = null;
+        const box = wireNoteTagBox(li, { ownId: dog.id, body: current, tagged, onSubmit: () => save(), onCancel: reload });
+        box.focus();
+        save = async () => {
+          const next = box.body();
           if (!next) { toast('Use the ✕ next to a tip to delete it.', 'error'); return; }
           if (next === current) { reload(); return; }
           try { await api(url, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); if (isWalk) patchWalkNote(id, next); reload(); }
           catch (err) { toast(err.message, 'error'); }
         };
-        inp.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); save(); }
-          if (e.key === 'Escape') { e.preventDefault(); reload(); }
-        });
-        li.querySelector('[data-act="save"]').addEventListener('click', save);
+        li.querySelector('[data-act="save"]').addEventListener('click', () => save());
         li.querySelector('[data-act="cancel"]').addEventListener('click', reload);
       });
       li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
@@ -2717,10 +2806,10 @@
     };
     const addBtn = container.querySelector('.private-note-add-btn');
     if (addBtn) {
-      const addInput = container.querySelector('.private-note-add-row .private-note-input');
-      const doAdd = () => { const body = addInput.value.trim(); if (!body) { addInput.focus(); return; } savePrivate(body); };
+      let doAdd = null;
+      const addBox = wireNoteTagBox(container.querySelector('.private-note-add-row'), { ownId: dog.id, onSubmit: () => doAdd() });
+      doAdd = () => { const body = addBox.body(); if (!body) { addBox.focus(); return; } savePrivate(body); };
       addBtn.addEventListener('click', doAdd);
-      addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doAdd(); } });
     }
 
     // Edit/erase: same in-place pattern as the shared tips.
@@ -2730,25 +2819,21 @@
       privateLi.querySelector('[data-act="edit"]').addEventListener('click', () => {
         privateLi.classList.add('editing');
         privateLi.innerHTML = `
-          <input type="text" class="tip-edit-input" maxlength="4000" value="${esc(current)}" />
+          ${noteTagBoxHtml({ cls: 'tip-edit-input' })}
           <span class="tip-item-actions">
             <button type="button" class="mini-icon-btn" data-act="save" aria-label="Save">✓</button>
             <button type="button" class="mini-icon-btn" data-act="cancel" aria-label="Cancel">✕</button>
           </span>`;
-        const inp = privateLi.querySelector('.tip-edit-input');
-        inp.focus();
-        inp.setSelectionRange(inp.value.length, inp.value.length);
-        const save = () => {
-          const next = inp.value.trim();
+        let save = null;
+        const box = wireNoteTagBox(privateLi, { ownId: dog.id, body: current, tagged, onSubmit: () => save(), onCancel: reload });
+        box.focus();
+        save = () => {
+          const next = box.body();
           if (!next) { toast('Use the ✕ next to your note to delete it.', 'error'); return; }
           if (next === current) { reload(); return; }
           savePrivate(next);
         };
-        inp.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); save(); }
-          if (e.key === 'Escape') { e.preventDefault(); reload(); }
-        });
-        privateLi.querySelector('[data-act="save"]').addEventListener('click', save);
+        privateLi.querySelector('[data-act="save"]').addEventListener('click', () => save());
         privateLi.querySelector('[data-act="cancel"]').addEventListener('click', reload);
       });
       privateLi.querySelector('[data-act="erase"]').addEventListener('click', async () => {
@@ -4835,9 +4920,10 @@
         <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
         <button type="button" class="seg-btn ${state.statsScope === 'playgroup' ? 'on' : ''}" data-scope="playgroup" role="tab" aria-selected="${state.statsScope === 'playgroup'}">Play group</button>
         <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
-      </div>`;
+      </div>${state.statsScope === 'mine' || state.statsScope === 'together' ? statsSpeciesSwitchHtml() : ''}`;
   }
   function wireStatsScopeSwitch() {
+    wireStatsSpeciesSwitch();
     appEl.querySelectorAll('.seg-btn[data-scope]').forEach((b) => b.addEventListener('click', () => {
       if (b.dataset.scope === state.statsScope) return;
       state.statsScope = b.dataset.scope;
@@ -4854,7 +4940,7 @@
     const myTab = state.tab;
     let data;
     try {
-      data = await api('/api/impact?days=all');
+      data = await api(`/api/impact?days=all&species=${statsSpecies()}`);
     } catch (err) {
       if (state.tab === myTab) showLoadError('the shared stats', err, renderStats);
       return;
@@ -4887,16 +4973,24 @@
       (days) => { const walks = days.reduce((n, d) => n + d.walks, 0); return `${days.length} day${days.length === 1 ? '' : 's'} · ${walks} engagements · ${hours(days.reduce((n, d) => n + d.seconds, 0))} h`; },
       'togetherOpenMonths');
     const a = data.allTime;
+    // Same breakdowns as My stats, minus any drill-down by dog (see
+    // renderTogetherByActivity), each slice held to the same minimum.
+    const todayBreakdowns = t ? statsBreakdownsHtml({ byActivity: t.byActivity, byPoo: t.byPoo, byAge: t.byAge }, { mine: false }) : '';
+    const allTimeBreakdowns = statsBreakdownsHtml({ byActivity: a.byActivity, byPoo: a.byPoo, byAge: a.byAge, bySpecies: a.bySpecies }, { mine: false });
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
       <h2 class="section-heading" style="margin-top:0;">Together today</h2>
       ${todayHtml}
-      ${t ? `<button type="button" class="btn together-open" data-date="${esc(t.dateKey)}" style="margin-top:10px;">See today's walks in order ›</button>` : ''}
+      ${todayBreakdowns ? `<div class="card compact bd-card" style="margin-top:10px;">${todayBreakdowns}</div>` : ''}
+      ${t ? `<button type="button" class="btn together-open" data-date="${esc(t.dateKey)}" style="margin-top:10px;">See today's ${termsFor(statsSpeciesKeys([])).nouns} in order ›</button>` : ''}
+      ${shelterNowHtml(data.shelterNow, { mine: false })}
       ${dayRows ? `<h2 class="section-heading">Past days</h2><div class="stack tight">${dayRows}</div>` : ''}
       <h2 class="section-heading">Since we started tracking</h2>
       <div class="stat-grid three">${tile(a.walks, 'Engagements ›', dogsNote(a.walks, a.dogs), 'togetherAllTimeActivityTile')}${tile(hours(a.seconds) + ' h', 'Collective time ›', null, 'togetherAllTimeTimeTile')}${tile(avg(a), 'Average engagement')}</div>
-      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. No names or individual numbers are shown or stored here, ever. Days and sessions with fewer than ${data.minCell} engagements are left out of the lists (they still count in the totals).</p>`;
+      ${allTimeBreakdowns ? `<div class="card compact bd-card" style="margin-top:10px;">${allTimeBreakdowns}</div>` : ''}
+      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. No names or individual numbers are shown or stored here, ever. Days, sessions and breakdown slices with fewer than ${data.minCell} engagements are left out (they still count in the totals).</p>`;
     wireStatsScopeSwitch();
+    wireStatsBreakdowns('together');
     wireVisitMonths('togetherOpenMonths');
     appEl.querySelectorAll('[data-date]').forEach((el) => {
       const open = () => { state.togetherDay = el.dataset.date; renderTogetherDay(); };
@@ -4927,7 +5021,7 @@
     appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
     let data;
     try {
-      data = await api(`/api/impact/day?date=${encodeURIComponent(dateKey)}`);
+      data = await api(`/api/impact/day?date=${encodeURIComponent(dateKey)}&species=${statsSpecies()}`);
     } catch (err) {
       if (state.tab !== myTab) return;
       if (err.status === 404) { state.togetherAvgChart = null; toast(err.message, 'error'); return renderStats(); }
@@ -4966,7 +5060,7 @@
     appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
     let data;
     try {
-      data = await api('/api/impact?days=all');
+      data = await api(`/api/impact?days=all&species=${statsSpecies()}`);
     } catch (err) {
       if (state.tab === myTab) showLoadError('the shared stats', err, renderStats);
       return;
@@ -5006,7 +5100,7 @@
     appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
     let data;
     try {
-      data = await api(`/api/impact/day?date=${encodeURIComponent(date)}`);
+      data = await api(`/api/impact/day?date=${encodeURIComponent(date)}&species=${statsSpecies()}`);
     } catch (err) {
       if (state.tab !== myTab) return;
       if (err.status === 404) { state.togetherDay = null; toast(err.message, 'error'); return renderStats(); }
@@ -5307,14 +5401,15 @@
         <ul class="tip-list">
           ${g.notes.map((n) => `<li class="tip-item${(n.kind === 'walk' || n.kind === 'playgroup') ? ' tip-item-walk' : ''}">
             <span class="tip-bullet">•</span>
-            <span class="tip-text">${linkifyYouTube(esc(n.body))} <span class="tip-date">${kindLabelFor(g.dog, n.kind)} · ${fmtNoteDate(n.at)}</span></span>
+            <span class="tip-text">${noteBodyHtml(n.body, data.tagged)} <span class="tip-date">${kindLabelFor(g.dog, n.kind)} · ${fmtNoteDate(n.at)}</span></span>
           </li>`).join('')}
         </ul>
       </div>`;
-    const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => n.body.toLowerCase().includes(q));
+    // A tag matches by the tagged animal's name, the way it reads.
+    const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => window.PgTags.bodyText(n.body, data.tagged || {}).toLowerCase().includes(q));
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
-      <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : 'All dog notes'}</h2>
+      <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : `All ${nounFor(prefSpeciesKeys())} notes`}</h2>
       <div class="seg seg-small" role="tablist" aria-label="Whose notes">
         <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? '' : 'on'}" data-mine="0" role="tab" aria-selected="${!state.notesMine}">All notes</button>
         <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? 'on' : ''}" data-mine="1" role="tab" aria-selected="${state.notesMine}">My notes</button>
@@ -5433,6 +5528,159 @@
     if (search) search.addEventListener('input', () => { state.pgStatsQuery = search.value; draw(); });
   }
 
+  // ---------- Stats: dogs, cats or both, and the breakdowns ----------
+  // Every number on My stats and Together can be for one species at a time
+  // or both combined (owner, 2026-11-09). Starts on whoever the volunteer
+  // works with (Settings), and switching it never changes that setting.
+  const statsSpecies = () => state.statsSpecies || (speciesPref() === 'both' ? 'all' : speciesPref());
+  // The species a stats screen is about: the picked one, or for "Both" the
+  // ones the history actually has (see historySpeciesKeys).
+  const statsSpeciesKeys = (rows) => (statsSpecies() === 'all' ? historySpeciesKeys(rows) : [statsSpecies()]);
+  const inStatsSpecies = (w) => statsSpecies() === 'all' || (w.species || 'dog') === statsSpecies();
+  function statsSpeciesSwitchHtml() {
+    const opts = [...Object.keys(speciesTable()).map((k) => [k, `${speciesInfo(k).emoji} ${speciesInfo(k).plural}`]), ['all', 'Both']];
+    return `<div class="seg seg-small" role="tablist" aria-label="Which animals">${opts.map(([k, label]) => `<button type="button" class="seg-btn ${statsSpecies() === k ? 'on' : ''}" data-stats-species="${k}" role="tab" aria-selected="${statsSpecies() === k}">${label}</button>`).join('')}</div>`;
+  }
+  function pickStatsSpecies(kind) {
+    if (kind === statsSpecies()) return;
+    state.statsSpecies = kind;
+    state.statsView = 'summary';
+    state.statsActivityFilter = null;
+    state.togetherByActivity = false;
+    renderStats();
+  }
+  function wireStatsSpeciesSwitch() {
+    appEl.querySelectorAll('.seg-btn[data-stats-species]').forEach((b) => b.addEventListener('click', () => pickStatsSpecies(b.dataset.statsSpecies)));
+  }
+
+  // The same breakdowns /api/stats sends for Lifetime, worked out from a list
+  // of walks (Today, one day): engagement type, POO as it was at the time
+  // (poo_then), kittens vs adults (is_young), and dogs vs cats.
+  function breakdownOfWalks(walks) {
+    const group = (rows, keyName, keyOf, order) => {
+      const map = new Map();
+      for (const w of rows) {
+        const key = keyOf(w);
+        if (!map.has(key)) map.set(key, { [keyName]: key, count: 0, totalSeconds: 0, ids: new Set() });
+        const e = map.get(key);
+        e.count += 1;
+        e.totalSeconds += w.duration_seconds || 0;
+        e.ids.add(w.dog_id);
+      }
+      const list = (order ? order.filter((k) => map.has(k)).map((k) => map.get(k)) : [...map.values()].sort((a, b) => b.count - a.count));
+      return list.map(({ ids, ...e }) => ({ ...e, animals: ids.size, avgSeconds: e.count ? e.totalSeconds / e.count : 0 }));
+    };
+    const done = walks.filter((w) => w.ended_at);
+    return {
+      byActivity: group(done, 'activity', (w) => w.activity || 'walk'),
+      byPoo: group(done.filter((w) => w.poo_then), 'status', (w) => w.poo_then, ['priority', 'poo', 'none']),
+      byAge: group(done.filter((w) => speciesOf(w).youngFirst), 'group', (w) => (w.is_young ? 'young' : 'adult'), ['young', 'adult']),
+      bySpecies: group(done, 'species', (w) => w.species || 'dog', Object.keys(speciesTable()))
+    };
+  }
+
+  const POO_GROUPS = {
+    priority: { icon: `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`, label: 'High priority POO' },
+    poo: { icon: '<span class="marker-dot poo"></span>', label: 'POO (Potty Outside Only)' },
+    none: { icon: '', label: 'Non-POO' }
+  };
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  // One breakdown as rows with a bar for each slice's share of the count.
+  // `tap`: the data attribute that makes a row open something (or null).
+  function breakdownRowsHtml(rows, { title, note, labelOf, nounOf, animalNoun, tap }) {
+    if (!rows || !rows.length) return '';
+    const total = rows.reduce((n, r) => n + r.count, 0) || 1;
+    return `<h3 class="bd-title">${title}</h3>${note ? `<p class="small muted bd-note">${note}</p>` : ''}
+      <div class="bd-list">${rows.map((r) => {
+        const pct = Math.round((r.count / total) * 100);
+        const attr = tap ? ` ${tap(r)} role="button" tabindex="0"` : '';
+        return `<div class="bd-row${tap ? ' bd-tap' : ''}"${attr}>
+          <div class="bd-head"><span class="bd-label">${labelOf(r)}</span><span class="bd-pct">${pct}%</span></div>
+          <div class="bd-bar"><span style="width:${Math.max(pct, 2)}%"></span></div>
+          <p class="bd-meta">${plural(r.count, ...nounOf(r))}${r.animals != null ? ` · ${plural(r.animals, ...animalNoun(r))}` : ''} · ${fmtDuration(r.totalSeconds)} total · avg ${fmtDuration(r.avgSeconds)}${tap ? ' ›' : ''}</p>
+        </div>`;
+      }).join('')}</div>`;
+  }
+  // Every breakdown that applies to what's on screen. `mine`: rows open the
+  // personal drill-downs (Together has none, see renderTogetherByActivity).
+  function statsBreakdownsHtml(b, { mine }) {
+    const animalNoun = (kind) => () => [speciesInfo(kind).noun, speciesInfo(kind).plural.toLowerCase()];
+    const anyNoun = () => (statsSpecies() === 'all' ? ['animal', 'animals'] : [speciesInfo(statsSpecies()).noun, speciesInfo(statsSpecies()).plural.toLowerCase()]);
+    const engagements = () => ['engagement', 'engagements'];
+    const both = statsSpecies() === 'all';
+    return [
+      both ? breakdownRowsHtml(b.bySpecies, {
+        title: 'Dogs vs cats',
+        labelOf: (r) => `${speciesInfo(r.species).emoji} ${speciesInfo(r.species).plural}`,
+        nounOf: engagements, animalNoun: (r) => animalNoun(r.species)(),
+        tap: (r) => `data-stats-species="${esc(r.species)}"`
+      }) : '',
+      breakdownRowsHtml(b.byActivity, {
+        title: 'By engagement type',
+        labelOf: (r) => `${activityInfo(r.activity).emoji} ${activityInfo(r.activity).label}`,
+        nounOf: (r) => [activityInfo(r.activity).noun, activityInfo(r.activity).noun + 's'], animalNoun: anyNoun,
+        tap: mine ? (r) => `data-bd-activity="${esc(r.activity)}"` : null
+      }),
+      breakdownRowsHtml(b.byPoo, {
+        title: 'POO vs non-POO dogs',
+        note: 'By the POO sticker the dog had at the time.',
+        labelOf: (r) => `${POO_GROUPS[r.status].icon} ${POO_GROUPS[r.status].label}`,
+        nounOf: engagements, animalNoun: animalNoun('dog')
+      }),
+      breakdownRowsHtml(b.byAge, {
+        title: 'Kittens vs adult cats',
+        labelOf: (r) => (r.group === 'young' ? '🍼 Kittens' : '🐈 Adult cats'),
+        nounOf: engagements, animalNoun: animalNoun('cat')
+      })
+    ].join('');
+  }
+  function wireStatsBreakdowns(scope) {
+    appEl.querySelectorAll('.bd-row[data-bd-activity]').forEach((row) => {
+      const open = () => {
+        state.statsBreakdownScope = scope;
+        state.statsActivityFilter = row.dataset.bdActivity;
+        state.statsView = 'byActivityDog';
+        renderStats();
+      };
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+    appEl.querySelectorAll('.bd-row[data-stats-species]').forEach((row) => {
+      row.addEventListener('click', () => pickStatsSpecies(row.dataset.statsSpecies));
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickStatsSpecies(row.dataset.statsSpecies); } });
+    });
+  }
+
+  // What's listed at the shelter right now (from /api/stats or /api/impact):
+  // dogs walkable for your level, POO and non-POO; kittens and adult cats.
+  // My stats adds how many of each you've been with today (never a "still
+  // to do" count -- just what you did).
+  function shelterNowHtml(now, { mine }) {
+    if (!now) return '';
+    const tile = (value, label, sub) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    const parts = Object.keys(now).map((kind) => {
+      const { counts, today } = now[kind];
+      const info = speciesInfo(kind);
+      const terms = termsFor([kind]);
+      const n = (key) => counts[key] || 0;
+      const did = (key) => (mine && today && today[key] ? `you ${terms.past} ${today[key]} today` : '');
+      const tiles = [tile(n('total'), `${info.plural} here now`, did('total'))];
+      if (info.levelRules) tiles.push(tile(n('walkable'), `${capFirst(terms.verb)}able for your level`, did('walkable')));
+      if (info.stickers) {
+        const poo = n('poo') + n('priority');
+        const pooDid = mine && today ? (today.poo || 0) + (today.priority || 0) : 0;
+        tiles.push(tile(poo, 'POO dogs', [n('priority') ? `${n('priority')} high priority` : '', pooDid ? `you ${terms.past} ${pooDid} today` : ''].filter(Boolean).join(' · ')));
+        tiles.push(tile(n('nonPoo'), 'Non-POO dogs', did('nonPoo')));
+      }
+      if (info.youngFirst) {
+        tiles.push(tile(n('young'), 'Kittens', did('young')));
+        tiles.push(tile(n('adult'), 'Adult cats', did('adult')));
+      }
+      return `<div class="stat-grid${tiles.length === 3 ? ' three' : ''}">${tiles.join('')}</div>`;
+    });
+    return `<h2 class="section-heading">At the shelter right now</h2>${parts.join('<div style="height:10px;"></div>')}`;
+  }
+
   async function renderStats() {
     if (state.statsScope === 'notes') {
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
@@ -5459,7 +5707,7 @@
     let walksData;
     try {
       [data, walksData] = await Promise.all([
-        api(`/api/stats?userId=${state.currentUser.id}`),
+        api(`/api/stats?userId=${state.currentUser.id}&species=${statsSpecies()}`),
         api(`/api/walks?limit=1000&userId=${state.currentUser.id}`)
       ]);
     } catch (err) {
@@ -5467,33 +5715,36 @@
       return;
     }
     if (state.tab !== myTab) return;
-    state.statsDays = groupWalksByDay(walksData.walks);
+    // Only the species picked on the Dogs / Cats / Both switch.
+    const myWalks = walksData.walks.filter(inStatsSpecies);
+    state.statsTagged = walksData.tagged || {};
+    state.statsDays = groupWalksByDay(myWalks);
 
     if (state.statsView === 'day') {
       return renderStatsDay();
     }
     if (state.statsView === 'byActivity') {
-      return renderStatsByActivity(data, walksData.walks);
+      return renderStatsByActivity(data, myWalks);
     }
     if (state.statsView === 'byActivityDog') {
-      return renderStatsByActivityDog(data, walksData.walks);
+      return renderStatsByActivityDog(data, myWalks);
     }
     if (state.statsView === 'avgChart') {
-      return renderStatsAvgChart(walksData.walks);
+      return renderStatsAvgChart(myWalks);
     }
     if (state.statsView === 'byDogScope') {
-      return renderStatsByDogScope(walksData.walks);
+      return renderStatsByDogScope(myWalks);
     }
 
     if (state.statsRange !== 'lifetime') {
-      return renderStatsToday(walksData.walks);
+      return renderStatsToday(myWalks, data);
     }
 
     const t = data.totals;
     // Lifetime wording follows the species actually walked/cuddled/etc,
     // never the volunteer's current Settings preference -- see
     // historySpeciesKeys above.
-    const lifetimeKeys = historySpeciesKeys(data.perDog);
+    const lifetimeKeys = statsSpeciesKeys(data.perDog);
     const lifetimeTerms = termsFor(lifetimeKeys);
     const heading = statsScopeSwitchHtml() + `<h2 class="section-heading" style="margin-top:0;">Lifetime Stats</h2>`;
     const rangeToggle = `<button type="button" id="statsRangeToggle" class="btn primary" style="margin-bottom:10px;">View today's stats</button>`;
@@ -5504,10 +5755,14 @@
         ${statDrillTile(fmtDuration(t.totalSeconds), `Total time ${lifetimeTerms.ing}`, 'byActivity')}
         ${statDrillTile(fmtDuration(t.avgSeconds), `Avg ${lifetimeTerms.noun} length`, 'avgChart')}
       </div>`;
+    const lifetimeBreakdowns = statsBreakdownsHtml({ byActivity: data.byActivity, byPoo: data.byPoo, byAge: data.byAge, bySpecies: data.bySpecies }, { mine: true });
+    const nowHtml = shelterNowHtml(data.shelterNow, { mine: true });
     if (!data.perDog.length) {
-      appEl.innerHTML = heading + rangeToggle + tiles + `<p class="empty-state">No completed ${lifetimeTerms.nouns} yet.</p>`;
+      appEl.innerHTML = heading + rangeToggle + tiles + `<p class="empty-state">No completed ${lifetimeTerms.nouns} yet.</p>` +
+        (statsSpecies() === 'all' ? lifetimeBreakdowns : '') + nowHtml;
       wireStatsRangeToggle();
       wireStatDrillTiles('lifetime');
+      wireStatsBreakdowns('lifetime');
       return;
     }
 
@@ -5539,16 +5794,18 @@
     const byDogFilterRow = `
       <label class="small muted" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
         <input type="checkbox" id="statsPresentOnlyCheck" ${state.statsPresentOnly ? 'checked' : ''} />
-        Only show dogs still at the shelter (${presentCount} of ${data.perDog.length})
+        Only show ${nounFor(lifetimeKeys, true)} still at the shelter (${presentCount} of ${data.perDog.length})
       </label>`;
     const byDogRows = renderByDogRows(data.perDog);
 
     appEl.innerHTML = heading + rangeToggle + tiles +
+      `<div class="card compact bd-card">${lifetimeBreakdowns}</div>` + nowHtml +
       `<h2 class="section-heading">Shelter Visits</h2><div class="stack tight">${dayRows}</div>` +
-      `<h2 class="section-heading" id="statsByDogHeading">By Dog</h2>${byDogFilterRow}<div class="stack" id="byDogList">${byDogRows}</div>`;
+      `<h2 class="section-heading" id="statsByDogHeading">By ${capFirst(nounFor(lifetimeKeys))}</h2>${byDogFilterRow}<div class="stack" id="byDogList">${byDogRows}</div>`;
 
     wireStatsRangeToggle();
     wireStatDrillTiles('lifetime');
+    wireStatsBreakdowns('lifetime');
     wireByDogList();
     wireVisitMonths('statsOpenMonths');
     document.getElementById('statsPresentOnlyCheck').addEventListener('change', (e) => {
@@ -5691,7 +5948,7 @@
       appEl.innerHTML = `<p class="muted small center">Loading…</p>`;
       let apiData;
       try {
-        apiData = await api(`/api/stats?userId=${state.currentUser.id}&activity=${encodeURIComponent(activity)}`);
+        apiData = await api(`/api/stats?userId=${state.currentUser.id}&activity=${encodeURIComponent(activity)}&species=${statsSpecies()}`);
       } catch (err) {
         if (state.tab === myTab) showLoadError('that breakdown', err, renderStats);
         return;
@@ -5704,7 +5961,7 @@
     const tiles = `
       <div class="stat-grid">
         <div class="stat-tile"><div class="value">${totals.totalWalks}</div><div class="label">${capFirst(info.noun)}${totals.totalWalks === 1 ? '' : 's'}</div></div>
-        <div class="stat-tile"><div class="value">${totals.uniqueDogs}</div><div class="label">${capFirst(nounFor(historySpeciesKeys(perDog), true))}</div></div>
+        <div class="stat-tile"><div class="value">${totals.uniqueDogs}</div><div class="label">${capFirst(nounFor(statsSpeciesKeys(perDog), true))}</div></div>
         <div class="stat-tile"><div class="value">${fmtDuration(totals.totalSeconds)}</div><div class="label">Total time</div></div>
         <div class="stat-tile"><div class="value">${fmtDuration(totals.avgSeconds)}</div><div class="label">Avg length</div></div>
       </div>`;
@@ -5712,7 +5969,7 @@
     const byDogRows = renderByDogRows(perDog, info);
     appEl.innerHTML = heading + tiles +
       (perDog.length
-        ? `<h2 class="section-heading">By Dog</h2><div class="stack" id="byDogList">${byDogRows}</div>`
+        ? `<h2 class="section-heading">By ${capFirst(nounFor(statsSpeciesKeys(perDog)))}</h2><div class="stack" id="byDogList">${byDogRows}</div>`
         : `<p class="empty-state">No completed ${info.noun}s yet.</p>`);
     document.getElementById('backToActivityBtn').addEventListener('click', () => {
       state.statsView = 'byActivity';
@@ -5734,7 +5991,7 @@
     const ordered = [...sourceWalks].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
     const avgSeconds = ordered.length ? ordered.reduce((s, w) => s + (w.duration_seconds || 0), 0) / ordered.length : 0;
     const items = ordered.map((w) => ({ label: w.dog_name, seconds: w.duration_seconds || 0, sub: `${fmtDate(w.started_at)} · ${fmtClock(w.started_at)}` }));
-    const terms = termsFor(historySpeciesKeys(ordered));
+    const terms = termsFor(statsSpeciesKeys(ordered));
     const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(terms.noun)} length, oldest to newest</h2>`;
     appEl.innerHTML = heading +
       `<p class="small muted" style="margin-top:-6px;">${ordered.length} ${ordered.length === 1 ? terms.noun : terms.nouns} · avg ${fmtDuration(avgSeconds)} · tap a bar for details</p>` +
@@ -5748,7 +6005,7 @@
   function renderStatsByDogScope(allWalks) {
     const scopeWalks = statsBreakdownSourceWalks(allWalks) || [];
     const perDog = byDogOf(scopeWalks);
-    const keys = historySpeciesKeys(scopeWalks);
+    const keys = statsSpeciesKeys(scopeWalks);
     const terms = termsFor(keys);
     const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(nounFor(keys, true))} ${terms.past}</h2>`;
     appEl.innerHTML = heading +
@@ -5788,7 +6045,7 @@
             <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="margin-top:4px;">Save</button>
           </div>
           <p class="dog-meta nowrap">🏠 ${esc(w.location || '-')}</p>
-          <p class="small">${w.notes ? esc(w.notes) : '<span class="muted">No notes</span>'}</p>
+          <p class="small">${w.notes ? noteBodyHtml(w.notes, state.statsTagged) : '<span class="muted">No notes</span>'}</p>
           <div class="row" style="margin-top:6px;align-items:center;justify-content:flex-end;">
             <button class="btn small-btn walk-action-btn dog-notes-btn" data-dog-id="${w.dog_id}" title="${esc(w.dog_name)}'s tips and your private note" aria-label="${esc(w.dog_name)}'s notes">📝 Dog notes</button>
             <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit walk (times, activity)" aria-label="Edit walk">✎</button>
@@ -5881,7 +6138,7 @@
           <input type="time" id="addWalkEnd" />
         </div>
         <label class="small" style="margin-top:8px;">Notes (optional)</label>
-        <textarea id="addWalkNotes"></textarea>
+        <div id="addWalkNotesBox">${noteTagBoxHtml({ placeholder: tagHint(), cls: 'end-note-text' })}</div>
         <div class="row" style="margin-top:8px;">
           <button id="saveAddWalkBtn" class="btn primary">Save Walk</button>
           <button id="cancelAddWalkBtn" class="btn">Cancel</button>
@@ -5919,14 +6176,14 @@
     return walks.reduce((s, w) => s + (w.duration_seconds || 0), 0) / walks.length;
   }
 
-  function renderStatsToday(allWalks) {
+  function renderStatsToday(allWalks, data) {
     const todaysWalks = allWalks.filter((w) => w.ended_at && dateKey(w.started_at) === todayKey());
     const uniqueDogs = new Set(todaysWalks.map((w) => w.dog_id)).size;
     const totalSeconds = todaysWalks.reduce((s, w) => s + (w.duration_seconds || 0), 0);
     const avgSeconds = walkOnlyAvgSeconds(todaysWalks);
     // Wording follows the species actually seen today, not the volunteer's
     // current Settings preference -- see historySpeciesKeys above.
-    const todayKeys = historySpeciesKeys(todaysWalks);
+    const todayKeys = statsSpeciesKeys(todaysWalks);
     const todayTerms = termsFor(todayKeys);
     // This is the tab's default landing view -- make it unmistakable that
     // it's showing today only, not everything, before you even get to the
@@ -5943,7 +6200,10 @@
     const items = todaysWalks
       .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
       .map((w) => statsWalkCardHtml(w, '')).join('');
+    const todayBreakdowns = todaysWalks.length ? statsBreakdownsHtml(breakdownOfWalks(todaysWalks), { mine: true }) : '';
     appEl.innerHTML = heading + rangeToggle + tiles +
+      (todayBreakdowns ? `<div class="card compact bd-card">${todayBreakdowns}</div>` : '') +
+      shelterNowHtml(data && data.shelterNow, { mine: true }) +
       (todaysWalks.length
         ? `<h2 class="section-heading">Today's ${titleCase(todayTerms.nouns)}</h2><div class="stack">${items}</div>`
         : `<p class="empty-state">No ${todayTerms.nouns} yet today.</p>`) +
@@ -5954,6 +6214,7 @@
     wireAddWalkSection(todayKey(), () => renderStats());
     wireStatsRangeToggle();
     wireStatDrillTiles('today');
+    wireStatsBreakdowns('today');
   }
 
   // activityOverride (an ACTIVITIES entry): when the list has been filtered
@@ -5962,7 +6223,7 @@
   // "3 walks" for a cat that was never walked).
   function renderByDogRows(perDog, activityOverride) {
     const visible = state.statsPresentOnly ? perDog.filter((d) => d.stillListed) : perDog;
-    if (!visible.length) return `<p class="empty-state">No dogs match this filter.</p>`;
+    if (!visible.length) return `<p class="empty-state">No ${nounFor(statsSpeciesKeys(perDog), true)} match this filter.</p>`;
     return visible.map((d) => {
       const markerDog = {
         blueMarkers: d.blue_markers ? JSON.parse(d.blue_markers) : [],
@@ -6225,7 +6486,7 @@
     const dayAvgSeconds = walkOnlyAvgSeconds(day.walks);
     // Wording follows the species actually seen that day, not the
     // volunteer's current Settings preference -- see historySpeciesKeys above.
-    const dayKeys = historySpeciesKeys(day.walks);
+    const dayKeys = statsSpeciesKeys(day.walks);
     const dayViewTerms = termsFor(dayKeys);
     const dayTiles = `
       <div class="stat-grid">
@@ -6265,6 +6526,7 @@
       <button id="backToStatsBtn" class="btn">← Back to Stats</button>
       <h2 class="section-heading">${fmtDayHeading(day.key)}</h2>
       ${dayTiles}
+      <div class="card compact bd-card">${statsBreakdownsHtml(breakdownOfWalks(day.walks), { mine: true })}</div>
       <h2 class="section-heading">By Shift</h2>
       ${shiftTiles}
       ${addWalkSectionHtml()}
@@ -6276,6 +6538,7 @@
       renderStats();
     });
     wireStatDrillTiles('day');
+    wireStatsBreakdowns('day');
     appEl.querySelectorAll('.shift-drilldown-tile').forEach((tile) => {
       tile.addEventListener('click', () => {
         const idx = Number(tile.dataset.shiftIndex);
@@ -6296,6 +6559,7 @@
   let addWalkSelectedDogId = null;
   async function wireAddWalkForm(dateKey, refresh) {
     addWalkSelectedDogId = null;
+    const notesBox = wireNoteTagBox(document.getElementById('addWalkNotesBox'));
     const searchInput = document.getElementById('addWalkDogSearch');
     const results = document.getElementById('addWalkDogResults');
     const selectedLabel = document.getElementById('addWalkSelectedDog');
@@ -6333,7 +6597,7 @@
       const statusEl = document.getElementById('addWalkStatus');
       const startTime = document.getElementById('addWalkStart').value;
       const endTime = document.getElementById('addWalkEnd').value;
-      const notes = document.getElementById('addWalkNotes').value.trim();
+      const notes = notesBox.body();
       if (!addWalkSelectedDogId) { statusEl.textContent = 'Pick a dog from the search results first.'; return; }
       if (!startTime || !endTime) { statusEl.textContent = 'Start and end time are both required.'; return; }
       if (endTime <= startTime) { statusEl.textContent = 'The end time has to be after the start time.'; return; }
@@ -7487,11 +7751,11 @@
             <label>Play group note (optional)</label>
             ${pgEditorHtml({ showDate: false, placeholder: `How did ${w.dog.name} do? Type @ to tag a dog they played with.` })}
           </div>` : ''}
-          <label for="walkNotes">Note for other volunteers (optional)</label>
-          <textarea id="walkNotes" placeholder="${esc(speciesOf(w.dog).notePlaceholder || '')}"></textarea>
-          <p class="small muted" style="margin:2px 0 10px;">Shared with every volunteer. Your name is not shown.</p>
-          <label for="walkPrivateNote">Private note for yourself (optional)</label>
-          <textarea id="walkPrivateNote" placeholder="Only you can see this"></textarea>
+          <label>Note for other volunteers (optional)</label>
+          <div id="walkNotesBox">${noteTagBoxHtml({ id: 'walkNotes', placeholder: speciesOf(w.dog).notePlaceholder || '', cls: 'end-note-text' })}</div>
+          <p class="small muted" style="margin:2px 0 10px;">Shared with every volunteer. Your name is not shown. ${tagHint()}, and the note shows on theirs too.</p>
+          <label>Private note for yourself (optional)</label>
+          <div id="walkPrivateNoteBox">${noteTagBoxHtml({ id: 'walkPrivateNote', placeholder: 'Only you can see this', cls: 'end-note-text' })}</div>
         </div>
         <div class="action-dock"><button id="saveWalkBtn" class="btn primary big">Save &amp; Finish</button></div>
         <button id="cancelWalkBtn" class="btn">Cancel ${activityInfo(w.activity).label}</button>
@@ -7533,10 +7797,12 @@
 
     const pgBox = document.getElementById('walkPlaygroupNote');
     const pgEditor = pgBox ? wirePgEditor(pgBox, { ownId: w.dog.id }) : null;
+    const sharedNoteBox = wireNoteTagBox(document.getElementById('walkNotesBox'), { ownId: w.dog.id });
+    const privateNoteBox = wireNoteTagBox(document.getElementById('walkPrivateNoteBox'), { ownId: w.dog.id });
     document.getElementById('saveWalkBtn').addEventListener('click', async () => {
-      const notes = document.getElementById('walkNotes').value.trim();
+      const notes = sharedNoteBox.body();
       const playgroupNote = pgEditor ? pgEditor.body() : '';
-      const privateNote = document.getElementById('walkPrivateNote').value.trim();
+      const privateNote = privateNoteBox.body();
       const endedAt = wrapUp ? chosenEnd() : null;
       if (endedAt && choice === 'pick') {
         const ms = new Date(endedAt).getTime();

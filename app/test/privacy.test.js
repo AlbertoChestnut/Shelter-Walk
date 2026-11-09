@@ -93,11 +93,23 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
     assert.ok(!text.includes(forbidden), `impact response must not contain "${forbidden}"`);
   }
   // Exact shape: totals only. Adding a field here should be a conscious, reviewed decision.
-  assert.deepEqual(Object.keys(r.json).sort(), ['allTime', 'days', 'minCell', 'today']);
-  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgSeconds', 'byActivity', 'dogs', 'seconds', 'since', 'walks']);
+  // shelterNow is the listing alone (no volunteer data); species is the filter asked for.
+  assert.deepEqual(Object.keys(r.json).sort(), ['allTime', 'days', 'minCell', 'shelterNow', 'species', 'today']);
+  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgSeconds', 'byActivity', 'byAge', 'byPoo', 'bySpecies', 'dogs', 'seconds', 'since', 'walks']);
   for (const a of r.json.allTime.byActivity) {
     assert.deepEqual(Object.keys(a).sort(), ['activity', 'avgSeconds', 'count', 'totalSeconds']);
     assert.ok(a.count >= r.json.minCell, 'an activity type below the threshold must not be broken out');
+  }
+  // Species / POO / kitten slices: same threshold, counts and times only.
+  for (const [list, key] of [[r.json.allTime.bySpecies, 'species'], [r.json.allTime.byPoo, 'status'], [r.json.allTime.byAge, 'group']]) {
+    for (const slice of list) {
+      assert.deepEqual(Object.keys(slice).sort(), ['animals', 'avgSeconds', 'count', key, 'totalSeconds'].sort());
+      assert.ok(slice.count >= r.json.minCell, 'a slice below the threshold must not be broken out');
+    }
+  }
+  for (const kind of Object.values(r.json.shelterNow)) {
+    assert.deepEqual(Object.keys(kind).sort(), ['counts', 'today']);
+    assert.equal(kind.today, null, 'Together never says how many were (or were not) walked today');
   }
   for (const day of r.json.days) {
     assert.deepEqual(Object.keys(day).sort(), ['avgSeconds', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
@@ -109,7 +121,7 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
   // The whole history (grouped by month in the app) has the same shape.
   const all = await call('GET', '/api/impact?days=all');
   assert.equal(all.status, 200);
-  assert.deepEqual(Object.keys(all.json).sort(), ['allTime', 'days', 'minCell', 'today']);
+  assert.deepEqual(Object.keys(all.json).sort(), ['allTime', 'days', 'minCell', 'shelterNow', 'species', 'today']);
   assert.equal(all.text.toLowerCase().includes('alice'), false);
 });
 

@@ -104,7 +104,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await p.textContent('.tab-btn[data-tab="walk"] .tab-label') === 'Play', 'the tab says Play while out with a cat');
     await p.click('#endWalkBtn'); await p.waitForSelector('#saveWalkBtn');
     ok((await p.$$('.wrap-up-checks input')).length === 3 && /latched/.test(await p.textContent('.wrap-up-checks')), 'end screen: latch / locks / hands checklist');
-    ok(/purrs/.test(await p.getAttribute('#walkNotes', 'placeholder')), 'a cat note example, not a leash one');
+    ok(/purrs/.test(await p.getAttribute('#walkNotes', 'data-placeholder')), 'a cat note example, not a leash one');
     await p.screenshot({ path: '/tmp/_cats9.png' });
     await p.click('#saveWalkBtn'); await p.waitForSelector('#doneBtn');
     const db2 = new Database(DB);
@@ -116,7 +116,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     // A both-species volunteer's own stats say "engage"; a cat profile says play.
     await p.click('.tab-btn[data-tab="stats"]'); await p.waitForTimeout(800);
     const statsText = await p.textContent('#app');
-    ok(/Animals engaged with/.test(statsText) && /Total time engaging/.test(statsText) && !/Dogs walked/.test(statsText), 'Both: stats say engaged with');
+    // Wording follows what was actually done (only a cat today), not "engage".
+    ok(/Cats played with/.test(statsText) && /Total time playing/.test(statsText) && !/Dogs walked/.test(statsText), 'Both, cats only today: stats say played with');
     await p.click('.tab-btn[data-tab="available"]'); await p.waitForSelector('.avail-card[data-id="6002"]');
     await p.click('.avail-card[data-id="6002"] .view-profile-btn'); await p.waitForSelector('#profileEditBtn');
     const prof = await p.textContent('#profileSheet');

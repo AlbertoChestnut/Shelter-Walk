@@ -1444,7 +1444,8 @@ html[data-theme="dark"] .badge.young { background: #4a3218; color: #ffd9ad; }
    dismissed -- still ordinary editable text underneath. */
 .pg-autotag { outline: 2px solid var(--green); outline-offset: 1px; border-radius: 3px; cursor: pointer; background: rgba(47, 111, 79, 0.08); }
 html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
-.pg-autotag-pop { position: fixed; z-index: 60; }
+/* Above sheets and popups (it opens from notes inside them), below dialogs. */
+.pg-suggest.pg-autotag-pop { position: fixed; z-index: 125; }
 .pg-autotag-pop .pg-autotag-decline { color: var(--red); }
 .pg-preview { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; margin-top: 8px; font-size: 0.92rem; max-height: 180px; overflow-y: auto; }
 .pg-hint { margin: 4px 0 6px; }
@@ -1547,3 +1548,27 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .pg-redate { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; padding: 0; margin: 0; border: 0; cursor: pointer; }
 .pg-desk-link { margin: 12px 0 0; }
 .pg-suggest-item.active { background: rgba(127, 127, 127, 0.16); }
+
+/* Stats breakdowns (engagement type, POO vs non-POO, kittens, dogs vs cats):
+   a row per slice with a bar for its share. */
+.bd-card { margin-top: 10px; }
+.bd-title { font-size: 0.95rem; margin: 4px 0 6px; }
+.bd-title:not(:first-child) { margin-top: 14px; }
+.bd-note { margin: -4px 0 6px; }
+.bd-list { display: flex; flex-direction: column; gap: 8px; }
+.bd-row { padding: 2px 0; }
+.bd-row.bd-tap { cursor: pointer; border-radius: 8px; }
+.bd-row.bd-tap:hover, .bd-row.bd-tap:focus-visible { background: var(--bg, rgba(0,0,0,0.03)); }
+.bd-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 600; }
+.bd-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.bd-pct { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.bd-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin: 4px 0 2px; }
+.bd-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--green-btn); }
+.bd-meta { margin: 0; font-size: 0.8rem; color: var(--muted); }
+
+/* "@" tag boxes in tips, private notes and the end-of-walk notes: the play
+   group editor's rich text box, sized down to a note. */
+.note-tag-wrap { flex: 1; min-width: 0; }
+.pg-text.note-tag-text { min-height: 2.6em; padding: 8px 10px; font-size: 0.9rem; border-radius: 8px; }
+.pg-text.note-tag-text.end-note-text { min-height: 4.5em; font-size: 1rem; }
+.tip-item.editing { align-items: flex-start; }

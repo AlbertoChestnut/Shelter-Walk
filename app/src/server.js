@@ -13,6 +13,8 @@ const shelterTrends = require('./shelterTrends');
 const staffDashboard = require('./staffDashboard');
 const shelterSchedule = require('./shelterSchedule');
 const notes = require('./notes');
+const noteTags = require('./noteTags');
+const statsBreakdown = require('./statsBreakdown');
 const playgroupNotes = require('./playgroupNotes');
 const desktopViews = require('./desktopViews');
 const feedback = require('./feedback');
@@ -671,10 +673,16 @@ function walkAccessDenied(req, res, walk) {
 
 // Guide / wiki (sections + images) lives in wiki.js.
 wiki.register(app, { db, resolveAuthedUser });
-impact.register(app, { db });
+// Who's walkable is always "for the viewer's own level" (dogEligibility).
+const walkableFor = (req) => {
+  const level = (req.me && req.me.experienceLevel) || DEFAULT_EXPERIENCE_LEVEL;
+  return (row) => dogEligibility(row, level).eligible === true;
+};
+impact.register(app, { db, walkableFor });
 impact.registerDay(app, { db, cachedPhotoUrl });
 shelterTrends.register(app, { db });
-const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
+const tags = noteTags.create(db, { cachedPhotoUrl });
+const notesApi = notes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags: tags });
 const playgroupApi = playgroupNotes.register(app, { db, isStaffOrPrivileged, cachedPhotoUrl });
 feedback.register(app, { db, isStaffOrPrivileged, push });
 account.register(app, { db });
@@ -786,9 +794,10 @@ app.get('/api/me/export', (req, res) => {
     exportedAt: new Date().toISOString(),
     note: "This is everything Shelter Walk has stored about your account. It does not include your email sign-in history or passkeys, which belong to the separate login system.",
     profile,
-    walks,
-    privateNotes,
-    publicTipsWritten,
+    // Tags read as "@Name" here, not the stored "@[id]".
+    walks: walks.map((w) => ({ ...w, notes: tags.toText(w.notes) })),
+    privateNotes: privateNotes.map((n) => ({ ...n, body: tags.toText(n.body) })),
+    publicTipsWritten: publicTipsWritten.map((n) => ({ ...n, body: tags.toText(n.body) })),
     savedFilters,
     notificationPrefs,
     favoriteDogs
@@ -1825,7 +1834,7 @@ app.put('/api/walks/:id/end', (req, res) => {
            original_started_at = CASE WHEN ? THEN COALESCE(original_started_at, started_at) ELSE original_started_at END,
            original_ended_at = CASE WHEN ? THEN COALESCE(original_ended_at, ?) ELSE original_ended_at END
     WHERE id = ?
-  `).run(endedAt, durationSeconds, notes ? String(notes).trim() : null, autoStopped, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
+  `).run(endedAt, durationSeconds, notes ? tags.clean(String(notes).trim(), walk.dog_id) : null, autoStopped, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
 
   const levelUp = !!req.me && walk.user_id === req.me.id && levelUpOffer(req.me.id);
   res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped, levelUpOffer: levelUp });
@@ -1841,7 +1850,7 @@ app.put('/api/walks/:id', (req, res) => {
   const startedAt = req.body.startedAt || walk.started_at;
   const endedAt = req.body.endedAt !== undefined ? req.body.endedAt : walk.ended_at;
   const location = req.body.location !== undefined ? String(req.body.location).trim() : walk.location;
-  const notes = req.body.notes !== undefined ? (req.body.notes ? String(req.body.notes).trim() : null) : walk.notes;
+  const notes = req.body.notes !== undefined ? (req.body.notes ? tags.clean(String(req.body.notes).trim(), walk.dog_id) : null) : walk.notes;
   const animal = db.prepare('SELECT species FROM dogs WHERE shelter_buddy_id = ?').get(walk.dog_id);
   const activity = req.body.activity !== undefined ? activityForAnimal(req.body.activity, animal) : walk.activity;
   if (!activity) return res.status(400).json({ error: activityError(animal) });
@@ -1908,7 +1917,7 @@ app.post('/api/walks/manual', (req, res) => {
   const info = db.prepare(`
     INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, manual_entry, activity)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-  `).run(dogId, userId, cleanLocation, startedAt, endedAt, durationSeconds, notes ? String(notes).trim() : null, activity);
+  `).run(dogId, userId, cleanLocation, startedAt, endedAt, durationSeconds, notes ? tags.clean(String(notes).trim(), dogId) : null, activity);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1935,16 +1944,23 @@ app.get('/api/walks', (req, res) => {
   if (userId) { conditions.push('w.user_id = ?'); params.push(userId); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
-    SELECT w.*, d.name AS dog_name, d.photo_url, d.breed, d.species,
+    SELECT w.*, d.name AS dog_name, d.photo_url, d.breed, d.species, d.tags,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     ${where} ORDER BY w.started_at DESC LIMIT ?
   `).all(...params, limit);
+  const pooAt = statsBreakdown.pooResolver(db);
   rows.forEach((r) => {
     r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
-    if (!species.speciesInfo(r.species).stickers) Object.assign(r, { blue_markers: '[]', poo_status: 'none', star_flag: 0, pb_flag: 0 });
+    // For the Stats tab's breakdowns: POO as it was when the walk started
+    // (statsBreakdown.js), and whether the animal is a kitten.
+    const kind = species.speciesInfo(r.species);
+    r.poo_then = kind.stickers ? pooAt(r.dog_id, r.started_at) : null;
+    r.is_young = species.isYoung(r);
+    delete r.tags;
+    if (!kind.stickers) Object.assign(r, { blue_markers: '[]', poo_status: 'none', star_flag: 0, pb_flag: 0 });
   });
-  res.json({ walks: rows });
+  res.json({ walks: rows, tagged: tags.namesFor(rows.map((r) => r.notes)) });
 });
 
 // Every completed walk (any user) whose started_at falls in a UTC range —
@@ -1989,19 +2005,29 @@ app.put('/api/walks/:id/user', (req, res) => {
 // those lumps a 10-minute cuddle in with a 12-hour daycation, so the average
 // is walk-only when the volunteer has any walks, falling back to their
 // overall average otherwise (a cat volunteer never has a 'walk' row).
+//
+// ?species=dog|cat narrows everything to one species (anything else: both).
+// Breakdowns (statsBreakdown.js) ride along: bySpecies (always both, so the
+// app can show the split), byActivity, byPoo (dogs, POO as it was at the
+// time), byAge (kittens / adult cats), and shelterNow -- what's listed right
+// now and how many of those this volunteer engaged with today.
 app.get('/api/stats', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   if (!userId) return res.status(400).json({ error: 'userId is required' });
   // An optional filter down to one activity, for the "by activity" drill-down.
   const activity = ACTIVITIES.includes(req.query.activity) ? req.query.activity : null;
+  const filter = statsBreakdown.speciesFilter(req.query.species);
+  const kinds = statsBreakdown.filterKinds(filter);
+  const kindSql = `d.species IN (${kinds.map(() => '?').join(', ')})`;
+  const where = `w.ended_at IS NOT NULL AND w.user_id = ? AND ${kindSql}${activity ? ' AND w.activity = ?' : ''}`;
+  const params = [userId, ...kinds, ...(activity ? [activity] : [])];
 
   const totals = db.prepare(`
-    SELECT COUNT(*) AS totalWalks, COUNT(DISTINCT dog_id) AS uniqueDogs,
-           COALESCE(SUM(duration_seconds), 0) AS totalSeconds,
-           COALESCE(AVG(duration_seconds), 0) AS avgAllSeconds
-    FROM walks WHERE ended_at IS NOT NULL AND user_id = ?
-      ${activity ? 'AND activity = ?' : ''}
-  `).get(...(activity ? [userId, activity] : [userId]));
+    SELECT COUNT(*) AS totalWalks, COUNT(DISTINCT w.dog_id) AS uniqueDogs,
+           COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds,
+           COALESCE(AVG(w.duration_seconds), 0) AS avgAllSeconds
+    FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE ${where}
+  `).get(...params);
 
   // Already scoped to one activity (the "by activity" drill-down): its own
   // average is exactly what the label says, no walk-only substitution needed.
@@ -2009,19 +2035,13 @@ app.get('/api/stats', (req, res) => {
     totals.avgSeconds = totals.avgAllSeconds;
   } else {
     const walkOnly = db.prepare(`
-      SELECT COUNT(*) AS walkCount, COALESCE(AVG(duration_seconds), 0) AS avgSeconds
-      FROM walks WHERE ended_at IS NOT NULL AND user_id = ? AND activity = 'walk'
-    `).get(userId);
+      SELECT COUNT(*) AS walkCount, COALESCE(AVG(w.duration_seconds), 0) AS avgSeconds
+      FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+      WHERE w.ended_at IS NOT NULL AND w.user_id = ? AND ${kindSql} AND w.activity = 'walk'
+    `).get(userId, ...kinds);
     totals.avgSeconds = walkOnly.walkCount > 0 ? walkOnly.avgSeconds : totals.avgAllSeconds;
   }
   delete totals.avgAllSeconds;
-
-  const byActivity = db.prepare(`
-    SELECT activity, COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds,
-           COALESCE(AVG(duration_seconds), 0) AS avgSeconds
-    FROM walks WHERE ended_at IS NOT NULL AND user_id = ?
-    GROUP BY activity ORDER BY count DESC
-  `).all(userId);
 
   const perDog = db.prepare(`
     SELECT d.shelter_buddy_id AS id, d.name, d.photo_url, d.still_listed AS stillListed,
@@ -2030,14 +2050,35 @@ app.get('/api/stats', (req, res) => {
            COUNT(w.id) AS walkCount, MAX(w.started_at) AS lastWalkedAt,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
-    WHERE w.ended_at IS NOT NULL AND w.user_id = ?
-      ${activity ? 'AND w.activity = ?' : ''}
+    WHERE ${where}
     GROUP BY d.shelter_buddy_id
     ORDER BY walkCount DESC, lastWalkedAt DESC
-  `).all(...(activity ? [userId, activity] : [userId]));
-  perDog.forEach((r) => { r.photo_url = cachedPhotoUrl(r.id, r.photo_url); r.stillListed = !!r.stillListed; });
+  `).all(...params);
+  perDog.forEach((r) => {
+    r.photo_url = cachedPhotoUrl(r.id, r.photo_url);
+    r.stillListed = !!r.stillListed;
+    if (!species.speciesInfo(r.species).stickers) Object.assign(r, { blue_markers: '[]', poo_status: 'none', star_flag: 0, pb_flag: 0 });
+  });
 
-  res.json({ totals, perDog, byActivity });
+  // Every completed engagement of this volunteer's, for the breakdowns.
+  const rows = db.prepare(`
+    SELECT w.dog_id, w.activity, w.started_at, w.duration_seconds, d.species, d.tags
+    FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+    WHERE w.ended_at IS NOT NULL AND w.user_id = ?
+  `).all(userId);
+  const pooAt = statsBreakdown.pooResolver(db);
+  const inFilter = rows.filter((r) => kinds.includes(r.species) && (!activity || r.activity === activity));
+  const { byActivity, byPoo, byAge } = statsBreakdown.breakdown(inFilter, pooAt);
+  const { bySpecies } = statsBreakdown.breakdown(rows, pooAt);
+
+  // Today in shelter time, including an engagement still under way.
+  const todayKey = statsBreakdown.shelterDateKey(new Date().toISOString());
+  const since = new Date(Date.now() - 36 * 3600 * 1000).toISOString();
+  const walkedIds = new Set(db.prepare('SELECT dog_id, started_at FROM walks WHERE user_id = ? AND started_at >= ?').all(userId, since)
+    .filter((r) => statsBreakdown.shelterDateKey(r.started_at) === todayKey).map((r) => r.dog_id));
+  const shelterNow = statsBreakdown.shelterNow(db, filter, { isWalkable: walkableFor(req), walkedIds });
+
+  res.json({ species: filter, totals, perDog, byActivity, bySpecies, byPoo, byAge, shelterNow });
 });
 
 // ---- Manual scrape trigger ----

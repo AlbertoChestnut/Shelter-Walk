@@ -11,6 +11,8 @@
 //     (they still count toward the overall totals), so a quiet session that
 //     one identifiable person worked cannot be pinned on them.
 // The tests in test/api.test.js enforce all of this.
+const statsBreakdown = require('./statsBreakdown');
+
 const TZ = 'America/New_York'; // the shelter's clock, same as the scraper schedule
 const MIN_CELL = 3;
 
@@ -90,42 +92,58 @@ function buildImpact(rows, allTime, now = new Date()) {
   return { minCell: MIN_CELL, today, days: list, allTime };
 }
 
-function register(app, { db, cachedPhotoUrl }) {
+// The statsBreakdown.js splits (species, POO at the time, kittens), with
+// the same MIN_CELL suppression as everything else here: a slice that only
+// a handful of engagements fall into is left out (it still counts in the
+// totals), so a rare one can't be pinned on whoever did it.
+function suppressedBreakdown(rows, pooAt) {
+  const b = statsBreakdown.breakdown(rows, pooAt);
+  const keep = (list) => list.filter((x) => x.count >= MIN_CELL);
+  return { bySpecies: keep(b.bySpecies), byPoo: keep(b.byPoo), byAge: keep(b.byAge) };
+}
+
+function register(app, { db, walkableFor }) {
   app.get('/api/impact', (req, res) => {
     // ?days=all: every day since tracking began (the app groups them by month).
     const span = req.query.days === 'all' ? Infinity : Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 120);
+    // ?species=dog|cat narrows everything to one species (anything else: both).
+    const filter = statsBreakdown.speciesFilter(req.query.species);
+    const kinds = statsBreakdown.filterKinds(filter);
     // Pad the window by a day so a UTC/local boundary never clips a day.
     const since = span === Infinity ? '' : new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
-    const rows = db.prepare(
-      'SELECT dog_id, started_at, duration_seconds, activity FROM walks WHERE ended_at IS NOT NULL AND started_at >= ?'
-    ).all(since);
-    const totals = db.prepare(
-      'SELECT COUNT(*) AS walks, COUNT(DISTINCT dog_id) AS dogs, COALESCE(SUM(duration_seconds), 0) AS seconds, MIN(started_at) AS since FROM walks WHERE ended_at IS NOT NULL'
-    ).get();
-    const walkOnlyTotals = db.prepare(
-      "SELECT COUNT(*) AS walkCount, COALESCE(SUM(duration_seconds), 0) AS walkSeconds FROM walks WHERE ended_at IS NOT NULL AND activity = 'walk'"
-    ).get();
-    const byActivityTotals = db.prepare(
-      'SELECT activity, COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE ended_at IS NOT NULL GROUP BY activity'
-    ).all();
+    const everything = db.prepare(`
+      SELECT w.dog_id, w.started_at, w.duration_seconds, w.activity, d.species, d.tags
+      FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE w.ended_at IS NOT NULL
+    `).all();
+    const all = everything.filter((r) => kinds.includes(r.species));
+    const rows = all.filter((r) => r.started_at >= since);
+    const total = tally();
+    for (const r of all) add(total, r);
+    const pooAt = statsBreakdown.pooResolver(db);
     const allTime = {
-      walks: totals.walks,
-      dogs: totals.dogs,
-      seconds: totals.seconds,
-      since: totals.since,
-      avgSeconds: walkOnlyTotals.walkCount > 0 ? walkOnlyTotals.walkSeconds / walkOnlyTotals.walkCount : (totals.walks ? totals.seconds / totals.walks : 0),
-      byActivity: byActivityTotals
-        .map((a) => ({ activity: a.activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.count ? a.totalSeconds / a.count : 0 }))
-        .filter((a) => a.count >= MIN_CELL)
-        .sort((a, b) => b.count - a.count)
+      ...out(total),
+      since: all.reduce((min, r) => (!min || r.started_at < min ? r.started_at : min), null),
+      byActivity: byActivityOf(total),
+      ...suppressedBreakdown(all, pooAt),
+      // Both species, whatever the filter, so the app can show the split.
+      bySpecies: suppressedBreakdown(everything, pooAt).bySpecies
     };
     const impact = buildImpact(rows, allTime);
+    if (impact.today) {
+      const todayRows = rows.filter((r) => localParts(r.started_at).dateKey === impact.today.dateKey);
+      const { byPoo, byAge } = suppressedBreakdown(todayRows, pooAt);
+      // A copy: the same day's entry in `days` keeps the plain day shape.
+      impact.today = { ...impact.today, byPoo, byAge };
+    }
+    // What's listed right now. No "how many were walked today" here: that's
+    // the kind of shortfall framing Together never shows.
+    impact.shelterNow = statsBreakdown.shelterNow(db, filter, { isWalkable: walkableFor(req), walkedIds: null });
+    impact.species = filter;
     // Trim to the requested number of days after bucketing in local time.
     if (span !== Infinity) impact.days = impact.days.slice(0, span);
     res.json(impact);
   });
 }
-
 
 // One day's walks in order: which dog, when, how long -- for everyone's walks
 // combined. The ONLY thing that says whose a walk was is `mine`, and only to
@@ -141,13 +159,15 @@ function registerDay(app, { db, cachedPhotoUrl }) {
     const base = new Date(`${date}T12:00:00Z`).getTime();
     const from = new Date(base - 36 * 3600 * 1000).toISOString();
     const to = new Date(base + 36 * 3600 * 1000).toISOString();
+    const kinds = statsBreakdown.filterKinds(statsBreakdown.speciesFilter(req.query.species));
     const rows = db.prepare(`
       SELECT w.dog_id, w.started_at, w.ended_at, w.duration_seconds, w.activity, (w.user_id = ?) AS mine,
              d.name AS dog_name, d.photo_url, d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE w.ended_at IS NOT NULL AND w.started_at >= ? AND w.started_at < ?
+        AND d.species IN (${kinds.map(() => '?').join(', ')})
       ORDER BY w.started_at ASC, w.id ASC
-    `).all(req.me.id, from, to).filter((r) => localParts(r.started_at).dateKey === date);
+    `).all(req.me.id, from, to, ...kinds).filter((r) => localParts(r.started_at).dateKey === date);
     // Same rule as the day list: a quiet day is not opened up, so it can't be
     // pinned on whoever happened to be there.
     if (rows.length < MIN_CELL) return res.status(404).json({ error: 'No details are shown for this day.' });

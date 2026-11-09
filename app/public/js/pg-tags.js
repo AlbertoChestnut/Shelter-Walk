@@ -524,7 +524,7 @@
   // (turning it into a real "@Name " tag the same way the @ picker does) or
   // declines (back to plain text, and not suggested again this session).
   const SCAN_DEBOUNCE = 350;
-  function wireAutoTagger(el, { getDogs, ownId = null, picks = new Map() } = {}) {
+  function wireAutoTagger(el, { getDogs, ownId = null, picks = new Map(), declineLabel = 'Not a dog' } = {}) {
     wireRichText(el);
     let dogs = [];
     Promise.resolve(getDogs()).then((list) => { dogs = list || []; });
@@ -605,12 +605,17 @@
           <span class="pg-suggest-name">Tag as ${esc(d.name)}</span>
           <span class="small muted nowrap">${d.kennelLocation ? `🏠 ${esc(d.kennelLocation)}` : ''}</span>
         </button>`).join('')}
-        <button type="button" class="pg-suggest-item pg-autotag-decline">Not a dog</button>`;
+        <button type="button" class="pg-suggest-item pg-autotag-decline">${esc(declineLabel)}</button>`;
       document.body.appendChild(popover);
       popover.style.position = 'fixed';
-      popover.style.left = `${Math.max(8, rect.left)}px`;
-      popover.style.top = `${rect.bottom + 4}px`;
       popover.style.width = '260px';
+      // Below the word when it fits on screen (above the keyboard, on a
+      // phone), otherwise above it; never off either side.
+      const viewH = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const h = popover.offsetHeight;
+      const below = rect.bottom + 4;
+      popover.style.top = `${below + h <= viewH - 8 ? below : Math.max(8, rect.top - h - 4)}px`;
+      popover.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 268))}px`;
       popover.addEventListener('mousedown', (e) => e.preventDefault());
       popover.addEventListener('click', (e) => {
         const declineBtn = e.target.closest('.pg-autotag-decline');

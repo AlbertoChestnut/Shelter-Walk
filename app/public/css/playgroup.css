@@ -161,7 +161,7 @@ h3 { margin: 22px 0 6px; font-size: 1rem; }
 .pg-text.pg-text-empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
 .pg-autotag { outline: 2px solid var(--green); outline-offset: 1px; border-radius: 3px; cursor: pointer; background: rgba(47, 111, 79, 0.08); }
 html[data-theme="dark"] .pg-autotag { background: rgba(63, 138, 99, 0.16); }
-.pg-autotag-pop { position: fixed; z-index: 60; }
+.pg-suggest.pg-autotag-pop { position: fixed; z-index: 60; }
 .pg-autotag-pop .pg-autotag-decline { color: var(--red); }
 .desk-editor-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .desk-editor-foot > :first-child { margin-right: auto; }

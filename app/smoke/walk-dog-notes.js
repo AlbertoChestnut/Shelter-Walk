@@ -32,7 +32,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(/old note/.test(await p.textContent('#markerInfoPopupContent')), 'the earlier walk note is listed in the popup');
     await p.click('.tip-item[data-walk] [data-act="edit"]');
     await p.fill('.tip-item[data-walk] .tip-edit-input', 'Bad puller'); await p.click('.tip-item[data-walk] [data-act="save"]');
-    await p.waitForFunction(() => /Bad puller/.test(document.querySelector('.tip-item[data-walk]')?.textContent || ''));
+    await p.waitForFunction(() => /Bad puller/.test(document.querySelector('.tip-item[data-walk]:not(.editing)')?.textContent || ''));
     ok(new Database(DB).prepare('SELECT notes FROM walks WHERE dog_id = 70').get().notes === 'Bad puller', 'the walk note can be edited like a tip');
     await p.click('.tip-item[data-walk] [data-act="erase"]'); await p.click('#appDialogOk');
     await p.waitForFunction(() => !document.querySelector('.tip-item[data-walk]'));

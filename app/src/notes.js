@@ -9,11 +9,13 @@
 //                 No staff or admin override exists anywhere in this file.
 //
 // Note text is stored as plain text and always escaped when displayed.
+// "@[id]" in any of them tags another animal (noteTags.js); unknown ones are
+// turned back into plain text when saved.
 const MAX_TIP = 1000;
 const MAX_PRIVATE = 4000;
 const MAX_TIPS_PER_DOG = 300;
 
-function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
+function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   const dogExists = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ?');
 
   // What one walker is allowed to see about one dog's notes.
@@ -25,7 +27,13 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
     const priv = db.prepare(
       "SELECT body, updated_at AS updatedAt FROM dog_notes WHERE dog_id = ? AND user_id = ? AND visibility = 'private'"
     ).get(dogId, userId) || null;
-    return { sharedTips, privateNote: priv };
+    // tagged: names for the tags in these notes (the app adds the dog's own
+    // walk notes, which come with its walks). mentions: notes on other
+    // animals that tag this one.
+    const walkNotes = db.prepare("SELECT notes FROM walks WHERE dog_id = ? AND notes IS NOT NULL AND notes != ''").all(dogId).map((w) => w.notes);
+    const mentions = noteTags.mentionsOf(dogId, userId);
+    const tagged = noteTags.namesFor([...sharedTips.map((t) => t.body), priv ? priv.body : '', ...walkNotes, ...mentions.map((m) => m.body)]);
+    return { sharedTips, privateNote: priv, tagged, mentions };
   }
 
   const cleanText = (raw, max) => String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').trim().slice(0, max);
@@ -83,13 +91,13 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
       }
       byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.at });
     }
-    res.json({ dogs: Array.from(byDog.values()) });
+    res.json({ dogs: Array.from(byDog.values()), tagged: noteTags.namesFor(rows.map((r) => r.body)) });
   });
 
   app.post('/api/dogs/:id/notes', (req, res) => {
     const dogId = parseInt(req.params.id, 10);
     if (!dogExists.get(dogId)) return res.status(404).json({ error: 'Dog not found' });
-    const body = cleanText(req.body && req.body.body, MAX_TIP);
+    const body = noteTags.clean(cleanText(req.body && req.body.body, MAX_TIP), dogId);
     if (!body) return res.status(400).json({ error: 'Write something to share first.' });
     const count = db.prepare("SELECT COUNT(*) AS c FROM dog_notes WHERE dog_id = ? AND visibility = 'public'").get(dogId).c;
     if (count >= MAX_TIPS_PER_DOG) return res.status(409).json({ error: 'This dog already has a lot of tips. Ask staff to tidy them up.' });
@@ -105,7 +113,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
     const note = db.prepare("SELECT id FROM dog_notes WHERE id = ? AND dog_id = ? AND visibility = 'public'")
       .get(parseInt(req.params.noteId, 10), parseInt(req.params.id, 10));
     if (!note) return res.status(404).json({ error: 'Tip not found' });
-    const body = cleanText(req.body && req.body.body, MAX_TIP);
+    const body = noteTags.clean(cleanText(req.body && req.body.body, MAX_TIP), parseInt(req.params.id, 10));
     if (!body) return res.status(400).json({ error: 'A tip can\'t be empty. Delete it instead.' });
     db.prepare('UPDATE dog_notes SET body = ?, updated_at = ? WHERE id = ?').run(body, new Date().toISOString(), note.id);
     res.json({ id: note.id });
@@ -131,7 +139,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   app.put('/api/dogs/:id/walk-notes/:walkId', (req, res) => {
     const walk = sharedWalkNote.get(parseInt(req.params.walkId, 10), parseInt(req.params.id, 10));
     if (!walk) return res.status(404).json({ error: 'Note not found' });
-    const body = cleanText(req.body && req.body.body, MAX_TIP);
+    const body = noteTags.clean(cleanText(req.body && req.body.body, MAX_TIP), parseInt(req.params.id, 10));
     if (!body) return res.status(400).json({ error: 'A note can\'t be empty. Delete it instead.' });
     db.prepare('UPDATE walks SET notes = ? WHERE id = ?').run(body, walk.id);
     res.json({ id: walk.id });
@@ -148,7 +156,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   app.put('/api/dogs/:id/private-note', (req, res) => {
     const dogId = parseInt(req.params.id, 10);
     if (!dogExists.get(dogId)) return res.status(404).json({ error: 'Dog not found' });
-    const incoming = cleanText(req.body && req.body.body, MAX_PRIVATE);
+    const incoming = noteTags.clean(cleanText(req.body && req.body.body, MAX_PRIVATE), dogId);
     const existing = db.prepare("SELECT id, body FROM dog_notes WHERE dog_id = ? AND user_id = ? AND visibility = 'private'").get(dogId, req.me.id);
     let body = incoming;
     if (req.body && req.body.append && existing && incoming) {

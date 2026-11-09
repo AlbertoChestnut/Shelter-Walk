@@ -315,17 +315,59 @@
     withImpliedBlank(dog.blueMarkers || []).forEach((m) => {
       if (m === 'blue') return; // the blank general marker has nothing to spell out
       const cls = m === 'blue_evo' ? 'marker-dot blue rect' : 'marker-dot blue';
-      rows.push({ icon: `<span class="${cls}">${BLUE_MARKER_LETTERS[m] || ''}</span>`, name: BLUE_MARKER_NAMES[m] || 'Behavior marker' });
+      rows.push({ icon: `<span class="${cls}">${BLUE_MARKER_LETTERS[m] || ''}</span>`, name: BLUE_MARKER_NAMES[m] || 'Behavior marker', key: m });
     });
-    if (dog.pooStatus === 'priority') rows.push({ icon: `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`, name: 'High priority POO dog - first out in the morning, last out in the evening' });
-    else if (dog.pooStatus === 'poo') rows.push({ icon: '<span class="marker-dot poo"></span>', name: 'POO dog - Potty Outside Only' });
+    if (dog.pooStatus === 'priority') rows.push({ icon: `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`, name: 'High priority POO dog - first out in the morning, last out in the evening', key: 'poo_priority' });
+    else if (dog.pooStatus === 'poo') rows.push({ icon: '<span class="marker-dot poo"></span>', name: 'POO dog - Potty Outside Only', key: 'poo' });
     if (dog.starFlag) {
       const starPending = !isHistorical && dog.isPendingAdoption;
-      rows.push({ icon: `<span class="marker-star${starPending ? ' pending' : ''}">★</span>`, name: starPending ? 'Good for beginners - but not right now, pending adoption' : 'Good for beginners' });
+      rows.push({ icon: `<span class="marker-star${starPending ? ' pending' : ''}">★</span>`, name: starPending ? 'Good for beginners - but not right now, pending adoption' : 'Good for beginners', key: 'star' });
     }
-    if (dog.pbFlag) rows.push({ icon: '<span class="marker-dot pb">PB</span>', name: 'Potty Break OK - short walk only, no play' });
-    if (dog.isPendingAdoption) rows.push({ icon: '<span class="marker-dot pending">Adopted</span>', name: "Someone has started adopting this dog - Beginners can't walk them" });
+    if (dog.pbFlag) rows.push({ icon: '<span class="marker-dot pb">PB</span>', name: 'Potty Break OK - short walk only, no play', key: 'pb' });
+    if (dog.isPendingAdoption) rows.push({ icon: '<span class="marker-dot pending">Adopted</span>', name: "Someone has started adopting this dog - Beginners can't walk them", key: null });
     return rows;
+  }
+
+  // "2 days ago" / "today" / "yesterday" for when a sticker was added.
+  function daysAgoText(iso) {
+    const days = Math.max(0, Math.round((new Date() - new Date(iso)) / 86400000));
+    if (days === 0) return 'today';
+    if (days === 1) return 'yesterday';
+    return `${days} days ago`;
+  }
+
+  // Same badge markup as markerBadgesRaw/markerBreakdownRows, but keyed by
+  // the sticker's plain string key (star/pb/poo/poo_priority/blue_*) rather
+  // than a dog object -- for places like the timeline that only have the key
+  // itself (shelter_events.detail), not a full dog to read flags off of.
+  function stickerIconByKey(key) {
+    if (key in BLUE_MARKER_LETTERS) {
+      const cls = key === 'blue_evo' ? 'marker-dot blue rect' : 'marker-dot blue';
+      return `<span class="${cls}">${BLUE_MARKER_LETTERS[key]}</span>`;
+    }
+    switch (key) {
+      case 'star': return '<span class="marker-star">★</span>';
+      case 'pb': return '<span class="marker-dot pb">PB</span>';
+      case 'poo': return '<span class="marker-dot poo"></span>';
+      case 'poo_priority': return `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`;
+      default: return '';
+    }
+  }
+
+  // "Added <date> (<n> days ago)" for each of a dog's currently-set stickers
+  // that has a known add date (dog.stickerDates, from the single-dog fetch --
+  // see /api/dogs/:id). Shown next to the marker picker when staff are
+  // setting stickers, so it's clear how long each one has already been on,
+  // not just whether it's on. Dogs loaded before stickerDates existed, or a
+  // sticker set before that tracking began, simply have no date and are left
+  // off the list rather than showing a wrong or blank one.
+  function stickerAddedHtml(dog) {
+    const dates = dog.stickerDates || {};
+    const rows = markerBreakdownRows(dog, false).filter((r) => r.key && dates[r.key]);
+    if (!rows.length) return '';
+    return `<ul class="marker-breakdown-list sticker-added-list">${rows.map((r) =>
+      `<li>${r.icon} <span class="small muted">${esc(r.name)} — added ${fmtNoteDate(dates[r.key])} (${daysAgoText(dates[r.key])})</span></li>`
+    ).join('')}</ul>`;
   }
 
   function markerBreakdownHtml(dog) {
@@ -672,29 +714,43 @@
   }
 
   // Human-readable version of the server's notEligibleReason code, shown on
-  // the confirm/scan screen's caution badge.
+  // every "can't walk this dog" badge/alert (Available cards, the confirm
+  // screen's badge, the Start Walk block). Always "Not eligible: <why>" so
+  // the same reason reads the same way everywhere, including the hard
+  // too-young block, which has its own badge styling but the same wording.
   function notEligibleReasonText(dog) {
+    let why;
     switch (dog.notEligibleReason) {
+      case 'too_young':
+        why = `Too young to walk${dog.age ? ` (${dog.age})` : ''}`;
+        break;
       case 'evo_restricted':
-        return 'Experienced Volunteers Only - not cleared for your level';
+        why = 'Experienced Volunteers Only';
+        break;
       case 'blue_restricted':
-        return 'Has a behavior marker not cleared for your level';
+        why = 'Behavior marker not cleared for your level';
+        break;
       case 'pb_restricted':
-        return 'Potty-break-only dog - not cleared for your level';
+        why = 'Potty-break-only, not cleared for your level';
+        break;
       case 'pending_restricted':
-        return "Someone has started adopting this dog - not cleared for Beginners";
+        why = 'Pending adoption, not cleared for Beginners';
+        break;
       case 'stray_hold':
-        return 'On stray hold - only walk if marked PB';
+        why = 'Stray hold (PB only)';
+        break;
       case 'days': {
         const effective = dog.effectiveDaysInShelter != null ? dog.effectiveDaysInShelter : dog.daysInShelter;
         const remaining = dog.minDaysForLevel != null ? dog.minDaysForLevel - effective : null;
-        return remaining != null && remaining > 0
+        why = remaining != null && remaining > 0
           ? `Needs ${remaining} more day${remaining === 1 ? '' : 's'} in shelter for your level`
           : 'Not enough time in shelter yet for your level';
+        break;
       }
       default:
-        return 'Not eligible to walk right now';
+        why = 'cannot walk right now';
     }
+    return `Not eligible: ${why}`;
   }
 
   // What a volunteer can do with a dog. All of them are timed and count
@@ -1814,7 +1870,7 @@
     content.innerHTML = `
       <h3 style="margin-top:0;">✎ ${esc(dog.name)}</h3>
       <p class="small muted" style="margin-top:-6px;">You're still out with ${esc(state.walk.dog.name)} — this only edits ${esc(dog.name)}.</p>
-      ${stickers ? markerPickerHtml() : ''}
+      ${stickers ? markerPickerHtml(dog) : ''}
       <label style="display:block;${stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
       ${kennelLetterPickerHtml('editPopupLocationPicker', dog.kennelLocation || '', { letters: kennelsOf(dog) })}
       <div class="row" style="margin-top:10px;">
@@ -2568,7 +2624,7 @@
     const isWalkKind = (kind) => kind === 'walk' || kind === 'playgroup';
     const tipRows = items.map((n) => `<li class="tip-item${isWalkKind(n.kind) ? ' tip-item-walk' : ''}" ${isWalkKind(n.kind) ? 'data-walk' : 'data-tip'}="${n.id}">
            <span class="tip-bullet">•</span>
-           <span class="tip-text">${linkifyYouTube(esc(n.body))} ${isWalkKind(n.kind) ? `<span class="tip-date">from ${n.kind === 'playgroup' ? 'play group' : aNoun(termsOf(dog))} · ${fmtNoteDate(n.when)}</span>` : noteDateHtml(n.when, n.updatedAt)}</span>
+           <span class="tip-text">${linkifyYouTube(esc(n.body))} ${noteDateHtml(n.when, n.updatedAt)}</span>
            <span class="tip-item-actions">
              <button type="button" class="mini-icon-btn" data-act="edit" aria-label="Edit this tip">✎</button>
              <button type="button" class="mini-icon-btn" data-act="erase" aria-label="Delete this tip">✕</button>
@@ -3178,9 +3234,9 @@
       case 'removed': return '⬇️ Taken off the floor';
       case 'pending_adoption': return '⏳ Adoption went pending';
       case 'pending_canceled': return '↪️ Pending adoption fell through';
-      case 'sticker_on': return `🏷️ ${esc(e.title || e.detail)} turned on`;
-      case 'sticker_off': return `🏷️ ${esc(e.title || e.detail)} turned off`;
-      case 'sticker_auto_off': return `🏷️ ${esc(e.title || e.detail)} turned off automatically (left stray hold)`;
+      case 'sticker_on': return `${stickerIconByKey(e.detail) || '🏷️'} ${esc(e.title || e.detail)} turned on`;
+      case 'sticker_off': return `${stickerIconByKey(e.detail) || '🏷️'} ${esc(e.title || e.detail)} turned off`;
+      case 'sticker_auto_off': return `${stickerIconByKey(e.detail) || '🏷️'} ${esc(e.title || e.detail)} turned off automatically (left stray hold)`;
       default: return esc(e.title || e.kind);
     }
   }
@@ -3202,6 +3258,15 @@
         const items = [];
         if (dog.stillListed) {
           items.push({ occurredAt: new Date().toISOString(), label: `📍 On the floor now (${dayWord(dog.daysInShelter)} this stay)` });
+        }
+        // A dog can be listed as pending the very first time the scraper
+        // ever sees them (the shelter marks them pending at listing time,
+        // not after), so there's no earlier non-pending state to transition
+        // from and a 'pending_adoption' event never gets logged for them --
+        // this live line is the only way their pending status shows up on
+        // the timeline at all in that case.
+        if (dog.isPendingAdoption) {
+          items.push({ occurredAt: new Date().toISOString(), label: '⏳ Currently pending adoption' });
         }
         const sourceEvents = showStickers ? [...history.events, ...history.stickerEvents] : history.events;
         items.push(...sourceEvents.slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)).reverse()
@@ -4261,7 +4326,7 @@
     }
     const cards = visibleDogs.map((dog) => {
       const badge = !speciesOf(dog).levelRules ? '' : dog.tooYoung
-        ? `<span class="badge blocked">🚫 Too young</span>`
+        ? `<span class="badge blocked">🚫 ${esc(notEligibleReasonText(dog))}</span>`
         : dog.eligible
         ? `<span class="badge eligible">Eligible ✓</span>`
         : `<span class="badge not-eligible">${esc(notEligibleReasonText(dog))}</span>`;
@@ -4695,18 +4760,7 @@
         </div>
       </div>
       <div class="card compact">
-        ${stickers ? `
-        <label class="small">Behavior markers (tap to toggle)</label>
-        <div class="marker-row">
-          <button type="button" class="marker-shape star" data-group="star" title="Good for beginners">★</button>
-          ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''}" data-group="blue" data-value="${m.value}" title="${esc(m.name)}">${esc(m.letter)}</button>`).join('')}
-        </div>
-        <label class="small" style="display:block;margin-top:14px;">POO status</label>
-        <div class="marker-row">
-          <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
-          <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
-          <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only">PB</button>
-        </div>` : `<p class="small muted" style="margin:0;">${esc(speciesOf(dog).plural)} don't have kennel card stickers.</p>`}
+        ${stickers ? markerPickerHtml(dog) : `<p class="small muted" style="margin:0;">${esc(speciesOf(dog).plural)} don't have kennel card stickers.</p>`}
         <div class="row" style="margin-top:10px;">
           <button id="auditSaveBtn" class="btn primary" ${!stickers && !state.audit.location ? 'disabled' : ''}>${stickers
             ? (state.audit.location ? `Save markers &amp; location ${esc(state.audit.location)}` : 'Save markers')
@@ -6752,7 +6806,7 @@
     if (hasEvo && !level.allowEvo) return { eligible: false, reason: 'evo_restricted' };
     if (hasAnyBlue && !level.allowBlue) return { eligible: false, reason: 'blue_restricted' };
     if (dog.isPendingAdoption && !level.allowPending) return { eligible: false, reason: 'pending_restricted' };
-    if (dog.isStrayHold && !pending.pbFlag && !dog.isAlumni) return { eligible: false, reason: 'stray_hold' };
+    if (dog.isStrayHold && !pending.pbFlag && !dog.alumniBypassStrayHold) return { eligible: false, reason: 'stray_hold' };
     if (pending.pbFlag) return level.allowPb ? { eligible: true, reason: null } : { eligible: false, reason: 'pb_restricted' };
     if (dog.effectiveDaysInShelter == null) return { eligible: null, reason: null };
     return dog.effectiveDaysInShelter >= level.minDays ? { eligible: true, reason: null } : { eligible: false, reason: 'days' };
@@ -6770,7 +6824,7 @@
 
     function eligibilityBadgeHtml() {
       if (!kind.levelRules) return ''; // any volunteer may visit any of them
-      if (tooYoung) return `<span class="badge blocked">🚫 Too young to walk (${esc(dog.age)})</span>`;
+      if (tooYoung) return `<span class="badge blocked">🚫 ${esc(notEligibleReasonText(dog))}</span>`;
       if (dog.eligible) return `<span class="badge eligible">Eligible to walk ✓</span>`;
       return `<span class="badge caution">⚠ ${esc(notEligibleReasonText(dog))}</span>`;
     }
@@ -6846,9 +6900,10 @@
         <div id="advancedSettingsPopup" class="popup-overlay hidden">
           <div class="popup-card">
             <h3 style="margin-top:0;">Advanced settings</h3>
+            <p class="small muted" style="margin-top:0;">Alumni (returned dog) -- two independent options, use either, neither, or both.</p>
             <label class="small" style="display:flex;align-items:center;gap:6px;">
               <input type="checkbox" id="alumniCheck" ${dog.isAlumni ? 'checked' : ''} />
-              Alumni (returned dog) - add bonus days toward eligibility, and allow walking through a stray hold
+              Add bonus days toward eligibility
             </label>
             <div id="alumniBonusRow" class="${dog.isAlumni ? '' : 'hidden'}" style="margin-top:8px;">
               <label class="small" for="alumniBonusSelect">Bonus days</label>
@@ -6858,6 +6913,10 @@
                 ).join('')}
               </select>
             </div>
+            <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:12px;">
+              <input type="checkbox" id="strayHoldBypassCheck" ${dog.alumniBypassStrayHold ? 'checked' : ''} />
+              Bypass stray hold (allow walking without PB)
+            </label>
             <div class="row" style="margin-top:14px;">
               <button id="saveAlumniBtn" class="btn primary">Save</button>
               <button id="closeAdvancedPopupBtn" class="btn">Cancel</button>
@@ -6873,7 +6932,7 @@
           <div class="dog-notes-mount dog-notes-compact">${dogNotesShellHtml()}</div>
         </div>
         <div class="card compact">
-          ${kind.stickers ? markerPickerHtml() : ''}
+          ${kind.stickers ? markerPickerHtml(dog) : ''}
           <label style="display:block;${kind.stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
           ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung, letters: kennelsOf(dog) })}
           <div id="saveAllRow" class="row hidden" style="margin-top:10px;align-items:center;gap:10px;">
@@ -6931,14 +6990,16 @@
         const statusEl = document.getElementById('alumniSaveStatus');
         const alumni = alumniCheck.checked;
         const bonusDays = parseInt(document.getElementById('alumniBonusSelect').value, 10);
+        const bypassStrayHold = document.getElementById('strayHoldBypassCheck').checked;
         statusEl.textContent = 'Saving…';
         try {
           const updated = await api(`/api/dogs/${dog.id}/alumni`, {
             method: 'PUT',
-            body: JSON.stringify({ alumni, bonusDays, userId: state.currentUser.id })
+            body: JSON.stringify({ alumni, bonusDays, bypassStrayHold, userId: state.currentUser.id })
           });
           dog.isAlumni = updated.isAlumni;
           dog.alumniBonusDays = updated.alumniBonusDays;
+          dog.alumniBypassStrayHold = updated.alumniBypassStrayHold;
           // Same formula as effectiveDays in server.js's dogEligibility --
           // previousDaysInShelter (automatic, banked on a detected return)
           // stacks with the alumni bonus (manual), so both have to be
@@ -7062,7 +7123,7 @@
         return;
       }
       if (!dog.tooYoung && dog.eligible === false) {
-        appAlert(`${dog.name} isn't cleared to walk at your experience level right now (${notEligibleReasonText(dog)}). You can change your level any time from Settings (the gear icon, top right), or ask a privileged volunteer to adjust this dog's markers.`);
+        appAlert(`${dog.name} can't be walked right now at your experience level. ${notEligibleReasonText(dog)}. You can change your level any time from Settings (the gear icon, top right), or ask a privileged volunteer to adjust this dog's markers.`);
         renderWalkConfirm();
         return;
       }
@@ -7131,7 +7192,7 @@
   // marker is also "on" — this recomputes every shape's active class from
   // `pending` from scratch, so that implication is always reflected however
   // `pending` got there (initial load or any click).
-  function markerPickerHtml() {
+  function markerPickerHtml(dog) {
     return `
       <label class="small">Behavior markers (tap to toggle)</label>
       <div class="marker-row">
@@ -7143,7 +7204,8 @@
         <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog"></button>
         <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog">${ASTERISK_SVG}</button>
         <button type="button" class="marker-shape pb" data-group="pb" title="Potty Break OK - short walk only, clears the days-in-shelter wait">PB</button>
-      </div>`;
+      </div>
+      ${dog ? stickerAddedHtml(dog) : ''}`;
   }
 
   // root: where the picker lives (the edit popup passes its own, so the

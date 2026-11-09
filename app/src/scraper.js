@@ -136,6 +136,17 @@ function dogVideoUrl(detail) {
   return extractYouTubeUrl(detail.summary);
 }
 
+// Wake County's own bios end with a "reach out to our volunteer matchmakers"
+// pitch naming the dog and its shelter id (e.g. "Victorious, 271977") -- it
+// only makes sense on the shelter's own site, which already has a contact
+// form wired to that address, so it's cut here before the summary is stored.
+const MATCHMAKER_PITCH_RE = /(?:<br\s*\/?>\s*){0,2}If you(?:'|&#0?39;|&rsquo;)re interested in learning more about [\w\s]{1,20}?,\s*please reach out to our volunteer matchmakers at wcac\.matchmaker@gmail\.com with the subject line\s*["“][^"”]{1,80}["”]\.?\s*(?:<br\s*\/?>\s*){0,2}/gi;
+function stripMatchmakerPitch(html) {
+  if (!html) return null;
+  const stripped = html.replace(MATCHMAKER_PITCH_RE, '').trim();
+  return stripped || null;
+}
+
 async function fetchDogDetailAndPhoto(id) {
   let detail = null;
   let photoUrl = null;
@@ -190,6 +201,11 @@ ON CONFLICT(shelter_buddy_id) DO UPDATE SET
 `);
 
 const delistDog = db.prepare('UPDATE dogs SET still_listed = 0, removed_at = ?, missed_scrapes = 0 WHERE shelter_buddy_id = ?');
+// Erases a same-day "Taken off the floor" event once that same-day return
+// is detected (see the returning-dog branch in doScrape) -- occurred_at is
+// an exact match since it's the very timestamp delistDog/logEvent stamped
+// removed_at with.
+const deleteRemovedEvent = db.prepare("DELETE FROM shelter_events WHERE dog_id = ? AND kind = 'removed' AND occurred_at = ?");
 const bumpMissed = db.prepare('UPDATE dogs SET missed_scrapes = missed_scrapes + 1 WHERE shelter_buddy_id = ?');
 const startRun = db.prepare('INSERT INTO scrape_runs (started_at) VALUES (?)');
 const finishRun = db.prepare('UPDATE scrape_runs SET finished_at = ?, ok = ?, dog_count = ?, note = ? WHERE id = ?');
@@ -372,6 +388,17 @@ async function doScrape(runId, finish) {
     const kind = speciesFromTags(detail && detail.tags, item.listKind);
     seenKinds.set(id, kind);
 
+    // A dog taken off the floor and put back on it the same shelter day --
+    // almost always a data correction or a blip, not a real stay ending --
+    // reads as nothing having happened at all: no timeline entries either
+    // direction, and the stay in progress just continues, so its start date
+    // is kept exactly as it was instead of being bumped to "today".
+    // Deliberately narrow to a plain removal: a same-day adoption that falls
+    // through is a materially different (and rarer) event worth keeping.
+    const sameDayReturn = !!(existing && !existing.awaiting_listing && !existing.still_listed && existing.removed_at
+      && shelterTrends.dateKeyOf(existing.removed_at) === shelterTrends.dateKeyOf(now)
+      && !wasAdoptedDuringStay.get(id, existing.date_in_shelter, existing.removed_at));
+
     // One dog's bad data must never abort the whole run (and freeze every
     // other dog's data): log it, keep the dog listed as-is, move on.
     try {
@@ -385,8 +412,8 @@ async function doScrape(runId, finish) {
         weight: (detail && detail.weight) || null,
         desexed: (detail && detail.desexed) || null,
         location: (detail && detail.location) || null,
-        dateInShelter: item.dateInShelter || (detail && detail.dateInShelter) || null,
-        summary: (detail && detail.summary) || null,
+        dateInShelter: sameDayReturn ? existing.date_in_shelter : (item.dateInShelter || (detail && detail.dateInShelter) || null),
+        summary: stripMatchmakerPitch(detail && detail.summary),
         tags,
         photoUrl,
         videoUrl: dogVideoUrl(detail),
@@ -441,6 +468,13 @@ async function doScrape(runId, finish) {
           clearPbFlag.run(id);
           logEvent('sticker_auto_off', id, 'PB: Potty break OK', now, 'pb');
         }
+      } else if (sameDayReturn) {
+        // Nothing to bank or announce -- see the sameDayReturn comment
+        // above. Just erase the "Taken off the floor" entry this same
+        // scrape run cycle (or an earlier one, still today) logged, so the
+        // timeline doesn't show a floor trip that, as far as anyone can
+        // tell, never actually happened.
+        deleteRemovedEvent.run(id, existing.removed_at);
       } else {
         // Returning dog: bank their just-ended stay's length before
         // date_in_shelter above gets overwritten with their new stay's start

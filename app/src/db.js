@@ -225,6 +225,14 @@ if (!dogColumns.includes('alumni_flag')) {
 if (!dogColumns.includes('alumni_bonus_days')) {
   db.exec('ALTER TABLE dogs ADD COLUMN alumni_bonus_days INTEGER NOT NULL DEFAULT 0');
 }
+// Separate from the bonus days above: a privileged user vouching that a
+// dog doesn't need to sit out a stray hold the shelter's site still shows
+// (e.g. a known returning dog). Independent on purpose -- bonus days and
+// the stray-hold bypass are two different calls a staff member can make
+// about the same dog, either, neither, or both.
+if (!dogColumns.includes('alumni_bypass_stray_hold')) {
+  db.exec('ALTER TABLE dogs ADD COLUMN alumni_bypass_stray_hold INTEGER NOT NULL DEFAULT 0');
+}
 if (!dogColumns.includes('behavior_marker')) {
   db.exec("ALTER TABLE dogs ADD COLUMN behavior_marker TEXT NOT NULL DEFAULT 'none'");
 }
@@ -565,6 +573,25 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'previous_names_backfilled'"
       if (m && isRename(m[1], r.name)) setPrevious.run(withPreviousName('[]', m[1], r.name), r.id);
     }
     db.prepare("INSERT INTO app_meta (key, value) VALUES ('previous_names_backfilled', '1')").run();
+  })();
+}
+
+// Wake County's own bios end with a "reach out to our volunteer
+// matchmakers" pitch naming the dog and its shelter id (e.g. "Victorious,
+// 271977") -- it only makes sense on the shelter's own site, which already
+// has a contact form wired to that address. scraper.js now strips it before
+// a summary is ever stored (see stripMatchmakerPitch there); this one-time
+// pass cleans it out of summaries that were already saved before that.
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'matchmaker_pitch_stripped'").get()) {
+  const MATCHMAKER_PITCH_RE = /(?:<br\s*\/?>\s*){0,2}If you(?:'|&#0?39;|&rsquo;)re interested in learning more about [\w\s]{1,20}?,\s*please reach out to our volunteer matchmakers at wcac\.matchmaker@gmail\.com with the subject line\s*["“][^"”]{1,80}["”]\.?\s*(?:<br\s*\/?>\s*){0,2}/gi;
+  const dirtyRows = db.prepare("SELECT shelter_buddy_id AS id, summary FROM dogs WHERE summary LIKE '%wcac.matchmaker@gmail.com%'").all();
+  const setSummary = db.prepare('UPDATE dogs SET summary = ? WHERE shelter_buddy_id = ?');
+  db.transaction(() => {
+    for (const row of dirtyRows) {
+      const cleaned = row.summary.replace(MATCHMAKER_PITCH_RE, '').trim();
+      setSummary.run(cleaned || null, row.id);
+    }
+    db.prepare("INSERT INTO app_meta (key, value) VALUES ('matchmaker_pitch_stripped', '1')").run();
   })();
 }
 

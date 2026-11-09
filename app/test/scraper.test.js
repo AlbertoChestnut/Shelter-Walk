@@ -71,12 +71,42 @@ test('a dog missing once stays listed; missing twice is delisted (no event, no f
   await runScrape();
   assert.equal(listed(), 29, 'delisted after two misses');
   assert.equal(events('adopted'), 0, 'plain removal is not an adoption');
-  listing = dogs(30); // comes back
+  assert.equal(events('removed'), 1);
+
+  // Comes back the very next scrape -- still the same shelter day -- with a
+  // dateInShelter that differs from what it already had, the way the
+  // shelter's own listing would on a genuinely new stay.
+  const originalDateInShelter = db.prepare('SELECT date_in_shelter FROM dogs WHERE shelter_buddy_id = 1029').get().date_in_shelter;
+  listing = [...dogs(29), { shelterBuddyId: 1029, name: 'Dog29', dateInShelter: new Date().toISOString() }];
   await runScrape();
   assert.equal(listed(), 30);
-  assert.equal(events('returned'), 1);
-  const row = db.prepare("SELECT title, detail FROM shelter_events WHERE kind = 'returned' AND dog_id = 1029").get();
-  assert.equal(row.detail, 'floor_return', 'a plain delisting (never confirmed adopted) reads as back on the floor, not a return-after-adoption');
+  assert.equal(events('returned'), 0, 'a same-day return is not a new stay, so nothing is logged');
+  assert.equal(events('removed'), 0, 'the same-day removal is erased too, not left dangling as a false blip');
+  const row = db.prepare('SELECT date_in_shelter, previous_days_in_shelter FROM dogs WHERE shelter_buddy_id = 1029').get();
+  assert.equal(row.date_in_shelter, originalDateInShelter, "the stay's start date is untouched -- one continuous stay, not two");
+  assert.equal(row.previous_days_in_shelter, 0, 'nothing is banked for a stay that, same-day, never actually ended');
+});
+
+test('a dog missing twice, delisted, then returning on a LATER day is a real return', async () => {
+  const eventsFor = (kind, dogId) => db.prepare('SELECT COUNT(*) c FROM shelter_events WHERE kind = ? AND dog_id = ?').get(kind, dogId).c;
+  listing = dogs(28); // Dog28 disappears
+  await runScrape();
+  await runScrape();
+  assert.equal(listed(), 28, 'delisted after two misses');
+  assert.equal(eventsFor('adopted', 1028), 0);
+
+  // Backdate the delist itself to a prior calendar day, the way a real gap
+  // (not same-day noise) would look -- this is the one piece a short test
+  // run can't produce just by calling runScrape() in quick succession.
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('UPDATE dogs SET removed_at = ? WHERE shelter_buddy_id = 1028').run(yesterday);
+
+  listing = dogs(29); // comes back the next day
+  await runScrape();
+  assert.equal(listed(), 29);
+  assert.equal(eventsFor('returned', 1028), 1, 'a genuinely later-day return still logs normally');
+  const row = db.prepare("SELECT title, detail FROM shelter_events WHERE kind = 'returned' AND dog_id = 1028").get();
+  assert.equal(row.detail, 'floor_return');
   assert.match(row.title, /back on the adoption floor/);
 });
 

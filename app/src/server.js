@@ -384,8 +384,9 @@ function handlingWarningFor(row, userId) {
 // Precedence: too young (hard, no override) > EVO not allowed (hard, not
 // even PB) > any blue marker not allowed (hard) > pending adoption not
 // allowed (hard, beginners only) > stray hold (only PB dogs on stray hold
-// can be walked, unless Alumni -- see below) > PB (overrides the day
-// threshold when this level permits PB dogs at all) > day threshold.
+// can be walked, unless Alumni's stray-hold bypass is on -- see below) >
+// PB (overrides the day threshold when this level permits PB dogs at
+// all) > day threshold.
 // Pulled out of serializeDog so /api/walks/start can enforce this exact
 // rule too: a dog not cleared for a volunteer's level must not be walkable
 // at all, not just flagged in the UI. One function means the badge shown
@@ -430,10 +431,10 @@ function dogEligibility(row, experienceLevel) {
   } else if (isPendingAdoption && !level.allowPending) {
     eligible = false;
     notEligibleReason = 'pending_restricted';
-    // Alumni is a privileged-only override: a staff member vouching that a
-    // known returning dog doesn't need to sit out their new stray hold, so
-    // it bypasses the hold here too, not just the day threshold below.
-  } else if (isStrayHold && !pbFlag && !row.alumni_flag) {
+    // The stray-hold tag mirrors the shelter's own site -- it stays in
+    // force regardless of Alumni's bonus days. Only Alumni's separate
+    // stray-hold bypass (its own privileged-only toggle) lifts this.
+  } else if (isStrayHold && !pbFlag && !row.alumni_bypass_stray_hold) {
     eligible = false;
     notEligibleReason = 'stray_hold';
   } else if (pbFlag) {
@@ -498,12 +499,15 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     stillListed: !!row.still_listed,
     awaitingListing: !!row.awaiting_listing,
     removedAt: row.removed_at || null,
-    // Alumni (returned dog, privileged-only): bonus days count toward
-    // eligibility on top of actual time in shelter, without changing the
-    // real daysInShelter figure shown elsewhere. Also lifts the stray-hold
-    // block entirely (see dogEligibility) -- not just the day threshold.
+    // Alumni (returned dog, privileged-only): two independent toggles, not
+    // one bundled flag. Bonus days count toward eligibility on top of
+    // actual time in shelter, without changing the real daysInShelter
+    // figure shown elsewhere; the stray-hold bypass separately lifts that
+    // block entirely (see dogEligibility). A dog can have either, neither,
+    // or both.
     isAlumni: !!row.alumni_flag,
     alumniBonusDays: row.alumni_bonus_days || 0,
+    alumniBypassStrayHold: !!row.alumni_bypass_stray_hold,
     // Automatic, uncapped credit from prior stay(s) -- set when the scraper
     // detects this dog has come back after being removed/adopted before.
     previousDaysInShelter: row.previous_days_in_shelter || 0,
@@ -1105,6 +1109,21 @@ app.get('/api/dogs', (req, res) => {
   res.json({ experienceLevel, dogs });
 });
 
+// When each of this dog's currently-set stickers was last turned on, for the
+// "added <date>" line in the marker picker (see stickerDatesFor in app.js).
+// Keyed the same as STICKER_LABELS below (star/pb/poo/poo_priority/blue_*).
+// Single-dog lookup only -- the list route never needs this, so it stays out
+// of serializeDog rather than costing every dog on /api/dogs a extra query.
+const latestStickerOn = db.prepare(`
+  SELECT detail, MAX(occurred_at) AS addedAt FROM shelter_events
+  WHERE dog_id = ? AND kind = 'sticker_on' GROUP BY detail
+`);
+function stickerDatesFor(dogId) {
+  const dates = {};
+  for (const row of latestStickerOn.all(dogId)) dates[row.detail] = row.addedAt;
+  return dates;
+}
+
 app.get('/api/dogs/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const row = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(id);
@@ -1121,6 +1140,7 @@ app.get('/api/dogs/:id', (req, res) => {
     FROM walks WHERE dog_id = ? ORDER BY started_at DESC
   `).all(id);
   dog.playgroupCounts = playgroupApi.counts(id);
+  dog.stickerDates = stickerDatesFor(id);
   Object.assign(dog, modulesCore.runDogEnrichers(id, moduleState));
   res.json({ dog, walks, notes: notesApi.notesFor(id, req.me.id) });
 });
@@ -1324,10 +1344,12 @@ app.put('/api/dogs/:id/markers', (req, res) => {
 
 // Alumni (returned dog): privileged users only, enforced here server-side
 // (not just hidden in the UI) since it changes who a dog is shown as
-// eligible to. bonusDays is clamped 1-15 when alumni is being turned on.
+// eligible to. Two independent toggles -- bonusDays (clamped 1-15 when
+// alumni is on) and bypassStrayHold -- so a privileged user can set
+// either, neither, or both for the same dog.
 app.put('/api/dogs/:id/alumni', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { alumni, bonusDays } = req.body;
+  const { alumni, bonusDays, bypassStrayHold } = req.body;
   const user = resolveAuthedUser(req);
   if (!user || !user.isPrivileged) {
     return res.status(403).json({ error: 'Only privileged users can set alumni status' });
@@ -1335,12 +1357,15 @@ app.put('/api/dogs/:id/alumni', (req, res) => {
   const userId = user.id;
   const clampedBonus = alumni ? Math.min(15, Math.max(1, Math.round(Number(bonusDays) || 0))) : 0;
   const info = db.prepare(
-    'UPDATE dogs SET alumni_flag = ?, alumni_bonus_days = ? WHERE shelter_buddy_id = ?'
-  ).run(alumni ? 1 : 0, clampedBonus, id);
+    'UPDATE dogs SET alumni_flag = ?, alumni_bonus_days = ?, alumni_bypass_stray_hold = ? WHERE shelter_buddy_id = ?'
+  ).run(alumni ? 1 : 0, clampedBonus, bypassStrayHold ? 1 : 0, id);
   if (info.changes === 0) return res.status(404).json({ error: 'Dog not found' });
   const row = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?').get(id);
   const dog = serializeDog(row, resolveExperienceLevel(userId), null, userId);
-  res.json({ id, isAlumni: !!alumni, alumniBonusDays: clampedBonus, eligible: dog.eligible, notEligibleReason: dog.notEligibleReason });
+  res.json({
+    id, isAlumni: !!alumni, alumniBonusDays: clampedBonus, alumniBypassStrayHold: !!bypassStrayHold,
+    eligible: dog.eligible, notEligibleReason: dog.notEligibleReason
+  });
 });
 
 // Save a dog's kennel location without starting a walk (e.g. you're just

@@ -713,21 +713,31 @@ test('dogs on stray hold can only be walked when marked PB', async () => {
   assert.equal(free.isStrayHold, false);
 });
 
-test('Alumni overrides a stray hold, not just the day threshold', async () => {
+test('Alumni bonus days and the stray-hold bypass are independent', async () => {
   const user = 'strayhold-alumni@example.com';
   const me = (await call('GET', '/api/me', { user })).json;
   await call('PUT', `/api/users/${me.id}/settings`, { user, body: { experienceLevel: 'expert' } });
   const db = new Database(dbFile);
   const ts = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, tags, pb_flag, alumni_flag)
-    VALUES (73, 'HeldAlumni', 'Male', '3 Years', '2026-01-01T00:00:00', 1, ?, ?, ?, 0, 1)
-  `).run(ts, ts, JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']));
+  const ins = db.prepare(`
+    INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, tags, pb_flag, alumni_flag, alumni_bypass_stray_hold)
+    VALUES (?, ?, 'Male', '3 Years', '2026-01-01T00:00:00', 1, ?, ?, ?, 0, ?, ?)
+  `);
+  const strayHoldTags = JSON.stringify(['Dog', 'Shelter', 'On Stray Hold']);
+  // Bonus days alone: the shelter's own stray hold tag still wins -- Alumni's
+  // bonus days only ever moved the day threshold, never this hold.
+  ins.run(73, 'HeldBonusOnly', ts, ts, strayHoldTags, 1, 0);
+  // The dedicated bypass alone: lifts the hold even with no bonus days set.
+  ins.run(74, 'HeldBypassOnly', ts, ts, strayHoldTags, 0, 1);
   db.close();
-  const heldAlumni = (await call('GET', '/api/dogs/73', { user })).json.dog;
-  assert.equal(heldAlumni.isStrayHold, true);
-  assert.equal(heldAlumni.eligible, true, 'Alumni lifts the stray hold block entirely, not just the day threshold');
-  assert.equal(heldAlumni.notEligibleReason, null);
+  const bonusOnly = (await call('GET', '/api/dogs/73', { user })).json.dog;
+  assert.equal(bonusOnly.isStrayHold, true);
+  assert.equal(bonusOnly.eligible, false, "Alumni's bonus days alone must not lift a real stray hold");
+  assert.equal(bonusOnly.notEligibleReason, 'stray_hold');
+  const bypassOnly = (await call('GET', '/api/dogs/74', { user })).json.dog;
+  assert.equal(bypassOnly.isStrayHold, true);
+  assert.equal(bypassOnly.eligible, true, "Alumni's stray-hold bypass lifts the hold on its own, no bonus days needed");
+  assert.equal(bypassOnly.notEligibleReason, null);
 });
 
 test('/uptime answers only ok or down, with no details', async () => {

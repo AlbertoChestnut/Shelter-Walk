@@ -45,7 +45,10 @@ def http(url, headers=None, timeout=10):
         with opener.open(req, timeout=timeout) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
-        return e.code, b""
+        try:
+            return e.code, e.read()
+        except Exception:  # noqa: BLE001
+            return e.code, b""
 
 
 def check_services():
@@ -61,7 +64,13 @@ def check_dogwalk():
     try:
         status, body = http("http://127.0.0.1:3000/healthz")
         if status != 200:
-            return [f"dogwalk /healthz returned HTTP {status}"]
+            # A 503 carries the app's own reasons (e.g. the last scrape found
+            # far fewer dogs than usual); pass them on so the email says why.
+            try:
+                why = json.loads(body).get("problems") or []
+            except Exception:  # noqa: BLE001
+                why = []
+            return [f"dogwalk /healthz returned HTTP {status}"] + [f"dogwalk: {p}" for p in why]
         h = json.loads(body)
     except Exception as e:  # noqa: BLE001
         return [f"dogwalk /healthz unreachable: {e}"]

@@ -33,29 +33,52 @@ function localParts(iso) {
   return { dateKey: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
 }
 
-function tally() { return { walks: 0, seconds: 0, dogs: new Set(), walkCount: 0, walkSeconds: 0, activities: new Map() }; }
+// Averages leave out anything under a minute (an accidental scan ended right
+// away); those still count in every total.
+const { MIN_AVG_SECONDS } = statsBreakdown;
+// "2026-11-10" moved by n calendar days.
+function shiftDateKey(key, n) {
+  const d = new Date(`${key}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function tally() { return { walks: 0, seconds: 0, dogs: new Set(), walkCount: 0, walkSeconds: 0, avgCount: 0, avgSeconds: 0, activities: new Map() }; }
 function add(t, row) {
+  const seconds = row.duration_seconds || 0;
+  const averaged = seconds >= MIN_AVG_SECONDS;
   t.walks += 1;
-  t.seconds += row.duration_seconds || 0;
+  t.seconds += seconds;
   t.dogs.add(row.dog_id);
+  if (averaged) { t.avgCount += 1; t.avgSeconds += seconds; }
   const activity = row.activity || 'walk';
-  if (activity === 'walk') { t.walkCount += 1; t.walkSeconds += row.duration_seconds || 0; }
-  if (!t.activities.has(activity)) t.activities.set(activity, { count: 0, totalSeconds: 0 });
+  if (activity === 'walk' && averaged) { t.walkCount += 1; t.walkSeconds += seconds; }
+  if (!t.activities.has(activity)) t.activities.set(activity, { count: 0, totalSeconds: 0, avgCount: 0, avgSeconds: 0 });
   const a = t.activities.get(activity);
   a.count += 1;
-  a.totalSeconds += row.duration_seconds || 0;
+  a.totalSeconds += seconds;
+  if (averaged) { a.avgCount += 1; a.avgSeconds += seconds; }
 }
 // Averaging duration across every kind of interaction lumps a 10-minute
 // cuddle in with a 12-hour daycation, so this is walk-only whenever there are
 // any walks in the period, falling back to the overall average otherwise.
-function avgOf(t) { return t.walkCount > 0 ? t.walkSeconds / t.walkCount : (t.walks ? t.seconds / t.walks : 0); }
-function out(t) { return { walks: t.walks, dogs: t.dogs.size, seconds: t.seconds, avgSeconds: avgOf(t) }; }
+function avgOf(t) { return t.walkCount > 0 ? t.walkSeconds / t.walkCount : (t.avgCount ? t.avgSeconds / t.avgCount : 0); }
+// What that average is of, for its label: 'walk', the one activity every
+// averaged engagement was (a matchmaking-only day), or null for a mix. Named
+// only when at least MIN_CELL engagements make it up, like byActivityOf, so
+// it can't single out a rare one ("Average engagement" then).
+function avgActivityOf(t) {
+  if (t.walkCount > 0) return 'walk';
+  const kinds = [...t.activities.entries()].filter(([, a]) => a.avgCount > 0);
+  return kinds.length === 1 && kinds[0][1].avgCount >= MIN_CELL ? kinds[0][0] : null;
+}
+function out(t) { return { walks: t.walks, dogs: t.dogs.size, seconds: t.seconds, avgSeconds: avgOf(t), avgActivity: avgActivityOf(t) }; }
 // Per-activity counts, same MIN_CELL suppression as days/sessions get: an
 // activity type a lone volunteer did a handful of times can't be pinned on
 // them, so it's left out of the breakdown (it still counts in the totals).
 function byActivityOf(t) {
   return [...t.activities.entries()]
-    .map(([activity, a]) => ({ activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.count ? a.totalSeconds / a.count : 0 }))
+    .map(([activity, a]) => ({ activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.avgCount ? a.avgSeconds / a.avgCount : 0, avgCount: a.avgCount }))
     .filter((a) => a.count >= MIN_CELL)
     .sort((a, b) => b.count - a.count);
 }
@@ -116,7 +139,10 @@ function register(app, { db, walkableFor }) {
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE w.ended_at IS NOT NULL
     `).all();
     const all = everything.filter((r) => kinds.includes(r.species));
-    const rows = all.filter((r) => r.started_at >= since);
+    // The window is whole shelter days: today and the span - 1 days before
+    // it, so the oldest day listed is never cut short by the padding above.
+    const firstKey = span === Infinity ? '' : shiftDateKey(localParts(new Date().toISOString()).dateKey, -(span - 1));
+    const rows = all.filter((r) => r.started_at >= since && localParts(r.started_at).dateKey >= firstKey);
     const total = tally();
     for (const r of all) add(total, r);
     const pooAt = statsBreakdown.pooResolver(db);
@@ -171,10 +197,14 @@ function registerDay(app, { db, cachedPhotoUrl }) {
     // Same rule as the day list: a quiet day is not opened up, so it can't be
     // pinned on whoever happened to be there.
     if (rows.length < MIN_CELL) return res.status(404).json({ error: 'No details are shown for this day.' });
-    res.json({
-      date,
-      walks: rows.map((r, i) => ({
-        order: i + 1,
+    // Round 4: someone else's engagement has no clock times, just its
+    // session (slot, index into SLOTS, -1 outside them) and a length to the
+    // nearest 5 minutes, the same as a dog's walk history -- exact times here
+    // would undo that, and the dog list's coarse "last walked". Your own
+    // keep their times. Ordered by session, never by anyone else's real time.
+    const walks = rows.map((r) => {
+      const hour = localParts(r.started_at).hour;
+      const base = {
         dogId: r.dog_id,
         dogName: r.dog_name,
         photoUrl: cachedPhotoUrl ? cachedPhotoUrl(r.dog_id, r.photo_url) : r.photo_url,
@@ -182,12 +212,25 @@ function registerDay(app, { db, cachedPhotoUrl }) {
         pooStatus: r.poo_status,
         starFlag: !!r.star_flag,
         pbFlag: !!r.pb_flag,
-        startedAt: r.started_at,
-        endedAt: r.ended_at,
-        durationSeconds: r.duration_seconds,
+        slot: SLOTS.findIndex((s) => hour >= s.from && hour < s.to),
         activity: r.activity,
         mine: !!r.mine
-      }))
+      };
+      // Before the first session sorts first, after the last sorts last.
+      base.sortKey = base.slot >= 0 ? base.slot : (hour < SLOTS[0].from ? -1 : SLOTS.length);
+      return r.mine
+        ? { ...base, startedAt: r.started_at, endedAt: r.ended_at, durationSeconds: r.duration_seconds }
+        : { ...base, durationSeconds: Math.round((r.duration_seconds || 0) / 300) * 300 };
+    }).sort((a, b) => a.sortKey - b.sortKey || (a.mine !== b.mine ? (a.mine ? -1 : 1) : 0)
+      || (a.mine ? (a.startedAt < b.startedAt ? -1 : 1) : String(a.dogName).localeCompare(String(b.dogName)) || a.activity.localeCompare(b.activity) || a.durationSeconds - b.durationSeconds));
+    // The day's exact totals, the same numbers as its row in the Together
+    // list (a total over MIN_CELL+ engagements, like every Together figure).
+    const day = tally();
+    rows.forEach((r) => add(day, r));
+    res.json({
+      date,
+      totals: out(day),
+      walks: walks.map(({ sortKey, ...w }, i) => ({ order: i + 1, ...w }))
     });
   });
 }

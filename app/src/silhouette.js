@@ -118,6 +118,55 @@ function dogSilhouetteSvg(id) {
     '</svg>';
 }
 
-const silhouetteUrl = (id) => `/dog-silhouettes/${Number(id)}.svg?v=${SILHOUETTE_VERSION}`;
+// A sitting cat, same idea: the ID picks the build, ears, tail and colors.
+function catSilhouetteSvg(id) {
+  const rand = rng(Math.imul(Number(id) || 0, 2246822519));
+  const between = (lo, hi) => lo + rand() * (hi - lo);
+  const pick = (list) => list[Math.floor(rand() * list.length)];
 
-module.exports = { dogSilhouetteSvg, silhouetteUrl, SILHOUETTE_VERSION };
+  const bg = pick(BACKGROUNDS);
+  const coat = pick(COATS);
+  const bodyW = between(16, 24);
+  const bodyH = between(22, 28);
+  const headR = between(10, 13);
+  const earH = headR * between(0.8, 1.2);
+  const earSpread = headR * between(0.45, 0.7);
+  const tail = pick(['wrap', 'up', 'curl']);
+  const tailW = between(3.5, 5.5);
+  const facingLeft = rand() < 0.5;
+
+  const ground = 88;
+  const cx = 48;
+  const cy = ground - bodyH;
+  const hx = cx + between(-2, 3);
+  const hy = cy - bodyH * 0.45 - headR * 0.45;
+  const parts = [];
+  // Haunches and chest: a wide base narrowing to the shoulders.
+  parts.push(`<ellipse cx="${r1(cx)}" cy="${r1(cy + bodyH * 0.25)}" rx="${r1(bodyW)}" ry="${r1(bodyH * 0.75)}"/>`);
+  parts.push(`<ellipse cx="${r1(cx + bodyW * 0.15)}" cy="${r1(cy - bodyH * 0.25)}" rx="${r1(bodyW * 0.6)}" ry="${r1(bodyH * 0.55)}"/>`);
+  parts.push(`<circle cx="${r1(hx)}" cy="${r1(hy)}" r="${r1(headR)}"/>`);
+  for (const side of [-1, 1]) {
+    const ex = hx + side * earSpread;
+    parts.push(`<polygon points="${r1(ex - headR * 0.42)},${r1(hy - headR * 0.45)} ${r1(ex + side * headR * 0.12)},${r1(hy - headR * 0.6 - earH)} ${r1(ex + headR * 0.42)},${r1(hy - headR * 0.45)}"/>`);
+  }
+  const tx = cx - bodyW * 0.8;
+  const ty = ground - 3;
+  const tailPaths = {
+    wrap: `M${r1(tx)},${r1(ty)} Q${r1(cx)},${r1(ground + 4)} ${r1(cx + bodyW * 0.9)},${r1(ground - 1)}`,
+    up: `M${r1(tx)},${r1(ty)} Q${r1(tx - 14)},${r1(ty - 8)} ${r1(tx - 10)},${r1(ty - 30)}`,
+    curl: `M${r1(tx)},${r1(ty)} Q${r1(tx - 16)},${r1(ty - 2)} ${r1(tx - 12)},${r1(ty - 16)} Q${r1(tx - 9)},${r1(ty - 22)} ${r1(tx - 4)},${r1(ty - 18)}`
+  };
+  parts.push(`<path d="${tailPaths[tail]}" fill="none" stroke-width="${r1(tailW)}"/>`);
+  const flip = facingLeft ? 'translate(100 0) scale(-1 1) ' : '';
+  const eyes = [-1, 1].map((side) => `<ellipse cx="${r1(hx + side * headR * 0.38)}" cy="${r1(hy - headR * 0.05)}" rx="${r1(headR * 0.11)}" ry="${r1(headR * 0.2)}" fill="${bg}"/>`).join('');
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="200" height="200" role="img" aria-label="Cat silhouette">` +
+    `<rect width="100" height="100" fill="${bg}"/>` +
+    `<g transform="${flip}" fill="${coat}" stroke="${coat}" stroke-linecap="round" stroke-linejoin="round">${parts.join('')}${eyes}</g>` +
+    '</svg>';
+}
+
+// Cats get their own drawing at cat-<id>.svg; everything else is a dog.
+const silhouetteUrl = (id, species) => `/dog-silhouettes/${species === 'cat' ? 'cat-' : ''}${Number(id)}.svg?v=${SILHOUETTE_VERSION}`;
+
+module.exports = { dogSilhouetteSvg, catSilhouetteSvg, silhouetteUrl, SILHOUETTE_VERSION };

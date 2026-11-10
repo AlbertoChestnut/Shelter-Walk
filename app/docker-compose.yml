@@ -1,11 +1,33 @@
+# Runs the app only. You still need a reverse proxy on the host (e.g. Caddy,
+# see deploy/Caddyfile) that authenticates every request and sets
+# X-Auth-Email / X-Auth-Staff, stripping any copy the client sent. The app
+# trusts those headers completely, so it must never be reachable except
+# through that proxy.
 services:
   dogwalk:
     build: .
     container_name: dogwalk
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Host side stays on loopback: only the proxy on this machine can
+      # connect. Never publish it as "3000:3000" or "0.0.0.0:3000:3000".
+      - "127.0.0.1:3000:3000"
     volumes:
+      # Must be writable by uid 1000 (the image's "node" user).
       - ./data:/app/data
+    # EMAIL_HASH_PEPPER and INTERNAL_API_TOKEN (and optionally VAPID_*):
+    # copy deploy/env/dogwalk.env.example to app/dogwalk.env, fill it in and
+    # chmod 600 it. Keep it out of version control.
+    env_file:
+      - ./dogwalk.env
     environment:
       - PORT=3000
+      # Outside Docker, BIND_HOST must stay 127.0.0.1. Inside the container,
+      # 0.0.0.0 means the container's own network only; it is needed so the
+      # port mapping above can reach the app, and that mapping is what keeps
+      # it on the host's loopback.
+      - BIND_HOST=0.0.0.0
+      # Account deletion calls your auth service at DJANGO_INTERNAL_URL
+      # (default http://127.0.0.1:8001). Inside a container that address is
+      # the container itself, so set it (in dogwalk.env) to an address the
+      # container can reach.

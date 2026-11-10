@@ -1,16 +1,14 @@
 // My Account → Feedback & bug reports: a volunteer sends one anonymously,
 // staff read and resolve it in the Feedback inbox. Also checks the activity
 // picker: Walk on its own full-width line, Play Group with the ball.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/feedback.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3995, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_fb.db', EMAIL = 'v@example.com', STAFF = 's@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 'v@example.com', STAFF = 's@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const staff = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': STAFF, 'x-auth-staff': '1' } })).json();
     const db = new Database(DB);
@@ -19,7 +17,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const ts = new Date().toISOString();
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (70, 'Pepper', 'Female', '2 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(ts, ts);
     db.close();
-    const b = await chromium.launch();
+    const b = await launch();
     const page = async (email, headers = {}) => {
       // A phone UA, or a staff account is sent to the desktop /staff dashboard.
       const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148', extraHTTPHeaders: { 'x-auth-email': email, ...headers }, serviceWorkers: 'block' });
@@ -38,7 +36,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(Math.abs(cuddle.width - day.width) < 2, 'the other four are the same width');
     ok(/🥎/.test(await p.textContent('#activityPickRow [data-activity="playgroup"]')), 'Play Group shows the ball');
     await p.locator('#backToScanBtn2').scrollIntoViewIfNeeded();
-    await p.screenshot({ path: '/tmp/_fb1.png' });
+    await p.screenshot({ path: h.shot('fb1.png') });
 
     // The scan screens have no green bar (so no 👤): open it from Available.
     await p.click('[data-tab="available"]'); await p.waitForTimeout(300);
@@ -50,7 +48,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('#sendFeedbackBtn');
     await p.waitForFunction(() => /Sent/.test(document.getElementById('feedbackStatus').textContent));
     ok(await p.inputValue('#feedbackBody') === '', 'sent, and the box clears');
-    await p.screenshot({ path: '/tmp/_fb2.png' });
+    await p.screenshot({ path: h.shot('fb2.png') });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
 
     ({ p, ctx, errs } = await page(STAFF, { 'x-auth-staff': '1' }));
@@ -62,7 +60,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('.feedback-item [data-action="resolve"]');
     await p.waitForSelector('.feedback-item.resolved');
     ok(true, 'staff can mark it resolved');
-    await p.screenshot({ path: '/tmp/_fb3.png' });
+    await p.screenshot({ path: h.shot('fb3.png') });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
 
     // A "new feedback" notification opens the inbox: /?open=feedback.
@@ -72,5 +70,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(true, 'the notification link opens the inbox');
     await ctx.close();
     await b.close();
-  } finally { srv.kill(); fs.rmSync(DB, { force: true }); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e.message); process.exit(1); });

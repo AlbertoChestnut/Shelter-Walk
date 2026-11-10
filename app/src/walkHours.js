@@ -103,6 +103,6 @@ function walkHoursError(startedAt, endedAt) {
 }
 
 module.exports = {
-  walkWindow, walkHoursError, setScheduleSource, shelterClock, fmtMinutes, parseHours,
+  walkWindow, walkHoursError, setScheduleSource, shelterClock, shelterTimeToDate, fmtMinutes, parseHours,
   OPEN_MINUTES, CLOSE_MINUTES, OPEN_LABEL, CLOSE_LABEL, HOURS_LABEL
 };

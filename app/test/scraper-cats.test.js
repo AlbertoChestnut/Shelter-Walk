@@ -2,12 +2,9 @@
 // listing for one species never delists (or freezes) the other.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
+const { isolateEnv } = require('./_helpers');
 
-const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-scraper-cats-')), 'test.db');
-process.env.DB_PATH = dbFile;
+const { dbFile } = isolateEnv('sw-scraper-cats-');
 const db = require('../src/db');
 const { runScrape } = require('../src/scraper');
 
@@ -63,7 +60,11 @@ test('a failed cat listing keeps the cats and still refreshes the dogs', async (
 test('an empty dog listing keeps the dogs while the cats refresh', async () => {
   lists.Dog = [];
   lists.Cat = animals(2000, 21, 'Cat');
-  for (let i = 0; i < 3; i += 1) await runScrape();
+  for (let i = 0; i < 3; i += 1) {
+    await runScrape();
+    // Time between scheduled scrapes: a second miss only delists after ~50 minutes unseen.
+    db.prepare('UPDATE dogs SET last_seen_at = ? WHERE still_listed = 1').run(new Date(Date.now() - 2 * 3600000).toISOString());
+  }
   assert.equal(listed('dog'), 26);
   assert.equal(listed('cat'), 21, 'a cat that left the cat listing is delisted as usual');
 });

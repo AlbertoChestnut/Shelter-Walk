@@ -3,13 +3,11 @@
 // dog already wearing a sticker beforehand some history on the timeline too.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
 const path = require('path');
-const fs = require('fs');
 const { execFileSync } = require('child_process');
+const { isolateEnv } = require('./_helpers');
 
-const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-sticker-backfill-')), 'test.db');
-process.env.DB_PATH = dbFile;
+const { dbFile } = isolateEnv('sw-sticker-backfill-');
 const db = require('../src/db');
 
 const rerunBackfill = () => {

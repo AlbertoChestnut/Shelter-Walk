@@ -2,17 +2,10 @@
 // API side of the Dogs / Cats / Both setting. Boots the real server.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 3800 + Math.floor(Math.random() * 150);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-cats-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base; let dbFile; let server;
 
 async function call(method, url, { user = 'beginner@example.com', body } = {}) {
   const res = await fetch(base + url, {
@@ -31,11 +24,8 @@ const setPref = async (user, speciesPref) => {
 };
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) {
-    try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  server = await startServer({ prefix: 'sw-cats-' });
+  ({ base, dbFile } = server);
   await meOf('beginner@example.com');
   const db = new Database(dbFile);
   const now = new Date().toISOString();
@@ -54,7 +44,7 @@ test.before(async () => {
   ev.run('new_dog', 6002, 'Socks was added', now);
   db.close();
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
+test.after(async () => { if (server) await server.stop(); });
 
 test('/api/me carries the species table and the volunteer\'s choice', async () => {
   const me = await meOf('beginner@example.com');

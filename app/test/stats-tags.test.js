@@ -2,19 +2,12 @@
 // everyday notes (noteTags.js). Boots the real server against a throwaway DB.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 3800 + Math.floor(Math.random() * 150);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-stats-tags-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
+let base, dbFile, server;
 const ALICE = 'alice@example.com';
 const BOB = 'bob@example.com';
-let proc;
 const ids = {};
 
 async function call(method, url, { user = ALICE, body } = {}) {
@@ -25,11 +18,8 @@ async function call(method, url, { user = ALICE, body } = {}) {
 }
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) {
-    try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  server = await startServer({ prefix: 'sw-stats-tags-' });
+  ({ base, dbFile } = server);
   ids.alice = (await call('GET', '/api/me')).json.id;
   ids.bob = (await call('GET', '/api/me', { user: BOB })).json.id;
   const db = new Database(dbFile);
@@ -41,6 +31,10 @@ test.before(async () => {
   ins.run(2, 'Fido', 'dog', '3 Years', '["Dog"]', old, now, now, 'none');
   ins.run(3, 'Pip', 'cat', '9 Weeks', '["Cat","Kitten"]', old, now, now, 'none');
   ins.run(4, 'Tom', 'cat', '3 Years', '["Cat"]', old, now, now, 'none');
+  // Listed but in foster: never in the "right now" counts, only inFoster.
+  ins.run(5, 'Bo', 'dog', '3 Years', '["Dog"]', old, now, now, 'poo');
+  ins.run(6, 'Mia', 'cat', '9 Weeks', '["Cat","Kitten"]', old, now, now, 'none');
+  db.prepare("UPDATE dogs SET location = 'In Foster' WHERE shelter_buddy_id IN (5, 6)").run();
   // Rex got POO two days ago: his walk before that was a non-POO walk.
   db.prepare("INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES ('sticker_on', 1, 'POO', 'poo', ?)").run(new Date(Date.now() - 2 * 864e5).toISOString());
   const w = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, activity) VALUES (?, ?, ?, ?, ?, ?)');
@@ -52,7 +46,7 @@ test.before(async () => {
   w.run(4, ids.alice, ago(15), ago(10), 300, 'matchmaking');
   db.close();
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
+test.after(async () => { if (server) await server.stop(); });
 
 test('stats narrow to one species, and Both adds them up', async () => {
   const dogs = (await call('GET', '/api/stats?userId=1&species=dog')).json;
@@ -85,6 +79,8 @@ test('shelterNow: what is listed right now, and what this volunteer did today', 
   assert.deepEqual(both.shelterNow.dog.counts, { total: 2, walkable: 2, poo: 1, nonPoo: 1 });
   assert.deepEqual(both.shelterNow.dog.today, { total: 2, walkable: 2, poo: 1, nonPoo: 1 });
   assert.deepEqual(both.shelterNow.cat.counts, { total: 2, young: 1, adult: 1 });
+  assert.equal(both.shelterNow.dog.inFoster, 1, 'a dog in foster is counted on its own');
+  assert.equal(both.shelterNow.cat.inFoster, 1, 'so is a cat in foster');
   const bob = (await call('GET', '/api/stats?userId=1&species=dog', { user: BOB })).json;
   assert.equal(bob.totals.totalWalks, 0, 'stats are only ever your own');
   assert.deepEqual(bob.shelterNow.dog.today, {});
@@ -95,6 +91,8 @@ test('Together narrows by species too', async () => {
   const cats = (await call('GET', '/api/impact?days=all&species=cat')).json;
   assert.equal(cats.allTime.walks, 2);
   assert.deepEqual(Object.keys(cats.shelterNow), ['cat']);
+  assert.deepEqual(cats.shelterNow.cat.counts, { total: 2, young: 1, adult: 1 }, 'Together leaves foster cats out too');
+  assert.equal(cats.shelterNow.cat.inFoster, 1);
   const dogs = (await call('GET', '/api/impact?days=all&species=dog')).json;
   assert.equal(dogs.allTime.walks, 3);
   assert.deepEqual(dogs.allTime.byPoo, [], 'slices under the minimum are left out');

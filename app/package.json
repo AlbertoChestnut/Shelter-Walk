@@ -7,8 +7,12 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test \"test/*.test.js\"",
-    "smoke": "node smoke/smoke.js"
+    "test": "NODE_OPTIONS=--require=./test/_clock.js node --test \"test/*.test.js\"",
+    "test:tz": "TZ=UTC npm test && TZ=America/New_York npm test",
+    "smoke": "node smoke/smoke.js",
+    "smoke:all": "node smoke/_run-all.js",
+    "check": "find src public/js modules -name '*.js' ! -name '*.min.js' -print0 | xargs -0 -n1 node --check",
+    "test:real-clock": "TEST_CLOCK=real node --test \"test/*.test.js\""
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
@@ -17,9 +21,13 @@
     "node-cron": "^4.6.0",
     "pdfkit": "^0.15.0",
     "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
     "web-push": "^3.6.7"
   },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  },
   "overrides": {
-    "qs": "^6.16.0"
+    "qs": "^6.17.1"
   }
 }

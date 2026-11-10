@@ -3,16 +3,14 @@
 // non-POO dog" nudge linking to the Guide section; a non-POO dog, or the
 // evening, gets none. PB dogs count as POO. A POO* dog gets its own
 // warning from 4 to 5:30pm and otherwise the POO tip.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/walk-timing-hint.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3994, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_wth.db', EMAIL = 't@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3'); const fs = require('fs');
+let base, DB; const EMAIL = 't@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB);
     // That section comes from the shelter's own starter text (wikiSeed.js),
@@ -32,9 +30,9 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at, poo_status, pb_flag) VALUES (75, 'Moose', 'Male', '6 Years', '2026-07-01T00:00:00', 1, ?, ?, 'priority', 1)").run(ts, ts);
     db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, activity) VALUES (70, ?, 'D', '2026-10-10T12:00:00.000Z', '2026-10-10T12:20:00.000Z', 1200, 'walk')").run(me.id);
     db.close();
-    const b = await chromium.launch();
+    const b = await launch();
     const open = async (iso, dogId) => {
-      const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York', extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
+      const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
       const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
       await p.clock.install({ time: new Date(iso) });
       await p.goto(base, { waitUntil: 'networkidle' });
@@ -43,7 +41,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     };
     let { p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 70);
     ok(/POOs will have a guaranteed walk from 4-7 PM/.test(await p.textContent('.timing-hint')), 'mid-day 2nd walk of a POO dog gets the tip');
-    await p.screenshot({ path: '/tmp/_wth1.png' });
+    await p.screenshot({ path: h.shot('wth1.png') });
     await p.click('#timingHintGuideBtn');
     if (hasSeed) {
       await p.waitForSelector('.guide-article');
@@ -52,7 +50,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
       await p.waitForSelector('#guideList');
       ok(true, 'tip link opens the Guide (no Which dogs section without wikiSeed.js)');
     }
-    await p.screenshot({ path: '/tmp/_wth2.png', fullPage: true });
+    await p.screenshot({ path: h.shot('wth2.png'), fullPage: true });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
     ({ p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 71));
     ok(/POOs will have a guaranteed walk from 4-7 PM/.test(await p.textContent('.timing-hint')), 'mid-day 1st walk of a POO dog now gets the tip too');
@@ -82,5 +80,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
       await ctx.close();
     }
     await b.close();
-  } finally { srv.kill(); fs.rmSync(DB, { force: true }); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e.message); process.exit(1); });

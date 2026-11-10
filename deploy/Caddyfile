@@ -14,6 +14,16 @@ shelterwalk.com {
 	encode gzip
 	import security_headers
 
+	# The app trusts X-Auth-Email / X-Auth-Staff completely, so drop any
+	# copy a client sent before anything else runs. On some Caddy versions
+	# (2.10.2 does, 2.11.9 doesn't) a header the auth service leaves out,
+	# e.g. X-Auth-Staff for a non-staff account, passes straight through
+	# forward_auth's copy_headers, and the unauthenticated handles below
+	# would forward client copies as-is on any version. This covers every
+	# handle in this site block, since request_header runs first.
+	request_header -X-Auth-Email
+	request_header -X-Auth-Staff
+
 	# The PWA manifest and its icons have to be reachable without a session
 	# cookie -- Chrome's "Install app" criteria fetches them itself and
 	# doesn't reliably do so as an authenticated request, so gating them
@@ -39,7 +49,9 @@ shelterwalk.com {
 		#   X-Auth-Email  a stable identifier for the signed-in account, an
 		#                 email or any placeholder (the app trusts this
 		#                 completely, so nothing but Caddy may ever set it)
-		#   X-Auth-Staff  "1" for staff/admin accounts, otherwise absent
+		#   X-Auth-Staff  "1" for staff/admin accounts; anything else, or no
+		#                 header, means not staff (sending "0" explicitly is
+		#                 safest)
 		forward_auth 127.0.0.1:8001 {
 			uri /internal/authcheck/
 			copy_headers X-Auth-Email X-Auth-Staff

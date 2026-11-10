@@ -2,16 +2,16 @@
 // adopting, back at the shelter. Pushes are captured, not sent.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
+const { isolateEnv } = require('./_helpers');
 
-process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-favscrape-')), 'test.db');
+isolateEnv('sw-favscrape-');
 const db = require('../src/db');
 const push = require('../src/push');
 const sent = [];
 push.sendPushToUser = async (userId, payload) => { sent.push({ userId, ...payload }); };
-const { runScrape } = require('../src/scraper');
+const { runScrape, testHooks } = require('../src/scraper');
+// Scraper pushes are held overnight; these tests run "at noon" shelter time.
+testHooks.now = () => new Date('2026-11-10T17:00:00Z');
 
 const PENDING = "I'm getting adopted!";
 let listing = [];

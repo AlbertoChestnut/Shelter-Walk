@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly backup of the dog-walk tracker's cached dog photos
+Description=Weekly backup of the dog-walk tracker's dog photos and Guide images
 
 [Timer]
 OnCalendar=Sun *-*-* 03:45:00

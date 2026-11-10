@@ -2,10 +2,21 @@
 // is often spotty, so the app should still show the last-known data (with
 // the page's own "Offline" banner) instead of going blank on a dropped
 // connection.
-const CACHE_NAME = 'shelter-walk-v7';
+// v10: personal API answers are no longer kept (mayKeepApiCopy), and the
+// version bump drops any that v9 stored.
+const CACHE_NAME = 'shelter-walk-v10';
+// Versioned css/js (?v=, which changes on every restart; see ASSET_VERSION
+// in server.js) and photos each get their own cache, so old versions can be
+// dropped and photos capped without touching the rest.
+const ASSET_CACHE = 'shelter-walk-assets-v1';
+const PHOTO_CACHE = 'shelter-walk-photos-v1';
+const KEEP_CACHES = [CACHE_NAME, ASSET_CACHE, PHOTO_CACHE];
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
+// Cap on cached photos (dog photos, silhouettes, Guide images): enough for
+// everyone at the shelter plus a good share of the alumni.
+const MAX_PHOTO_ENTRIES = 400;
 // Only truly static, unversioned assets are pre-cached here -- app.js/
 // style.css are served with a cache-busting ?v= query string that changes
 // on every deploy (see ASSET_VERSION in server.js), so pre-caching a bare
@@ -22,7 +33,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => !KEEP_CACHES.includes(k)).map((k) => caches.delete(k))))
   );
   self.clients.claim();
 });
@@ -34,22 +45,32 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   // API data: network-first, falling back to the last successful response
-  // when offline (so the Available list etc. show stale-but-usable data
-  // rather than an error).
+  // when the network fails (offline, or shelter wifi that's connected but not
+  // really working), marked with X-SW-Stale: 1 so the page says so. An
+  // expired sign-in is told apart: the login gate answers with a redirect,
+  // which redirect:'manual' sees as an opaqueredirect instead of a network
+  // error, and that becomes the same 401 the server sends for an expired
+  // session (app.js then offers to sign in again) rather than old data.
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
-      fetch(req)
+      fetch(new Request(req, { redirect: 'manual' }))
         .then((res) => {
-          if (res.ok) {
+          if (res.type === 'opaqueredirect') {
+            return new Response(
+              JSON.stringify({ error: 'Your sign-in has expired. Reload the page to sign in again.', sessionExpired: true }),
+              { status: 401, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          if (res.ok && mayKeepApiCopy(url, res)) {
             const copy = res.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(req, copy)).then(trimApiCache);
           }
           return res;
         })
-        .catch(() => caches.match(req).then((cached) => cached || new Response(
-          JSON.stringify({ error: "You're offline and this hasn't been loaded before." }),
+        .catch(() => (neverStale(url) ? Promise.resolve(null) : caches.match(req, { cacheName: CACHE_NAME })).then((cached) => (cached ? markStale(cached) : new Response(
+          JSON.stringify({ error: "Couldn't reach the server, and this hasn't been loaded before. Check your connection and try again." }),
           { status: 503, headers: { 'Content-Type': 'application/json' } }
-        )))
+        ))))
     );
     return;
   }
@@ -80,15 +101,21 @@ self.addEventListener('fetch', (event) => {
   // Assets whose URL changes when their content does (?v= css/js, cached
   // dog photos, content-hashed wiki uploads): cache-first is safe -- a cached
   // copy is by definition still the right one.
-  const immutable = url.search.includes('v=') || url.pathname.startsWith('/cached-images/') || url.pathname.startsWith('/wiki-images/');
+  // Each URL path keeps only its newest ?v= copy, and photos are capped.
+  const photo = /^\/(cached-images|wiki-images|dog-silhouettes)\//.test(url.pathname);
+  const immutable = photo || url.searchParams.has('v');
   if (immutable) {
+    const cacheName = photo ? PHOTO_CACHE : ASSET_CACHE;
     event.respondWith(
-      caches.match(req).then((cached) => {
+      caches.match(req, { cacheName }).then((cached) => {
         if (cached) return cached;
         return fetch(req).then((res) => {
           if (res.ok) {
             const copy = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+            caches.open(cacheName)
+              .then((cache) => dropOtherVersions(cache, url).then(() => cache.put(req, copy)))
+              .then(() => (photo ? trimCache(PHOTO_CACHE, MAX_PHOTO_ENTRIES) : null))
+              .catch(() => {});
           }
           return res;
         });
@@ -116,12 +143,52 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// Personal answers are never kept for offline use: the server marks them
+// no-store (or private), and the data export is never kept whatever it says.
+// On a shared shelter phone the next volunteer must not be shown them.
+function mayKeepApiCopy(url, res) {
+  if (url.pathname.replace(/\/+$/, '') === '/api/me/export') return false;
+  if (neverStale(url)) return false;
+  const cc = (res.headers.get('Cache-Control') || '').toLowerCase();
+  return !/\b(no-store|private)\b/.test(cc);
+}
+
+// Whether a walk is under way is never answered from a saved copy, whatever
+// its headers say: an old "no walk" (or an old walk) would be wrong in a way
+// that matters. Offline, the app shows the walk from its own copy instead
+// (app.js, "This device's copy of the walk").
+function neverStale(url) {
+  return /^\/api\/walks(\/|$)/.test(url.pathname);
+}
+
 function trimApiCache() {
   return caches.open(CACHE_NAME).then((cache) => cache.keys().then((keys) => {
     const api = keys.filter((k) => new URL(k.url).pathname.startsWith('/api/'));
     // keys() is insertion-ordered, so the front of the list is the oldest.
     return Promise.all(api.slice(0, Math.max(0, api.length - MAX_API_ENTRIES)).map((k) => cache.delete(k)));
   }));
+}
+
+function trimCache(cacheName, max) {
+  return caches.open(cacheName).then((cache) => cache.keys().then((keys) => (
+    Promise.all(keys.slice(0, Math.max(0, keys.length - max)).map((k) => cache.delete(k)))
+  )));
+}
+
+// A new ?v= of the same file (app.js after a deploy, a dog's replaced
+// photo) makes every older copy dead weight.
+function dropOtherVersions(cache, url) {
+  return cache.keys().then((keys) => Promise.all(keys
+    .filter((k) => { const u = new URL(k.url); return u.pathname === url.pathname && u.search !== url.search; })
+    .map((k) => cache.delete(k))));
+}
+
+// A cached API response served while offline, marked so the page can say
+// the data may be out of date.
+function markStale(res) {
+  const headers = new Headers(res.headers);
+  headers.set('X-SW-Stale', '1');
+  return res.blob().then((body) => new Response(body, { status: res.status, statusText: res.statusText, headers }));
 }
 
 // A dog photo for a notification, as a data: URL. Photos are behind the

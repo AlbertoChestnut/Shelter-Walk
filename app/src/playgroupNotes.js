@@ -19,6 +19,7 @@
 // rendered on top of the escaped text, same as the Guide's but without
 // links or images.
 const ExcelJS = require('exceljs');
+const { noteDay } = require('./noteTags');
 
 const MAX_BODY = 4000;
 const MAX_NOTES_PER_DOG = 300;
@@ -63,13 +64,18 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   };
 
   const canChange = (req, note) => !note.signed || note.user_id === req.me.id || isStaffOrPrivileged(req, req.me);
+  // When an entry was typed and edited: the exact time only on a signed
+  // entry, to its own writer. Everyone else (and anyone at all for an
+  // unsigned one) gets the shelter date, so the time can't be matched to who
+  // was at the shelter then.
+  const whenFor = (req, n, iso) => (n.signed && n.user_id === req.me.id ? iso : noteDay(iso));
   const shape = (req, n) => ({
     id: n.id,
     dogId: n.dog_id,
     body: n.body,
     noteDate: n.note_date,
-    createdAt: n.created_at,
-    updatedAt: n.updated_at,
+    createdAt: whenFor(req, n, n.created_at),
+    updatedAt: whenFor(req, n, n.updated_at),
     author: n.signed ? n.author || null : null,
     signed: !!n.signed,
     // Only ever true for the asker's own entries, so it says nothing about
@@ -167,7 +173,12 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   // Every note matching the filters, newest first, with
   // names for every dog involved. from/to are YYYY-MM-DD (inclusive); q
   // matches the dog's name, the note (tags read as names) or who signed it.
-  const nameRow = db.prepare('SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation, still_listed AS stillListed FROM dogs WHERE shelter_buddy_id = ?');
+  // lastEvent: same rule as /counts below, so the volunteer app can say
+  // "Adopted" / "Left shelter" exactly like the desk does.
+  const nameRow = db.prepare(`SELECT shelter_buddy_id AS id, name, photo_url AS photoUrl, kennel_location AS kennelLocation, still_listed AS stillListed,
+      (SELECT e.kind FROM shelter_events e WHERE e.dog_id = dogs.shelter_buddy_id AND e.kind IN ('adopted', 'returned')
+        ORDER BY e.occurred_at DESC LIMIT 1) AS lastEvent
+    FROM dogs WHERE shelter_buddy_id = ?`);
   function allNotes(req, { from, to, q, dog } = {}) {
     const where = [];
     const args = [];
@@ -181,7 +192,12 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
       if (!(id in dogs)) {
         const d = nameRow.get(id);
         if (d && cachedPhotoUrl) d.photoUrl = cachedPhotoUrl(d.id, d.photoUrl);
-        dogs[id] = d ? { ...d, stillListed: !!d.stillListed } : null;
+        if (d) {
+          d.stillListed = !!d.stillListed;
+          d.adopted = !d.stillListed && d.lastEvent === 'adopted';
+          delete d.lastEvent;
+        }
+        dogs[id] = d || null;
       }
       return dogs[id];
     };
@@ -211,9 +227,16 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl }) {
   // (not in the listed-dogs feed) still show there with their notes.
   app.get('/api/playgroup-notes/counts', (req, res) => {
     const counts = {};
-    for (const r of db.prepare(`SELECT p.dog_id, COUNT(*) AS c, MAX(p.note_date) AS last, d.name, d.kennel_location, d.still_listed
+    // adopted: the dog's latest adopted/returned event is an adoption, so the
+    // desk can say "Adopted" rather than a vague "left".
+    for (const r of db.prepare(`SELECT p.dog_id, COUNT(*) AS c, MAX(p.note_date) AS last, d.name, d.kennel_location, d.still_listed,
+        (SELECT e.kind FROM shelter_events e WHERE e.dog_id = p.dog_id AND e.kind IN ('adopted', 'returned')
+          ORDER BY e.occurred_at DESC LIMIT 1) AS last_event
       FROM playgroup_notes p JOIN dogs d ON d.shelter_buddy_id = p.dog_id GROUP BY p.dog_id`).all()) {
-      counts[r.dog_id] = { notes: r.c, last: r.last, name: r.name, kennelLocation: r.kennel_location, stillListed: !!r.still_listed };
+      counts[r.dog_id] = {
+        notes: r.c, last: r.last, name: r.name, kennelLocation: r.kennel_location, stillListed: !!r.still_listed,
+        adopted: !r.still_listed && r.last_event === 'adopted'
+      };
     }
     res.json({ counts });
   });

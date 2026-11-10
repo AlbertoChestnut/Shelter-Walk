@@ -3,26 +3,23 @@
 // gets the "closed today" notice once, sees the alert under Updates ->
 // Alerts, and has shelter alerts on in Settings (the admin-only signup
 // toggle shows only for privileged accounts).
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/shelter-hours.js
 process.env.TZ = 'America/New_York';
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3993, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_shelterhours.db', EMAIL = 'v@example.com', STAFF = 's@example.com';
-const SHOTS = process.env.SHOTS || '/tmp';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 'v@example.com', STAFF = 's@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     for (const e of [EMAIL, STAFF]) await fetch(base + '/api/me', { headers: { 'x-auth-email': e } });
     const db = new Database(DB);
     db.prepare("UPDATE users SET experience_level='beginner', onboarding_completed=1").run();
     db.close();
-    const b = await chromium.launch();
+    const b = await launch();
 
     // Staff: close today with a note and an alert, send a second alert, change Sunday's hours.
-    const sctx = await b.newContext({ viewport: { width: 1400, height: 1000 }, timezoneId: 'America/New_York', extraHTTPHeaders: { 'x-auth-email': STAFF, 'x-auth-staff': '1' } });
+    const sctx = await b.newContext({ viewport: { width: 1400, height: 1000 },extraHTTPHeaders: { 'x-auth-email': STAFF, 'x-auth-staff': '1' } });
     const s = await sctx.newPage(); const serrs = []; s.on('pageerror', (e) => serrs.push(e.message));
     s.on('dialog', (d) => d.accept());
     await s.goto(base + '/staff', { waitUntil: 'networkidle' });
@@ -46,17 +43,17 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await s.click('#weeklyForm button[type="submit"]');
     await s.waitForFunction(() => document.getElementById('weeklyStatus').textContent === 'Saved.');
     ok(true, 'weekly hours saved');
-    await s.screenshot({ path: `${SHOTS}/staff-hours.png`, fullPage: true });
+    await s.screenshot({ path: h.shot('staff-hours.png'), fullPage: true });
     ok(!serrs.length, 'no staff page errors' + (serrs.length ? ': ' + serrs.join('; ') : ''));
 
     // Volunteer: the day notice, once.
-    const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York', extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
+    const ctx = await b.newContext({ viewport: { width: 390, height: 844 },extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.goto(base, { waitUntil: 'networkidle' });
     await p.waitForSelector('#appDialog:not(.hidden)');
     ok(/closed today/.test(await p.textContent('#appDialogTitle')), 'opening the app on a closed day says so');
     ok(/Emergency renovation/.test(await p.textContent('#appDialogMessage')), '...with the staff note');
-    await p.screenshot({ path: `${SHOTS}/day-notice.png` });
+    await p.screenshot({ path: h.shot('day-notice.png') });
     await p.click('#appDialogOk');
     await p.reload({ waitUntil: 'networkidle' });
     await p.waitForTimeout(500);
@@ -70,7 +67,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('[data-updates-kind="alert"]');
     await p.waitForFunction(() => /2 alerts/.test((document.querySelector('.result-count') || {}).textContent || ''));
     ok(true, 'the Alerts chip filters to alerts');
-    await p.screenshot({ path: `${SHOTS}/updates-alerts.png` });
+    await p.screenshot({ path: h.shot('updates-alerts.png') });
 
     // Settings: shelter alerts on by default; admin toggle hidden for a non-admin.
     await p.click('#settingsBtn');
@@ -87,7 +84,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.waitForSelector('#settingsSheet:not(.hidden)');
     await p.waitForFunction(() => !document.getElementById('settingsNewSignupsRow').classList.contains('hidden'));
     ok(await p.isChecked('#settingsPrefNewSignups'), 'admins see the signup toggle, on by default');
-    await p.screenshot({ path: `${SHOTS}/settings-admin.png`, fullPage: true });
+    await p.screenshot({ path: h.shot('settings-admin.png'), fullPage: true });
     await b.close();
-  } finally { srv.kill(); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e); process.exit(1); });

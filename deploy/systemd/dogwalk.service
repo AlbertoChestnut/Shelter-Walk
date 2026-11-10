@@ -9,8 +9,8 @@ Group=dogwalk
 WorkingDirectory=/opt/dogwalk/app
 Environment=PORT=3000
 Environment=NODE_ENV=production
-# INTERNAL_API_TOKEN, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT live here,
-# never in this file (see deploy/env/dogwalk.env.example).
+# INTERNAL_API_TOKEN, EMAIL_HASH_PEPPER and the VAPID_* keys live here, never
+# in this file (see deploy/env/dogwalk.env.example and the README's env table).
 EnvironmentFile=/etc/dogwalk/env
 ExecStart=/usr/bin/node src/server.js
 Restart=on-failure

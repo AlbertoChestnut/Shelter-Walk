@@ -10,23 +10,50 @@ const BASE = 'https://pets.wake.gov';
 const USER_AGENT = 'dogwalk-personal-tracker/1.0 (+personal use, low frequency scrape)';
 
 // Cached forever once downloaded, so a dog's photo survives their listing
-// being pulled from pets.wake.gov after adoption.
-const IMAGES_DIR = path.join(__dirname, '..', 'data', 'images');
+// being pulled from pets.wake.gov after adoption. IMAGES_DIR lets tests and
+// throwaway servers use their own folder instead of the real one.
+const IMAGES_DIR = process.env.IMAGES_DIR || path.join(__dirname, '..', 'data', 'images');
 fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
 // Retries a couple times (a dog whose very first photo-cache attempt fails
 // and who then gets adopted before the next scrape would otherwise lose its
 // photo forever, since it drops out of the list we scrape once removed --
 // this actually happened once, hence the retry rather than a single try).
-// `force` re-downloads even if a cached file already exists -- used when the
-// shelter's photo URL for this dog has changed since the last scrape (a new,
-// usually better, photo replaced the old one).
-async function cacheImageIfNeeded(id, photoUrl, force = false, attempt = 1) {
-  if (!photoUrl) return;
-  const filePath = path.join(IMAGES_DIR, `${id}.jpg`);
-  if (!force && fs.existsSync(filePath)) return;
+//
+// The shelter's image host reuses the same URL (e.g. ".../273442_1.jpg")
+// when staff replace a dog's photo -- the new file lands in the same slot
+// instead of getting its own filename -- so "the URL hasn't changed" can't
+// tell us the cached file is still current. A conditional GET against the
+// exact Last-Modified we saved last time lets the shelter's own server tell
+// us that cheaply (a 304 has no body), checked on every scrape rather than
+// only when the URL itself happens to change.
+//
+// The .lastmod sidecar holds the URL on its first line and the date on its
+// second: a date saved for a different URL (the dog got a new photo slot)
+// says nothing about the new file, and sending it could get a 304 that keeps
+// the old photo. Old one-line sidecars have no URL, so they just re-fetch once.
+function readLastModified(metaPath, photoUrl) {
   try {
-    const res = await fetch(photoUrl, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const [url, lastModified] = fs.readFileSync(metaPath, 'utf8').split('\n').map((s) => s.trim());
+    return url === photoUrl && lastModified ? lastModified : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// A shelter animal id is plain digits (it becomes part of file paths below).
+const validShelterId = (id) => /^\d{1,12}$/.test(String(id));
+
+async function cacheImageIfNeeded(id, photoUrl, attempt = 1) {
+  if (!photoUrl || !validShelterId(id)) return;
+  const filePath = path.join(IMAGES_DIR, `${id}.jpg`);
+  const metaPath = `${filePath}.lastmod`;
+  const headers = { 'User-Agent': USER_AGENT };
+  const savedLastModified = fs.existsSync(filePath) ? readLastModified(metaPath, photoUrl) : null;
+  if (savedLastModified) headers['If-Modified-Since'] = savedLastModified;
+  try {
+    const res = await fetch(photoUrl, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (res.status === 304) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const type = res.headers.get('content-type') || '';
     const buffer = Buffer.from(await res.arrayBuffer());
@@ -38,17 +65,26 @@ async function cacheImageIfNeeded(id, photoUrl, force = false, attempt = 1) {
     const tmpPath = `${filePath}.tmp`;
     fs.writeFileSync(tmpPath, buffer);
     fs.renameSync(tmpPath, filePath);
+    const lastModified = res.headers.get('last-modified');
+    // Without a Last-Modified to compare against next time, a stale sidecar
+    // would make us send a conditional GET keyed to an unrelated old date --
+    // drop it so the next scrape just re-fetches unconditionally instead.
+    if (lastModified) fs.writeFileSync(metaPath, `${photoUrl}\n${lastModified}`);
+    else fs.rmSync(metaPath, { force: true });
   } catch (err) {
     if (attempt < 3) {
       await sleep(1000 * attempt);
-      return cacheImageIfNeeded(id, photoUrl, force, attempt + 1);
+      return cacheImageIfNeeded(id, photoUrl, attempt + 1);
     }
     console.warn(`[scraper] failed to cache image for ${id} after ${attempt} attempts:`, err.message);
   }
 }
 
+// SCRAPER_DELAY_SCALE multiplies every pause (default 1); tests set 0.
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const scale = Number(process.env.SCRAPER_DELAY_SCALE ?? 1);
+  const wait = ms * (Number.isFinite(scale) && scale >= 0 ? scale : 1);
+  return new Promise((resolve) => setTimeout(resolve, wait));
 }
 
 // No request may hang forever: a stalled socket would otherwise hold the
@@ -84,10 +120,27 @@ async function fetchJson(url, options = {}, attempts = 3) {
 }
 
 // One species' adoption listing (`listing` = 'Dog' or 'Cat', see species.js).
+// Follows paging.totalRecordCount past the first page of 500, so a busy
+// shelter never silently loses its newest arrivals off the end.
+const LIST_PAGE_SIZE = 500;
+const MAX_LIST_PAGES = 10;
 async function fetchAnimalList(listing) {
+  const first = await fetchAnimalListPage(listing, 1);
+  const items = [...(first.data || [])];
+  const total = Number(first.paging && first.paging.totalRecordCount) || 0;
+  for (let page = 2; page <= MAX_LIST_PAGES && items.length < total; page += 1) {
+    await sleep(250);
+    const more = (await fetchAnimalListPage(listing, page)).data || [];
+    if (!more.length) break;
+    items.push(...more);
+  }
+  return items;
+}
+
+async function fetchAnimalListPage(listing, pageNumber) {
   const body = {
-    pageNumber: 1,
-    pageSize: 500,
+    pageNumber,
+    pageSize: LIST_PAGE_SIZE,
     shelterBuddyId: '',
     species: listing,
     tag: '',
@@ -98,12 +151,11 @@ async function fetchAnimalList(listing) {
     sortAscending: true,
     excludePendingAdoptions: false
   };
-  const json = await fetchJson(`${BASE}/api/animals/adopt/`, {
+  return fetchJson(`${BASE}/api/animals/adopt/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  return json.data || [];
 }
 
 function resolvePhotoUrl(relativePath) {
@@ -212,7 +264,19 @@ const finishRun = db.prepare('UPDATE scrape_runs SET finished_at = ?, ok = ?, do
 
 const getDogRow = db.prepare('SELECT * FROM dogs WHERE shelter_buddy_id = ?');
 const setPreviousNames = db.prepare('UPDATE dogs SET previous_names = ? WHERE shelter_buddy_id = ?');
-const getStillListed = db.prepare('SELECT shelter_buddy_id AS id, name, species, missed_scrapes AS missed FROM dogs WHERE still_listed = 1');
+const getStillListed = db.prepare('SELECT shelter_buddy_id AS id, name, species, missed_scrapes AS missed, last_seen_at AS lastSeenAt FROM dogs WHERE still_listed = 1');
+// Plain removals from the last few days, for reconcileAdoptions: only dogs
+// still off the listing that have never had an adoption logged. (A dog
+// adopted before, returned, and now gone again could still be on the
+// shelter's adopted list from that first time, so it's left as a removal
+// rather than guessed at.)
+const getRecentRemovals = db.prepare(`
+  SELECT e.id AS eventId, e.dog_id AS id, e.occurred_at AS occurredAt, d.name, d.species
+  FROM shelter_events e JOIN dogs d ON d.shelter_buddy_id = e.dog_id
+  WHERE e.kind = 'removed' AND e.occurred_at >= ? AND d.still_listed = 0
+    AND NOT EXISTS (SELECT 1 FROM shelter_events a WHERE a.dog_id = e.dog_id AND a.kind = 'adopted')
+`);
+const removalToAdoption = db.prepare("UPDATE shelter_events SET kind = 'adopted', title = ? WHERE id = ? AND kind = 'removed'");
 const addPreviousDays = db.prepare('UPDATE dogs SET previous_days_in_shelter = previous_days_in_shelter + ? WHERE shelter_buddy_id = ?');
 // Was the stay that just ended actually an adoption, or a plain delisting
 // (the scraper never logs an event for that case -- see the comment where
@@ -259,15 +323,61 @@ const PENDING_ADOPTION_TAG = "I'm getting adopted!";
 const STRAY_HOLD_TAG = 'On Stray Hold';
 const clearPbFlag = db.prepare("UPDATE dogs SET pb_flag = 0 WHERE shelter_buddy_id = ?");
 
+// Versioned by mtime like server.js's cachedPhotoUrl, so a replaced photo
+// isn't served from a 30-day browser cache.
 function dogImageUrl(dogId) {
-  return fs.existsSync(path.join(IMAGES_DIR, `${dogId}.jpg`)) ? `/cached-images/${dogId}.jpg` : undefined;
+  try {
+    return `/cached-images/${dogId}.jpg?v=${Math.floor(fs.statSync(path.join(IMAGES_DIR, `${dogId}.jpg`)).mtimeMs)}`;
+  } catch (err) {
+    return undefined;
+  }
+}
+
+// Scraper news (adopted, pending, back at the shelter) is never urgent: it
+// keeps for a day if a phone is offline, and isn't pushed at all overnight.
+// A restart at 2am runs a scrape right away, and nobody wants "Rex was
+// adopted!" buzzing them awake. Quiet-hour news isn't queued for the
+// morning; it's still logged, so it shows in the Updates feed and the dog's
+// timeline as usual.
+const SCRAPER_PUSH_OPTIONS = { TTL: 24 * 60 * 60, urgency: 'normal' };
+const PUSH_HOURS = { start: 7, end: 21 }; // shelter time, 7am to 9pm
+const shelterHourFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' });
+// Tests swap the clock to check quiet hours.
+const testHooks = { now: () => new Date() };
+function inQuietHours() {
+  const hour = Number(shelterHourFmt.format(testHooks.now())) % 24;
+  return hour < PUSH_HOURS.start || hour >= PUSH_HOURS.end;
+}
+function sendScraperPush(userId, payload) {
+  if (inQuietHours()) return;
+  sendPushToUser(userId, payload, SCRAPER_PUSH_OPTIONS).catch(() => {});
 }
 
 // A favorite_* push to everyone who hearted this dog and opted into that kind.
 function pushToFavoriters(dogId, prefKey, payload) {
   for (const { user_id: userId } of getFavoritersForDog.all(dogId)) {
-    if (hasPref(userId, prefKey)) sendPushToUser(userId, { url: '/', image: dogImageUrl(dogId), ...payload }).catch(() => {});
+    if (hasPref(userId, prefKey)) sendScraperPush(userId, { url: '/', image: dogImageUrl(dogId), ...payload });
   }
+}
+
+// Who hears about an adoption: fans who opted in, and walkers who opted in.
+// One push per person, even for a favorite they've also walked.
+function queueAdoptionPushes(dog, pushes) {
+  const favoriters = new Set(getFavoritersForDog.all(dog.id)
+    .map((r) => r.user_id).filter((userId) => hasPref(userId, 'favorite_adopted')));
+  favoriters.forEach((userId) => pushes.push({ userId, dog, favorite: true }));
+  for (const { user_id: userId } of getWalkersForDog.all(dog.id)) {
+    if (!favoriters.has(userId) && hasPref(userId, 'adopted_walked_dog')) pushes.push({ userId, dog });
+  }
+}
+
+// At most one "someone is adopting" push per dog per shelter day, however
+// often the pending tag flips back and forth.
+const getPendingEventsSince = db.prepare("SELECT occurred_at FROM shelter_events WHERE dog_id = ? AND kind = 'pending_adoption' AND occurred_at >= ?");
+function pendingPushedToday(dogId, nowIso) {
+  const today = shelterTrends.dateKeyOf(nowIso);
+  const since = new Date(new Date(nowIso).getTime() - 36 * 60 * 60 * 1000).toISOString();
+  return getPendingEventsSince.all(dogId, since).some((e) => shelterTrends.dateKeyOf(e.occurred_at) === today);
 }
 
 function logEvent(kind, dogId, title, occurredAt, detail) {
@@ -283,19 +393,28 @@ function daysBetween(fromIso, toIso) {
   return ms > 0 ? Math.floor(ms / (1000 * 60 * 60 * 24)) : 0;
 }
 
+// null when the list couldn't be fetched (a run problem: adoptions can't be
+// told apart from plain removals this run; see reconcileAdoptions).
 async function fetchAdoptedIds() {
   try {
     const json = await fetchJson(`${BASE}/api/animals/adopted?page=1&pagesize=300`);
-    return new Set((json.data || []).map((d) => d.shelterBuddyId));
+    return new Set((json.data || []).map((d) => d.shelterBuddyId).filter((id) => id != null));
   } catch (err) {
     console.warn('[scraper] failed to fetch recently-adopted list:', err.message);
-    return new Set();
+    return null;
   }
 }
 
 // A dog has to be absent from this many scrapes in a row (unless the shelter
-// itself lists them as adopted) before we believe they're really gone.
+// itself lists them as adopted) before we believe they're really gone...
 const MISSES_BEFORE_DELIST = 2;
+// ...and unseen for at least this long, so two quick restarts a few minutes
+// apart can't delist a dog that was only briefly missing.
+const MIN_ABSENCE_BEFORE_DELIST_MS = 50 * 60 * 1000;
+// A dog the shelter only lists as adopted after we'd already logged a plain
+// removal (it missed two scrapes first) still gets its adoption, within this window.
+const ADOPTION_RECONCILE_DAYS = 7;
+const RECONCILE_PUSH_HOURS = 36;
 // A listing that shrinks by more than this fraction in one go is treated as a
 // bad response, not a real mass adoption -- we'd rather skip a run than
 // delist the whole shelter.
@@ -335,13 +454,24 @@ async function fetchListings() {
       continue;
     }
     const before = previouslyListed.filter((d) => d.species === kind).length;
-    if (items.length === 0 && before > 0) {
+    // Count only rows the scraper can actually use (an id, and a name or a
+    // dog we already know): if the shelter renames a field, every row is
+    // skipped, and counting raw rows would let that delist everyone.
+    const usable = items.filter((item) => item && item.shelterBuddyId != null && validShelterId(item.shelterBuddyId)
+      && (item.name || getDogRow.get(item.shelterBuddyId))).length;
+    if (items.length > 0 && usable === 0) {
+      const msg = `${kind} listing has ${items.length} ${plural} but none usable (no id or name; did the shelter's API change?)`;
+      console.error(`[scraper] ${msg} -- ignoring it and keeping current data`);
+      problems.push(msg);
+      continue;
+    }
+    if (usable === 0 && before > 0) {
       console.error(`[scraper] shelter returned an EMPTY ${kind} listing; ignoring it and keeping current data`);
       problems.push(`empty ${kind} listing ignored`);
       continue;
     }
-    if (before >= 20 && items.length < before * (1 - MAX_PLAUSIBLE_DROP)) {
-      const msg = `${kind} listing dropped from ${before} to ${items.length} ${plural}; treating as a bad response`;
+    if (before >= 20 && usable < before * (1 - MAX_PLAUSIBLE_DROP)) {
+      const msg = `${kind} listing dropped from ${before} to ${usable} usable ${plural}; treating as a bad response`;
       console.error(`[scraper] ${msg} -- ignoring it`);
       problems.push(msg);
       continue;
@@ -361,7 +491,9 @@ async function doScrape(runId, finish) {
   const list = lists.flatMap(({ kind, items }) => items.map((item) => ({ ...item, listKind: kind })));
   const refreshedKinds = new Set(lists.map((l) => l.kind));
 
-  const adoptedIds = await fetchAdoptedIds();
+  const fetchedAdoptedIds = await fetchAdoptedIds();
+  if (!fetchedAdoptedIds) problems.push('adopted list fetch failed');
+  const adoptedIds = fetchedAdoptedIds || new Set();
   const now = new Date().toISOString();
   const seenIds = [];
   const seenKinds = new Map(); // id -> species, for the per-species counts
@@ -371,7 +503,9 @@ async function doScrape(runId, finish) {
 
   for (const item of list) {
     const id = item.shelterBuddyId;
-    if (id == null) continue;
+    // Ids go into file names (cached photos) and URLs: digits only, never
+    // whatever else the shelter's API might send ("../x", "1/2").
+    if (id == null || !validShelterId(id)) continue;
     const existing = getDogRow.get(id);
     const { detail, photoUrl } = await fetchDogDetailAndPhoto(id);
     // Brand-new intakes can be listed before the shelter names them
@@ -428,11 +562,7 @@ async function doScrape(runId, finish) {
       // Eager, not deferred to whenever someone first views this dog -- and
       // now that upsertDog has run, do it before anything else can fail this
       // iteration, so a dog never sits without an attempted photo.
-      // Shelter staff replace a dog's photo over time (the intake photo is
-      // usually a poor one); the shelter gives that new photo its own URL,
-      // so a change here means re-downloading over the stale cached file.
-      const photoChanged = !!(existing && existing.photo_url && photoUrl && existing.photo_url !== photoUrl);
-      await cacheImageIfNeeded(id, photoUrl, photoChanged);
+      await cacheImageIfNeeded(id, photoUrl);
 
       // A stand-in from a kennel card scanned before the listing had the dog
       // (awaiting_listing) is a new arrival too, not a return -- its walks were
@@ -449,11 +579,14 @@ async function doScrape(runId, finish) {
         const wasPending = existingTags.includes(PENDING_ADOPTION_TAG);
         const isPending = !!(detail && (detail.tags || []).includes(PENDING_ADOPTION_TAG));
         if (detail && !wasPending && isPending) {
+          const alreadyPushed = pendingPushedToday(id, now);
           logEvent('pending_adoption', id, `${name}'s adoption went pending`, now);
-          pushToFavoriters(id, 'favorite_pending', {
-            title: `Someone is adopting ${name}`,
-            body: 'One of your favorites may be going home soon.'
-          });
+          if (!alreadyPushed) {
+            pushToFavoriters(id, 'favorite_pending', {
+              title: `Someone is adopting ${name}`,
+              body: 'One of your favorites may be going home soon.'
+            });
+          }
         } else if (detail && wasPending && !isPending) {
           logEvent('pending_canceled', id, `${name}'s pending adoption fell through`, now);
         }
@@ -466,7 +599,7 @@ async function doScrape(runId, finish) {
         // changed.
         if (detail && existingTags.includes(STRAY_HOLD_TAG) && !(detail.tags || []).includes(STRAY_HOLD_TAG) && existing.pb_flag) {
           clearPbFlag.run(id);
-          logEvent('sticker_auto_off', id, 'PB: Potty break OK', now, 'pb');
+          logEvent('sticker_auto_off', id, 'PB: Potty break only', now, 'pb');
         }
       } else if (sameDayReturn) {
         // Nothing to bank or announce -- see the sameDayReturn comment
@@ -481,13 +614,25 @@ async function doScrape(runId, finish) {
         // -- but only if they haven't been gone so long that stay no longer
         // says anything useful about them today (see RETURN_STALE_MONTHS).
         const leftAt = existing.removed_at || existing.last_seen_at;
+        // The shelter keeps the original dateInShelter when a dog is only
+        // taken off the floor and put back (vet work, a hold): that's the
+        // same stay continuing, already counted in full from that date, so
+        // banking it too would count it twice. A changed dateInShelter (or an
+        // adoption in between) is a new stay. Compared as calendar dates, not
+        // against leftAt: the shelter's dates are midnight, so a dog adopted
+        // and brought back the same day starts "before" it left.
+        const newDateInShelter = item.dateInShelter || (detail && detail.dateInShelter) || null;
+        const dayOf = (v) => String(v || '').slice(0, 10);
+        const adoptedBetween = !!(leftAt && wasAdoptedDuringStay.get(id, existing.date_in_shelter, leftAt));
+        const newStay = adoptedBetween
+          || !!(newDateInShelter && dayOf(newDateInShelter) !== dayOf(existing.date_in_shelter));
         if (leftAt && new Date(leftAt) >= monthsAgo(RETURN_STALE_MONTHS, now)) {
-          const priorStayDays = daysBetween(existing.date_in_shelter, leftAt);
+          const priorStayDays = newStay ? daysBetween(existing.date_in_shelter, leftAt) : 0;
           if (priorStayDays > 0) addPreviousDays.run(priorStayDays, id);
         } else {
           resetStaleBehaviorMarkers.run(id);
         }
-        const adopted = leftAt && wasAdoptedDuringStay.get(id, existing.date_in_shelter, leftAt);
+        const adopted = adoptedBetween;
         // leftAt is also when the adoption itself happened (removed_at is set
         // at the same moment logEvent('adopted', ...) fires), so the gap to
         // now is how long they were actually out before coming back.
@@ -500,10 +645,13 @@ async function doScrape(runId, finish) {
           now,
           adopted ? 'adopted_return' : 'floor_return'
         );
-        pushToFavoriters(id, 'favorite_returned', {
-          title: `${name} is back at the shelter`,
-          body: 'One of your favorites has returned.'
-        });
+        // A dog that never left shelter care isn't "back at the shelter".
+        if (adopted || newStay) {
+          pushToFavoriters(id, 'favorite_returned', {
+            title: `${name} is back at the shelter`,
+            body: 'One of your favorites has returned.'
+          });
+        }
       }
     } catch (err) {
       dogFailures += 1;
@@ -515,7 +663,8 @@ async function doScrape(runId, finish) {
 
   // Anything that was listed a moment ago but isn't in this scrape: adopted
   // (confirmed by the shelter's own adopted list) leaves immediately;
-  // anything else has to be missing MISSES_BEFORE_DELIST scrapes in a row.
+  // anything else has to be missing MISSES_BEFORE_DELIST scrapes in a row,
+  // spread over at least MIN_ABSENCE_BEFORE_DELIST_MS.
   // Classified BEFORE delisting -- needs the still-listed rows to exist.
   const seenSet = new Set(seenIds);
   const pushes = [];
@@ -527,14 +676,9 @@ async function doScrape(runId, finish) {
       if (adoptedIds.has(dog.id)) {
         logEvent('adopted', dog.id, `${dog.name} was adopted!`, now);
         delistDog.run(now, dog.id);
-        // One push per person, even for a favorite they've also walked.
-        const favoriters = new Set(getFavoritersForDog.all(dog.id)
-          .map((r) => r.user_id).filter((userId) => hasPref(userId, 'favorite_adopted')));
-        favoriters.forEach((userId) => pushes.push({ userId, dog, favorite: true }));
-        for (const { user_id: userId } of getWalkersForDog.all(dog.id)) {
-          if (!favoriters.has(userId) && hasPref(userId, 'adopted_walked_dog')) pushes.push({ userId, dog });
-        }
-      } else if (dog.missed + 1 >= MISSES_BEFORE_DELIST) {
+        queueAdoptionPushes(dog, pushes);
+      } else if (dog.missed + 1 >= MISSES_BEFORE_DELIST
+        && !(dog.lastSeenAt && new Date(now) - new Date(dog.lastSeenAt) < MIN_ABSENCE_BEFORE_DELIST_MS)) {
         // A plain removal (transferred, returned to owner, record
         // correction, etc.) isn't happy news and isn't actionable for a
         // walker the way a new/returned/adopted dog is, so the server's
@@ -553,16 +697,29 @@ async function doScrape(runId, finish) {
         bumpMissed.run(dog.id);
       }
     }
+    // Dogs delisted as plain removals in the last few days that the shelter
+    // now lists as adopted: the removal was really an adoption. Rewriting
+    // the event (not adding one) keeps it to one adoption, pushed once.
+    if (adoptedIds.size) {
+      const since = new Date(new Date(now).getTime() - ADOPTION_RECONCILE_DAYS * 86400000).toISOString();
+      for (const r of getRecentRemovals.all(since)) {
+        if (!adoptedIds.has(r.id)) continue;
+        removalToAdoption.run(`${r.name} was adopted!`, r.eventId);
+        // Fixed on the timeline either way, but only announced while it's
+        // still news: no "was adopted!" push days after the fact.
+        if (new Date(now) - new Date(r.occurredAt) <= RECONCILE_PUSH_HOURS * 3600000) queueAdoptionPushes(r, pushes);
+      }
+    }
   })();
   // Pushes go out after the transaction commits, never from inside it.
   for (const { userId, dog, favorite } of pushes) {
-    sendPushToUser(userId, {
+    sendScraperPush(userId, {
       title: `${dog.name} was adopted! 🎉`,
       body: favorite ? 'One of your favorites found a home.' : (dog.species === 'cat' ? 'A cat you spent time with found a home.' : 'A dog you walked found a home.'),
       url: '/',
       // Shown in the notification (the service worker fetches it).
       image: dogImageUrl(dog.id)
-    }).catch(() => {});
+    });
   }
 
   const counts = Object.fromEntries(SPECIES_KEYS.map((k) => [k, 0]));
@@ -583,4 +740,4 @@ async function doScrape(runId, finish) {
   return { ok, count: seenIds.length, counts, error: ok ? undefined : problems.join('; '), finishedAt: new Date().toISOString() };
 }
 
-module.exports = { runScrape, IMAGES_DIR };
+module.exports = { runScrape, IMAGES_DIR, testHooks };

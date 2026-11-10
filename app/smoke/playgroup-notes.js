@@ -2,10 +2,10 @@
 // the small button and compact notes on the scan screen (no green bar there),
 // adding a dated note with an @ tag picked from the list,
 // the tag showing on the tagged dog as a mention, and tapping through.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/playgroup-notes.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3994, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_pg.db', EMAIL = 'pg@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 'pg@example.com';
 const SHOTS = process.env.SHOTS_DIR;
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 // .pg-text is a contenteditable div now, not a <textarea> -- Playwright's
@@ -20,10 +20,8 @@ const pgFill = async (p, sel, text) => {
   await p.keyboard.type(text);
 };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB);
     db.prepare("UPDATE users SET name='Pat', experience_level='expert', onboarding_completed=1 WHERE id=?").run(me.id);
@@ -35,7 +33,7 @@ const pgFill = async (p, sel, text) => {
     ins.run(99913, 'Potty', old, now, now, 'D', 1);
     db.close();
 
-    const b = await chromium.launch();
+    const b = await launch();
     const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     const openProfile = async (id) => {
@@ -146,5 +144,5 @@ const pgFill = async (p, sel, text) => {
     ok(!errs.length, 'no page errors' + (errs.length ? ': ' + errs.join(' | ') : ''));
     await b.close();
     console.log('playgroup notes smoke passed');
-  } finally { srv.kill(); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -1,5 +1,5 @@
 [Unit]
-Description=Backup the dog-walk tracker's cached dog photos
+Description=Backup the dog-walk tracker's dog photos and Guide images
 
 [Service]
 Type=oneshot

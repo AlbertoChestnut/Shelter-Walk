@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Play Group Desk</title>
+<title>Play group desk · Shelter Walk</title>
 <meta name="theme-color" content="#2f6f4f" />
 <meta name="color-scheme" content="light dark" />
 <link rel="icon" href="/icons/icon-192.png" />
@@ -14,18 +14,20 @@
 <body>
 
 <header class="topbar">
-  <h1>🥎 Shelter Walk <span class="muted">Play group desk</span></h1>
+  <h1>Shelter Walk <span class="topbar-sub">Play group desk</span></h1>
+  <div id="deskNav" class="desk-nav"></div>
+</header>
+<div class="subbar">
   <nav class="section-tabs">
     <button type="button" class="tab-btn active" data-view="write">Write notes</button>
     <button type="button" class="tab-btn" data-view="sessions">All sessions</button>
   </nav>
-  <div id="deskNav" class="desk-nav"></div>
-</header>
+</div>
 
 <main>
   <section id="writeView" class="write-layout">
     <aside class="dog-list-pane">
-      <input type="search" id="dogSearch" placeholder="Find a dog  ( / )" autocomplete="off" aria-label="Find a dog" />
+      <input type="search" id="dogSearch" placeholder="Find a dog" autocomplete="off" aria-label="Find a dog" />
       <div class="list-tools">
         <label class="small"><input type="checkbox" id="onlyWithNotes" /> Only dogs with notes</label>
         <select id="dogSort" class="small" aria-label="Sort dogs">
@@ -38,8 +40,8 @@
     </aside>
     <section id="dogPane" class="dog-pane">
       <div class="empty-state">
-        <p>Pick a dog on the left to read and add play group notes.</p>
-        <p class="muted small">Tip: press <kbd>/</kbd> to search, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save a note. Type <kbd>@</kbd> in a note to tag another dog.</p>
+        <p>Pick a dog from the list to read and add play group notes.</p>
+        <p class="muted small"><span class="kbd-tip">Tip: press <kbd>/</kbd> to search, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save a note. </span>Type <kbd>@</kbd> in a note to tag another dog.</p>
       </div>
     </section>
   </section>

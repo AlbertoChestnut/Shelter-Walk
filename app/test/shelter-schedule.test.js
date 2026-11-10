@@ -3,17 +3,10 @@
 // Updates feed, and the two default-on notification prefs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 4400 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-schedule-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base, dbFile, server;
 const WALKER = 'walker@example.com';
 const STAFF = 'staff@example.com';
 
@@ -30,8 +23,8 @@ async function call(method, url, { user = WALKER, staff = false, body } = {}) {
 
 let today;
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-schedule-' });
+  ({ base, dbFile } = server);
   await call('GET', '/api/me');
   await call('GET', '/api/me', { user: STAFF });
   const db = new Database(dbFile);
@@ -40,7 +33,7 @@ test.before(async () => {
   db.close();
   today = (await call('GET', '/api/shelter/today')).json.today.dateKey;
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); proc = null; } });
+test.after(async () => { if (server) { await server.stop(); server = null; } });
 
 test('only staff can change hours or send alerts', async () => {
   assert.equal((await call('GET', '/api/staff/schedule')).status, 403);

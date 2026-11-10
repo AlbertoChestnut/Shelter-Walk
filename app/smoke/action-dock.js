@@ -2,16 +2,14 @@
 // (pinned above the tab bar), and the Available list shows only shift boxes
 // for walks logged in the app -- no per-dog walk totals that would read as
 // the whole truth when dogs also get walked outside the app.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/action-dock.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3993, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_ad.db', EMAIL = 't@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 't@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB);
     db.prepare("UPDATE users SET name='T', experience_level='experienced', onboarding_completed=1 WHERE id=?").run(me.id);
@@ -21,8 +19,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const start = '2026-10-10T14:00:00.000Z', end = '2026-10-10T14:20:00.000Z';
     db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, activity) VALUES (70, ?, 'D', ?, ?, 1200, 'walk')").run(me.id, start, end);
     db.close();
-    const b = await chromium.launch();
-    const ctx = await b.newContext({ viewport: { width: 375, height: 667 }, timezoneId: 'America/New_York', extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
+    const b = await launch();
+    const ctx = await b.newContext({ viewport: { width: 375, height: 667 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.clock.install({ time: new Date('2026-10-10T15:00:00.000Z') });
     const onScreen = async (sel) => {
@@ -37,13 +35,13 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const sorts = await p.$$eval('#availableSortSelect option', (os) => os.map((o) => o.value));
     ok(sorts.includes('lastWalked') && !sorts.includes('attention'), '"longest since" is on the menu, the walk-count sort still is not: ' + sorts.join(', '));
     ok((await p.$eval('#availableSortSelect', (s) => s.value)) === 'lastWalked', '"longest since a logged walk" is the default sort');
-    await p.screenshot({ path: '/tmp/_ad0.png' });
+    await p.screenshot({ path: h.shot('ad0.png') });
     await p.click('.walk-edit-btn[data-id="70"]'); await p.waitForSelector('#startWalkBtn');
     ok(await onScreen('#startWalkBtn'), 'Start is on screen without scrolling');
-    await p.screenshot({ path: '/tmp/_ad1.png' });
+    await p.screenshot({ path: h.shot('ad1.png') });
     await p.click('#changeActivityBtn');
     ok(await onScreen('#startWalkBtn') && await onScreen('#activityPickRow'), 'Change opens the activities above Start, both on screen');
-    await p.screenshot({ path: '/tmp/_ad1b.png' });
+    await p.screenshot({ path: h.shot('ad1b.png') });
     await p.click('#changeActivityBtn');
     await p.evaluate(() => { const m = document.getElementById('app'); m.scrollTop = m.scrollHeight; });
     ok(await onScreen('#backToScanBtn2'), 'scrolled to the end, "Scan a different dog" is reachable');
@@ -56,11 +54,11 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const dock = await p.locator('.action-dock').boundingBox(), tabbar = await p.locator('.tabbar').boundingBox();
     ok(Math.abs(dock.y + dock.height - tabbar.y) < 1, 'mid-scroll, the bar sits right on the tab bar');
     ok(!/0px 24px 0px/.test(await p.$eval('.action-dock', (e) => getComputedStyle(e).boxShadow)), 'no solid shadow under the bar to cover Cancel');
-    await p.screenshot({ path: '/tmp/_ad2.png' });
+    await p.screenshot({ path: h.shot('ad2.png') });
     await p.click('#endWalkBtn'); await p.waitForSelector('#saveWalkBtn');
     ok(await onScreen('#saveWalkBtn'), 'Save & Finish is on screen without scrolling');
-    await p.screenshot({ path: '/tmp/_ad3.png' });
+    await p.screenshot({ path: h.shot('ad3.png') });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await b.close();
-  } finally { srv.kill(); fs.rmSync(DB, { force: true }); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e.message); process.exit(1); });

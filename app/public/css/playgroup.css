@@ -44,18 +44,25 @@ body {
 .warn { color: var(--amber); margin: 4px 0 0; }
 kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 0.8em; background: var(--card-bg); }
 
+/* Green header bar like the volunteer app's (style.css .topbar) and the
+   staff dashboard's; the page's own tabs sit on a plain bar below it. */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 10px 20px;
   flex-wrap: wrap;
   padding: 12px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--card-bg);
+  background: #2f6f4f;
+  color: #fff;
 }
-.topbar h1 { font-size: 1.15rem; margin: 0; }
-.topbar h1 .muted { font-weight: 400; }
+html[data-theme="dark"] .topbar { background: #2c7350; }
+.topbar h1 { font-size: 1.1rem; margin: 0; font-weight: 700; white-space: nowrap; }
+.topbar-sub { font-weight: 400; opacity: 0.9; }
+.topbar-sub::before { content: "·"; margin: 0 6px; opacity: 0.7; }
+.topbar :focus-visible { outline-color: #fff; }
+.subbar { display: flex; align-items: center; gap: 10px; padding: 8px 24px; border-bottom: 1px solid var(--border); background: var(--card-bg); }
 .section-tabs { display: flex; gap: 8px; }
+.back-to-list { display: none; margin: 0 0 8px; padding: 4px 0; font-size: 0.95rem; }
 .tab-btn, .chip {
   border: 1px solid var(--border);
   background: var(--card-bg);
@@ -217,9 +224,43 @@ html[data-theme="dark"] .pg-autotag { background: rgba(63, 138, 99, 0.16); }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1c211f; color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); z-index: 20; }
 .toast.error { background: var(--red); }
 
-/* Narrow windows: list above the dog. */
+/* Keyboard tips mean nothing on a touch screen. */
+@media (hover: none), (pointer: coarse) {
+  .kbd-tip { display: none; }
+}
+
+/* Narrow windows (phones): the dog list and the open dog take turns filling
+   the screen instead of squeezing the list into a short scroll box; "‹ All
+   dogs" goes back. All sessions turns each row into a card. */
 @media (max-width: 760px) {
-  .write-layout { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
-  .dog-list-pane { border-right: none; border-bottom: 1px solid var(--border); }
-  .dog-pane { padding: 16px; }
+  .topbar, .subbar { padding-left: 16px; padding-right: 16px; }
+  .write-layout { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .dog-list-pane { border-right: none; }
+  .write-layout.has-dog .dog-list-pane { display: none; }
+  .write-layout:not(.has-dog) .dog-pane { display: none; }
+  .back-to-list { display: inline-block; }
+  .dog-pane { padding: 12px 16px 32px; }
+  .dog-head img { width: 56px; height: 56px; }
+  .desk-editor-foot { flex-wrap: wrap; }
+
+  .sessions { padding: 12px 16px; overflow-y: auto; }
+  .range-chips { flex-wrap: wrap; }
+  #sessionSearch { min-width: 0; flex-basis: 100%; }
+  .table-wrap { background: none; border: none; overflow: visible; }
+  .sessions-table, .sessions-table tbody, .sessions-table tr, .sessions-table td { display: block; width: 100%; }
+  .sessions-table thead { display: none; }
+  .sessions-table tr { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; }
+  .sessions-table td { border: none; padding: 3px 0; }
+  .sessions-table td.empty-cell { display: none; }
+  .sessions-table td[data-label]::before { content: attr(data-label); display: block; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .sessions-table td.nowrap[data-label]::before { display: none; }
+  .sessions-table td.nowrap { font-weight: 700; color: var(--green-text); }
+  .note-cell { min-width: 0; }
+  /* Finger-sized targets on a phone. */
+  .section-tabs .tab-btn { min-height: 44px; }
+  .dog-row { min-height: 44px; }
+}
+@media (hover: none), (pointer: coarse) {
+  .section-tabs .tab-btn { min-height: 44px; }
+  .dog-row { min-height: 44px; }
 }

@@ -21,10 +21,10 @@
 
 <div id="offlineBanner" class="hidden" style="background:var(--amber,#b3781c); color:#fff; text-align:center; font-size:0.85rem; padding:4px 8px;">Offline. Showing cached data</div>
 <header class="topbar">
-  <h1 id="topbarTitle">Dogs to Walk</h1>
+  <h1 id="topbarTitle">Dogs to walk</h1>
   <div style="display:flex; align-items:center; gap:4px;">
     <button id="userBtn" class="icon-btn" style="font-size:0.85rem;" aria-label="My account" title="My account">👤 <span id="userBtnName"></span></button>
-    <button id="auditModeBtn" class="icon-btn hidden" aria-label="Audit Mode" title="Audit Mode">🔍</button>
+    <button id="auditModeBtn" class="icon-btn hidden" aria-label="Audit mode" title="Audit mode">🔍</button>
     <button id="guideBtn" class="icon-btn" aria-label="Guide" title="Guide: sticker meanings, tips, and how-tos">
       <svg viewBox="0 0 24 24" width="1.15em" height="1.15em" fill="currentColor" aria-hidden="true">
         <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
@@ -38,12 +38,12 @@
   </div>
 </header>
 
-<main id="app"></main>
+<main id="app"><p class="muted small center loading-line" role="status">Loading…</p></main>
 
 <nav class="tabbar">
   <button class="tab-btn active" data-tab="available">🐾<span class="tab-label">Available</span></button>
   <button class="tab-btn" data-tab="walk">📷<span class="tab-label">Scan</span></button>
-  <button class="tab-btn" data-tab="stats">📊<span class="tab-label">Stats</span></button>
+  <button class="tab-btn" data-tab="stats">📝<span class="tab-label">Stats/Notes</span></button>
   <button class="tab-btn" data-tab="updates"><span class="tab-icon-wrap">📣<span id="updatesBadge" class="tab-badge hidden">0</span></span><span class="tab-label">Updates</span></button>
 </nav>
 
@@ -74,34 +74,34 @@
       <hr />
     </div>
     <label class="small muted" style="display:block;">Notifications</label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefShelterAlerts" />
-      Shelter alerts from staff (closures, urgent news)
+      <span>Shelter alerts from staff (closures, urgent news)</span>
     </label>
-    <label id="settingsNewSignupsRow" class="small hidden" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label id="settingsNewSignupsRow" class="small check-row hidden">
       <input type="checkbox" id="settingsPrefNewSignups" />
-      Admin: notify me when someone new joins the app
+      <span>Admin: notify me when someone new joins the app</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefAdopted" />
-      Notify me when <span data-term="aAnimal">a dog</span> I've <span data-term="past">walked</span> is adopted
+      <span>Notify me when <span data-term="aAnimal">a dog</span> I've <span data-term="past">walked</span> is adopted</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefWalkStarted" />
-      Notify me when I start <span data-term="aNoun">a walk</span> (<span data-term="animal">dog</span> + return location)
+      <span>Notify me when I start <span data-term="aNoun">a walk</span> (<span data-term="animal">dog</span> + return location)</span>
     </label>
     <label class="small muted" style="display:block;margin-top:12px;">Your favorite <span data-term="animals">dogs</span> (tap ♡ on one)</label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefFavAdopted" />
-      Notify me when a favorite is adopted
+      <span>Notify me when a favorite is adopted</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefFavPending" />
-      Notify me when someone starts adopting a favorite
+      <span>Notify me when someone starts adopting a favorite</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsPrefFavReturned" />
-      Notify me when a favorite comes back to the shelter
+      <span>Notify me when a favorite comes back to the shelter</span>
     </label>
     <label class="small" style="display:block;margin-top:12px;">Alert me when <span data-term="aNoun">a walk</span> reaches (minutes)</label>
     <div class="row walk-alert-inputs" style="gap:6px;margin-top:6px;">
@@ -114,17 +114,17 @@
     <hr />
     <label class="small muted" style="display:block;">Updates feed</label>
     <p class="muted small" style="margin-top:4px;">Choose what shows up in the Updates tab.</p>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsShowNewDog" />
-      New dogs added to the shelter
+      <span>New <span data-term="animals">dogs</span> added to the shelter</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsShowAdopted" />
-      Dogs adopted
+      <span>Adoptions</span>
     </label>
-    <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label class="small check-row">
       <input type="checkbox" id="settingsShowReturned" />
-      Dogs returned to the shelter
+      <span>↩️ Returns to the shelter</span>
     </label>
     <div class="sheet-actions">
       <button id="closeSettingsBtn" class="btn primary">Done</button>
@@ -190,15 +190,15 @@
     <button type="button" class="sheet-close-btn" id="closeAccountSheetBtn" aria-label="Close">✕</button>
 
     <div id="accountPageMenu">
-      <h2 style="margin-top:0;">My Account</h2>
+      <h2 style="margin-top:0;">My account</h2>
       <div class="stack tight">
         <button type="button" class="account-menu-row" data-page="profile">
           <span>Profile</span><span class="account-menu-chevron">›</span>
         </button>
         <button type="button" class="account-menu-row" data-page="privacy">
-          <span>Privacy &amp; Data</span><span class="account-menu-chevron">›</span>
+          <span>Privacy &amp; data</span><span class="account-menu-chevron">›</span>
         </button>
-        <a class="account-menu-row" href="/playgroup" target="_blank" rel="noopener">
+        <a id="playgroupDeskRow" class="account-menu-row desk-only" href="/playgroup" target="_blank" rel="noopener">
           <span>🥎 Play group desk <span class="small muted">(for a computer)</span></span><span class="account-menu-chevron">›</span>
         </a>
         <button type="button" class="account-menu-row" data-page="feedback">
@@ -221,7 +221,7 @@
     </div>
 
     <div id="accountPageProfile" class="hidden">
-      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My account</button>
       <h2>Profile</h2>
       <label for="accountNameInput" class="small muted">Name</label>
       <input type="text" id="accountNameInput" maxlength="60" />
@@ -230,15 +230,15 @@
     </div>
 
     <div id="accountPagePrivacy" class="hidden">
-      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
-      <h2>Privacy &amp; Data</h2>
-      <p class="small muted" style="margin-top:0;">Shelter Walk has no report, export, or admin view anywhere that lists who spent time with which animal, or that compares volunteers to each other. Combined stats are always anonymous, and shared tips are never signed. Once it's over, who did it is never shown to anyone - including staff - no matter what you choose below.</p>
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My account</button>
+      <h2>Privacy &amp; data</h2>
+      <p class="small muted" style="margin-top:0;">Shelter Walk has no report, export, or admin view anywhere that lists who spent time with which animal, or that compares volunteers to each other. Combined stats are always anonymous, and shared tips are never signed. Once you're back, nobody (staff included) can see who was out with which animal, whatever you choose below.</p>
       <button type="button" id="openPrivacyPolicyBtn" class="link-btn" style="display:block;margin:4px 0 0;padding:0;">Read our Privacy Policy</button>
-      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:14px;">
+      <label class="small check-row" style="margin-top:14px;">
         <input type="checkbox" id="accountHideNameCheck" />
-        Hide my name from other volunteers while I'm out with <span data-term="aAnimal">a dog</span>
+        <span>Hide my name from other volunteers while I'm out with <span data-term="aAnimal">a dog</span></span>
       </label>
-      <p class="small muted" style="margin:4px 0 0;">Available shows "a Volunteer" instead of your name on the "currently out" badge. This is the only place your name ever appears; it only matters while you're still out with them.</p>
+      <p class="small muted" style="margin:4px 0 0;">Available shows "a volunteer" instead of your name on the "currently out" badge. This is the only place your name ever appears; it only matters while you're still out with them.</p>
       <button type="button" id="downloadMyDataBtn" class="btn" style="margin-top:14px;">Download my data</button>
       <p id="downloadMyDataStatus" class="small muted" style="margin:4px 0 0;min-height:1.2em;"></p>
       <button type="button" id="deleteMyDataBtn" class="link-btn danger-link" style="display:block; margin:14px auto 0;">Delete my <span data-term="noun">walk</span> data…</button>
@@ -246,7 +246,7 @@
     </div>
 
     <div id="accountPageFeedback" class="hidden">
-      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My account</button>
       <h2>Feedback &amp; bug reports</h2>
       <p class="small muted" style="margin-top:0;">Found a bug, something confusing, or have an idea? Every report is read. Reports are anonymous: your name and account are never saved with them, so if you'd like a reply, say how to reach you.</p>
       <div id="feedbackKindPicker" class="marker-row feedback-kinds">
@@ -256,16 +256,16 @@
       </div>
       <label for="feedbackBody" class="small muted" style="display:block;margin-top:12px;">What happened, or what would help?</label>
       <textarea id="feedbackBody" rows="6" maxlength="2000" placeholder="e.g. The camera wouldn't open after I tapped Scan on my iPhone."></textarea>
-      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <label class="small check-row" style="margin-top:10px;">
         <input type="checkbox" id="feedbackDeviceCheck" checked />
-        Include my phone and browser type (helps fix bugs)
+        <span>Include my phone and browser type (helps fix bugs)</span>
       </label>
       <button type="button" id="sendFeedbackBtn" class="btn primary" style="margin-top:12px;">Send</button>
       <p id="feedbackStatus" class="small muted" style="margin:6px 0 0;min-height:1.2em;"></p>
     </div>
 
     <div id="accountPageFeedbackInbox" class="hidden">
-      <button type="button" class="account-back-btn" data-back-to="menu">‹ My Account</button>
+      <button type="button" class="account-back-btn" data-back-to="menu">‹ My account</button>
       <h2>Feedback inbox</h2>
       <p class="small muted" style="margin-top:0;">Anonymous reports from volunteers, newest first. Resolved ones move to the bottom.</p>
       <div id="feedbackInboxList" class="stack tight"></div>

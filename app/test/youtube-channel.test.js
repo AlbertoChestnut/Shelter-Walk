@@ -3,17 +3,10 @@
 // takes the matches routes and the profile videos away immediately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 4600 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-ytmodule-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base, dbFile, server;
 const WALKER = 'walker@example.com';
 const STAFF = 'staff@example.com';
 
@@ -32,8 +25,8 @@ let matchConfirmId;
 let matchDismissId;
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', DISABLE_MODULE_JOBS: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-ytmodule-', env: { DISABLE_MODULE_JOBS: '1' } });
+  ({ base, dbFile } = server);
   await call('GET', '/api/me');
   await call('GET', '/api/me', { user: STAFF });
 
@@ -52,7 +45,7 @@ test.before(async () => {
   matchDismissId = db.prepare("INSERT INTO yt_matches (video_id, dog_id, matched_text, status, created_at) VALUES ('vidDismiss', 1, 'Biscuit', 'pending', ?)").run(now).lastInsertRowid;
   db.close();
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); proc = null; } });
+test.after(async () => { if (server) { await server.stop(); server = null; } });
 
 test('the pending review queue is staff-only and lists seeded matches', async () => {
   assert.equal((await call('GET', '/api/modules/youtube-channel/matches')).status, 403, 'non-staff refused');

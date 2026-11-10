@@ -2,16 +2,14 @@
 // updates an open app, replaces the alert) and "End walk" (opens the notes
 // screen, ended at the tap, whether the app was open or not). Calls sw.js's
 // own functions, since headless Chromium can't tap a notification button.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/notification-actions.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3992, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_notif.db', EMAIL = 'n@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 'n@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB); const now = new Date().toISOString();
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, breed, still_listed, first_seen_at, last_seen_at, date_in_shelter, kennel_location) VALUES (262826, 'Axel Rose', 'Male', '12 Years', 'Boxer Mix', 1, ?, ?, '2026-08-23T00:00:00', 'B')").run(now, now);
@@ -19,7 +17,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const start = async () => (await (await fetch(base + '/api/walks/start', { method: 'POST', headers: { 'x-auth-email': EMAIL, 'content-type': 'application/json' }, body: JSON.stringify({ dogId: 262826, location: 'B', userId: me.id, activity: 'walk' }) })).json());
     let walk = await start(); ok(walk.walkId, 'walk started ' + walk.walkId);
 
-    const browser = await chromium.launch({ channel: 'chromium' });
+    const browser = await launch({ channel: 'chromium' });
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, permissions: ['notifications'] });
     await ctx.grantPermissions(['notifications'], { origin: base });
     const page = await ctx.newPage(); const errs = []; page.on('pageerror', (e) => errs.push(e.message));
@@ -80,5 +78,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p2.waitForSelector('#endWalkBtn'); ok(true, 'link for another walk: the running walk stays running');
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await browser.close();
-  } finally { srv.kill(); fs.rmSync(DB, { force: true }); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e.message); process.exit(1); });

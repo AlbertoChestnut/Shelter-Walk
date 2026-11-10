@@ -2,11 +2,12 @@
 // backdated note with an @ tag using only the keyboard, the date carries over
 // to the next note, move a note to another day, All sessions + Excel export.
 // Also the phone's Yesterday chip and tap-the-date-to-move.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/playgroup-desk.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+process.env.TZ = 'America/New_York'; // daysAgo() must agree with the app's shelter date, whatever the browser's zone
 const ExcelJS = require('exceljs');
-const PORT = 3993, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_pgdesk.db', EMAIL = 'desk@example.com';
+let base, DB; const EMAIL = 'desk@example.com';
 const SHOTS = process.env.SHOTS_DIR;
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 // .pg-text is a contenteditable div now, not a <textarea> -- Playwright's
@@ -23,11 +24,9 @@ const pgFill = async (p, sel, text) => {
 const key = (d) => d.toLocaleDateString('en-CA');
 const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return key(d); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   const get = async (url) => (await fetch(base + url, { headers: { 'x-auth-email': EMAIL } })).json();
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await get('/api/me');
     const db = new Database(DB);
     db.prepare("UPDATE users SET name='Dana', experience_level='expert', onboarding_completed=1 WHERE id=?").run(me.id);
@@ -40,13 +39,13 @@ const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); retur
     db.prepare("INSERT INTO playgroup_notes (dog_id, user_id, signed, note_date, body, created_at, updated_at) VALUES (99923, ?, 0, '2026-08-01', 'Left already', ?, ?)").run(me.id, now, now);
     db.close();
 
-    const b = await chromium.launch();
+    const b = await launch();
     const ctx = await b.newContext({ viewport: { width: 1366, height: 860 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block', acceptDownloads: true });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.goto(base + '/playgroup', { waitUntil: 'networkidle' });
     await p.waitForSelector('#dogList .dog-row');
     const names = await p.$$eval('#dogList .dog-row-name', (els) => els.map((e) => e.textContent.trim()));
-    ok(names.includes('Biscuit') && names.some((n) => n.startsWith('Oldtimer') && n.includes('left')), 'dog list has listed dogs and ones who left with notes');
+    ok(names.includes('Biscuit') && names.some((n) => n.startsWith('Oldtimer') && /Adopted|Left shelter/.test(n)), 'dog list has listed dogs and ones who left with notes');
 
     // Keyboard only: / to search, Enter to open, type with @ tag, Enter picks, Ctrl+Enter saves.
     await p.keyboard.press('/');
@@ -135,5 +134,5 @@ const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); retur
     ok(!errs.length, 'no page errors' + (errs.length ? ': ' + errs.join(' | ') : ''));
     await b.close();
     console.log('playgroup desk smoke passed');
-  } finally { srv.kill(); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e); process.exit(1); });

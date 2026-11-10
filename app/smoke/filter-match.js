@@ -1,15 +1,13 @@
 // "Combine filters with: And / Or": every filter (✓, ✕, kennel wing) is one
 // condition, all required with And, any one enough with Or.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/filter-match.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3990, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_fmatch.db', EMAIL = 'v@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 'v@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB);
     db.prepare("UPDATE users SET name = 'Val', experience_level='expert', onboarding_completed=1 WHERE id = ?").run(me.id);
@@ -18,7 +16,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ins.run(80, 'Pepper', 'Female', ts, ts, 'A1'); ins.run(81, 'Biscuit', 'Male', ts, ts, 'B1'); ins.run(82, 'Mochi', 'Male', ts, ts, 'A2');
     db.prepare('INSERT INTO favorite_dogs (user_id, dog_id, created_at) VALUES (?, ?, ?)').run(me.id, 81, ts);
     db.close();
-    const b = await chromium.launch();
+    const b = await launch();
     const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     const names = async () => (await p.$$eval('.avail-card .dog-name', (els) => els.map((e) => e.textContent.replace(/[♥♡]/g, '').trim()))).sort().join(',');
@@ -33,7 +31,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('[data-filter-match="any"]');
     await shows(2);
     ok(await names() === 'Biscuit,Pepper', 'Or: ✓ female, ✓ favorite shows Pepper and Biscuit');
-    await p.screenshot({ path: '/tmp/_fmatch1.png' });
+    await p.screenshot({ path: h.shot('fmatch1.png') });
     await p.click('[data-location-key="A"]');
     await shows(3);
     ok(await names() === 'Biscuit,Mochi,Pepper', 'Or: the kennel wing adds its dogs too');
@@ -50,5 +48,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await p.isVisible('.seg-btn.on[data-filter-match="all"]'), 'Clear Filters goes back to And');
     ok(errs.length === 0, 'no page errors' + (errs.length ? ': ' + errs.join('; ') : ''));
     await b.close();
-  } finally { srv.kill(); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -1,14 +1,16 @@
 // Scraper safety tests: run against a throwaway DB with a stubbed shelter API.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { isolateEnv } = require('./_helpers');
 
-const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-scraper-')), 'test.db');
-process.env.DB_PATH = dbFile;
+const { dbFile } = isolateEnv('sw-scraper-');
 const db = require('../src/db');
 const { runScrape, IMAGES_DIR } = require('../src/scraper');
+// A dog has to be unseen for ~50 minutes before a second miss delists it;
+// this stands in for the time between two real scheduled scrapes.
+const timePasses = () => db.prepare('UPDATE dogs SET last_seen_at = ? WHERE still_listed = 1').run(new Date(Date.now() - 2 * 3600000).toISOString());
 
 // What the fake shelter currently "serves".
 let listing = [];
@@ -19,6 +21,7 @@ const tagsOverrides = {}; // dog id -> tags array, in place of the default ["I'm
 const videoIdOverrides = {}; // dog id -> youTubeVideoId, as the detail API returns it directly (not embedded in summary)
 const photoPaths = {}; // dog id -> ["large" photo paths], like the real /api/photos/:id response
 const imageBytes = {}; // path (as it appears in the resolved URL) -> fake image body
+const imageLastModified = {}; // path -> fake Last-Modified string, like pets.wake.gov's static file server sends
 const realFetch = global.fetch;
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -29,7 +32,17 @@ global.fetch = async (url, opts = {}) => {
   const photosMatch = /\/api\/photos\/(\d+)$/.exec(u);
   if (photosMatch) return json({ large: photoPaths[Number(photosMatch[1])] || [] });
   const imgKey = Object.keys(imageBytes).find((k) => u.includes(k));
-  if (imgKey) return new Response(imageBytes[imgKey], { status: 200, headers: { 'content-type': 'image/jpeg' } });
+  if (imgKey) {
+    const lastModified = imageLastModified[imgKey];
+    // Mirrors pets.wake.gov's own static file server: a conditional GET whose
+    // If-Modified-Since matches the current Last-Modified gets a bodyless 304.
+    if (lastModified && (opts.headers || {})['If-Modified-Since'] === lastModified) {
+      return new Response(null, { status: 304, headers: { 'content-type': 'image/jpeg', 'last-modified': lastModified } });
+    }
+    const headers = { 'content-type': 'image/jpeg' };
+    if (lastModified) headers['last-modified'] = lastModified;
+    return new Response(imageBytes[imgKey], { status: 200, headers });
+  }
   const m = /\/api\/animals\/adopt\/(\d+)$/.exec(u);
   if (m) {
     if (detailFails.has(Number(m[1]))) return json({}, 500);
@@ -68,6 +81,7 @@ test('a dog missing once stays listed; missing twice is delisted (no event, no f
   listing = dogs(29); // Dog29 disappears
   await runScrape();
   assert.equal(listed(), 30, 'still listed after one miss');
+  timePasses();
   await runScrape();
   assert.equal(listed(), 29, 'delisted after two misses');
   assert.equal(events('adopted'), 0, 'plain removal is not an adoption');
@@ -91,6 +105,7 @@ test('a dog missing twice, delisted, then returning on a LATER day is a real ret
   const eventsFor = (kind, dogId) => db.prepare('SELECT COUNT(*) c FROM shelter_events WHERE kind = ? AND dog_id = ?').get(kind, dogId).c;
   listing = dogs(28); // Dog28 disappears
   await runScrape();
+  timePasses();
   await runScrape();
   assert.equal(listed(), 28, 'delisted after two misses');
   assert.equal(eventsFor('adopted', 1028), 0);
@@ -290,6 +305,44 @@ test("a dog's cached photo is replaced once the shelter's photo URL changes (a n
   delete photoPaths[id];
   delete imageBytes['AnimalImages/1000/Large/1000_1.jpg'];
   delete imageBytes['AnimalImages/1000/Large/1000_2.jpg'];
+});
+
+test("a dog's cached photo is replaced when the shelter swaps the file at the same URL (no URL change at all)", async () => {
+  // pets.wake.gov reuses the same filename (e.g. "1000_1.jpg") when staff
+  // replace a dog's photo instead of giving the new file its own URL -- this
+  // is the actual shape of the bug a real user hit (a dog's photo stayed
+  // stale in the app despite the shelter clearly showing a newer one).
+  const id = 1000;
+  const key = 'AnimalImages/1000/Large/1000_1.jpg';
+  const file = path.join(IMAGES_DIR, `${id}.jpg`);
+  fs.rmSync(file, { force: true });
+  fs.rmSync(`${file}.lastmod`, { force: true });
+  listing = dogs(28);
+  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+
+  photoPaths[id] = [`../app_data/${key}`];
+  imageBytes[key] = fakeJpeg('intake-photo');
+  imageLastModified[key] = 'Mon, 01 Jun 2026 12:00:00 GMT';
+  await runScrape();
+  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'first photo gets cached');
+
+  // Scraping again with nothing changed shouldn't need to re-fetch the body
+  // (the mock would 304 if asked, and overwrite the file with nothing useful
+  // if it somehow got a stale If-Modified-Since) -- the cached file stays put.
+  await runScrape();
+  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'unchanged photo is left alone');
+
+  // The shelter replaces the photo in place: same URL, new bytes, new
+  // Last-Modified. The old URL-diff check would never have caught this.
+  imageBytes[key] = fakeJpeg('better-photo');
+  imageLastModified[key] = 'Tue, 10 Nov 2026 01:21:50 GMT';
+  await runScrape();
+  assert.ok(fs.readFileSync(file).toString().startsWith('better-photo'), 'the stale cached photo is overwritten even though the URL never changed');
+  assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg', 'photo_url itself stays the same URL throughout');
+
+  delete photoPaths[id];
+  delete imageBytes[key];
+  delete imageLastModified[key];
 });
 
 test("a dog with several photos on the shelter's page gets the first one as photo_url", async () => {

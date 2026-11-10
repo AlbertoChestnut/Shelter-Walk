@@ -3,16 +3,12 @@
 // migration idempotency.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { startServer } = require('./_helpers');
 
-const PORT = 4500 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-modules-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base; let server;
 const WALKER = 'walker@example.com';
 const STAFF = 'staff@example.com';
 
@@ -28,12 +24,12 @@ async function call(method, url, { user = WALKER, staff = false, body } = {}) {
 }
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', DISABLE_MODULE_JOBS: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-modules-', env: { DISABLE_MODULE_JOBS: '1' } });
+  ({ base } = server);
   await call('GET', '/api/me');
   await call('GET', '/api/me', { user: STAFF });
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); proc = null; } });
+test.after(async () => { if (server) { await server.stop(); server = null; } });
 
 test('GET /api/modules is staff-only and lists the discovered module, disabled by default', async () => {
   assert.equal((await call('GET', '/api/modules')).status, 403, 'non-staff refused');

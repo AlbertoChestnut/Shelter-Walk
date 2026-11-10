@@ -1,6 +1,7 @@
-# Runs the API tests and the browser smoke test on every push and pull
-# request, so a change from any machine or session can't break the app
-# unnoticed. Deploys stay manual.
+# Runs the syntax check, the API tests (in UTC and in the shelter's time
+# zone) and every browser smoke on every push and pull request, so a change
+# from any machine or session can't break the app unnoticed. Deploys stay
+# manual.
 name: Tests
 
 on:
@@ -21,11 +22,19 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
-      - name: API tests
+      - name: Syntax check
+        run: npm run check
+      - name: API tests (UTC)
         run: npm test
-      - name: Install browser for the smoke test
-        run: |
-          npm i --no-save playwright@1
-          npx playwright install --with-deps chromium
-      - name: Browser smoke test
-        run: npm run smoke
+        env:
+          TZ: UTC
+      - name: API tests (America/New_York)
+        run: npm test
+        env:
+          TZ: America/New_York
+      - name: Install browser for the smokes
+        run: npx playwright install --with-deps chromium
+      - name: Browser smokes
+        run: npm run smoke:all
+        env:
+          SMOKE_TZ: America/New_York

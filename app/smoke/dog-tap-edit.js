@@ -1,16 +1,14 @@
 // Tapping a dog anywhere opens its profile, and the profile always has an
 // Edit button that lands on that dog's Walk/Edit screen -- or, for another
 // dog while you're out walking, an edit-only popup.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/dog-tap-edit.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3992, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_dte.db', EMAIL = 't@example.com';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB; const EMAIL = 't@example.com';
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const me = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(DB); const ts = new Date().toISOString(); const inShelter = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 19);
     db.prepare("UPDATE users SET name='T', experience_level='beginner', onboarding_completed=1 WHERE id=?").run(me.id);
@@ -19,7 +17,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     const end = new Date(Date.now() - 60000), start = new Date(end - 20 * 60000);
     db.prepare("INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, activity) VALUES (81, ?, 'D', ?, ?, 1200, 'walk')").run(me.id, start.toISOString(), end.toISOString());
     db.close();
-    const b = await chromium.launch();
+    const b = await launch();
     const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     const profileOpen = () => p.waitForSelector('#profileSheet:not(.hidden) #profileEditBtn');
@@ -33,7 +31,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('#closeMarkerInfoPopupBtn').catch(() => {}); await p.waitForTimeout(300);
     await maple.locator('.dog-name').click({ position: { x: 5, y: 5 } }); await profileOpen();
     ok(/Start \/ Edit/.test(await p.textContent('#profileEditBtn')), 'Available: name opens the profile with Start / Edit');
-    await p.screenshot({ path: '/tmp/_dte1.png' });
+    await p.screenshot({ path: h.shot('dte1.png') });
     await p.click('#profileEditBtn'); await p.waitForSelector('#startWalkBtn');
     ok(await p.isHidden('#profileSheet') && /Maple/.test(await p.textContent('#app')), 'Edit lands on Maple\'s Walk/Edit screen');
 
@@ -65,7 +63,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(/Juniper/.test(await p.textContent('#markerInfoPopupContent')), 'it opens an edit-only popup for that dog');
     await p.click('#markerInfoPopup .marker-shape[data-group="poo"][data-value="poo"]');
     await p.click('#editPopupLocationPicker [data-letter="B"]');
-    await p.screenshot({ path: '/tmp/_dte2.png' });
+    await p.screenshot({ path: h.shot('dte2.png') });
     await p.click('#editPopupSaveBtn'); await p.waitForSelector('#markerInfoPopup', { state: 'hidden' });
     const jun = await (await fetch(base + '/api/dogs/82', { headers: { 'x-auth-email': EMAIL } })).json();
     ok(jun.dog.pooStatus === 'poo' && jun.dog.kennelLocation === 'B', 'Juniper\'s POO status and kennel spot saved');
@@ -76,5 +74,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(/Maple/.test(await p.textContent('#app')), 'Maple\'s walk is still running');
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await b.close();
-  } finally { srv.kill(); fs.rmSync(DB, { force: true }); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e.message); process.exit(1); });

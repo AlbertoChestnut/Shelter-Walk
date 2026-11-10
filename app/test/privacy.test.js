@@ -4,17 +4,10 @@
 // as a release blocker, not a flaky test.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 3900 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-priv-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base, dbFile, server;
 const ALICE = 'alice.zebrafish@example.com';
 const BOB = 'bob.zebrafish@example.com';
 const CAROL = 'carol.zebrafish@example.com';
@@ -33,8 +26,8 @@ async function call(method, url, { user = CAROL, staff = false, body } = {}) {
 
 const ids = {};
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-priv-' });
+  ({ base, dbFile } = server);
   for (const [k, e] of [['alice', ALICE], ['bob', BOB], ['carol', CAROL], ['staff', STAFF]]) ids[k] = (await call('GET', '/api/me', { user: e })).json.id;
   const db = new Database(dbFile);
   const now = new Date().toISOString();
@@ -83,7 +76,7 @@ test('feedback is rate limited per sender', async () => {
   assert.equal(last.status, 429);
 });
 
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
+test.after(async () => { if (server) await server.stop(); });
 
 test('Together stats contain only totals: no names, emails, ids, or per-person numbers', async () => {
   const r = await call('GET', '/api/impact?days=30');
@@ -95,29 +88,31 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
   // Exact shape: totals only. Adding a field here should be a conscious, reviewed decision.
   // shelterNow is the listing alone (no volunteer data); species is the filter asked for.
   assert.deepEqual(Object.keys(r.json).sort(), ['allTime', 'days', 'minCell', 'shelterNow', 'species', 'today']);
-  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgSeconds', 'byActivity', 'byAge', 'byPoo', 'bySpecies', 'dogs', 'seconds', 'since', 'walks']);
+  // avgActivity: what the average is of (its label); avgCount: how many it's
+  // over (the rest were under a minute). Both totals, held to minCell.
+  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgActivity', 'avgSeconds', 'byActivity', 'byAge', 'byPoo', 'bySpecies', 'dogs', 'seconds', 'since', 'walks']);
   for (const a of r.json.allTime.byActivity) {
-    assert.deepEqual(Object.keys(a).sort(), ['activity', 'avgSeconds', 'count', 'totalSeconds']);
+    assert.deepEqual(Object.keys(a).sort(), ['activity', 'avgCount', 'avgSeconds', 'count', 'totalSeconds']);
     assert.ok(a.count >= r.json.minCell, 'an activity type below the threshold must not be broken out');
   }
   // Species / POO / kitten slices: same threshold, counts and times only.
   for (const [list, key] of [[r.json.allTime.bySpecies, 'species'], [r.json.allTime.byPoo, 'status'], [r.json.allTime.byAge, 'group']]) {
     for (const slice of list) {
-      assert.deepEqual(Object.keys(slice).sort(), ['animals', 'avgSeconds', 'count', key, 'totalSeconds'].sort());
+      assert.deepEqual(Object.keys(slice).sort(), ['animals', 'avgCount', 'avgSeconds', 'count', key, 'totalSeconds'].sort());
       assert.ok(slice.count >= r.json.minCell, 'a slice below the threshold must not be broken out');
     }
   }
   for (const kind of Object.values(r.json.shelterNow)) {
-    assert.deepEqual(Object.keys(kind).sort(), ['counts', 'today']);
+    assert.deepEqual(Object.keys(kind).sort(), ['counts', 'inFoster', 'today']);
     assert.equal(kind.today, null, 'Together never says how many were (or were not) walked today');
   }
   for (const day of r.json.days) {
-    assert.deepEqual(Object.keys(day).sort(), ['avgSeconds', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
-    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['avgSeconds', 'dogs', 'label', 'seconds', 'walks']);
+    assert.deepEqual(Object.keys(day).sort(), ['avgActivity', 'avgSeconds', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
+    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['avgActivity', 'avgSeconds', 'dogs', 'label', 'seconds', 'walks']);
   }
   assert.equal(r.json.allTime.walks, 5, 'everyone\'s walks are combined');
   assert.equal(r.json.allTime.avgSeconds, 1200, 'the seeded walks are all 20 minutes');
-  assert.deepEqual(r.json.allTime.byActivity, [{ activity: 'walk', count: 5, totalSeconds: 6000, avgSeconds: 1200 }]);
+  assert.deepEqual(r.json.allTime.byActivity, [{ activity: 'walk', count: 5, totalSeconds: 6000, avgSeconds: 1200, avgCount: 5 }]);
   // The whole history (grouped by month in the app) has the same shape.
   const all = await call('GET', '/api/impact?days=all');
   assert.equal(all.status, 200);
@@ -167,13 +162,14 @@ test('people cannot be looked up, and other accounts\' settings are off limits',
   assert.equal((await call('PUT', '/api/internal/accounts/permissions', { user: STAFF, staff: true, body: { email: 'x', isPrivileged: true } })).status, 403, 'internal permissions need the shared secret');
 });
 
-test('only the walker (or staff) can change or delete a walk', async () => {
+test('only the walker can change or delete a walk', async () => {
   const aliceWalk = (await call('GET', '/api/walks', { user: ALICE })).json.walks[0];
   assert.equal((await call('PUT', `/api/walks/${aliceWalk.id}`, { user: BOB, body: { notes: 'tampered' } })).status, 403);
   assert.equal((await call('DELETE', `/api/walks/${aliceWalk.id}`, { user: BOB })).status, 403);
   assert.equal((await call('PUT', `/api/walks/${aliceWalk.id}/user`, { user: BOB, body: { targetUserId: ids.bob } })).status, 403, 'attribution cannot be reassigned');
   assert.equal((await call('PUT', `/api/walks/${aliceWalk.id}`, { user: ALICE, body: { notes: 'mine to edit' } })).status, 200);
-  assert.equal((await call('DELETE', `/api/walks/${aliceWalk.id}`, { user: STAFF, staff: true })).status, 200);
+  assert.equal((await call('DELETE', `/api/walks/${aliceWalk.id}`, { user: STAFF, staff: true })).status, 403, 'not staff either (security3 #5)');
+  assert.equal((await call('DELETE', `/api/walks/${aliceWalk.id}`, { user: ALICE })).status, 200);
 });
 
 test('walks started or logged for "someone else" are recorded as you', async () => {
@@ -265,18 +261,23 @@ test('notes left at the end of a walk follow the whiteboard rules too', async ()
   const walkId = ins.run(1, ids.alice, t, t, 'Bad puller').lastInsertRowid;
   const openId = ins.run(1, ids.alice, t, null, 'still out').lastInsertRowid;
   db.close();
-  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${walkId}`, { user: BOB, body: { body: 'Pulls at first, settles' } })).status, 200, 'another walker can reword it');
-  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${walkId}`, { user: BOB, body: { body: '  ' } })).status, 400);
-  assert.equal((await call('DELETE', `/api/dogs/2/walk-notes/${walkId}`, { user: CAROL })).status, 404, 'must be this dog\'s walk');
-  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${openId}`, { user: CAROL })).status, 404, 'not a walk still going');
-  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${walkId}`, { user: CAROL })).status, 200, 'and a third walker can clear it');
+  // security3: walk notes are named by an opaque id from the dog's notes,
+  // never by the walk id.
+  const listed = (await call('GET', '/api/dogs/1/notes', { user: BOB })).json.walkNotes;
+  const noteId = listed.find((n) => n.text === 'Bad puller').noteId;
+  assert.ok(!listed.some((n) => n.text === 'still out'), 'not a walk still going');
+  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${walkId}`, { user: BOB, body: { body: 'by walk id' } })).status, 404, 'a walk id is not accepted');
+  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${noteId}`, { user: BOB, body: { body: 'Pulls at first, settles' } })).status, 200, 'another walker can reword it');
+  assert.equal((await call('PUT', `/api/dogs/1/walk-notes/${noteId}`, { user: BOB, body: { body: '  ' } })).status, 400);
+  assert.equal((await call('DELETE', `/api/dogs/2/walk-notes/${noteId}`, { user: CAROL })).status, 404, 'must be this dog\'s walk');
+  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${noteId}`, { user: CAROL })).status, 200, 'and a third walker can clear it');
   const ro = new Database(dbFile, { readonly: true });
   const walk = ro.prepare('SELECT notes, ended_at FROM walks WHERE id = ?').get(walkId);
   ro.close();
   const rw = new Database(dbFile); rw.prepare('DELETE FROM walks WHERE id = ?').run(openId); rw.close();
   assert.equal(walk.notes, null);
   assert.equal(walk.ended_at, t, 'the walk itself is untouched');
-  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${walkId}`, { user: CAROL })).status, 404, 'already gone');
+  assert.equal((await call('DELETE', `/api/dogs/1/walk-notes/${noteId}`, { user: CAROL })).status, 404, 'already gone');
 });
 
 test('private note: replace, append, and clear', async () => {
@@ -297,12 +298,17 @@ test('a day\'s walks are listed in order with no walker identity; only your own 
   for (const forbidden of ['alice', 'bob', 'zebrafish', '@example', 'private note', 'user_id', 'userid', 'notes', 'auto', 'edited', 'manual']) {
     assert.ok(!text.includes(forbidden), `day detail must not contain "${forbidden}"`);
   }
+  // Round 4: your own keep their times; anyone else's has only its session
+  // (slot) and a length to the nearest 5 minutes.
   for (const w of asCarol.json.walks) {
-    assert.deepEqual(Object.keys(w).sort(), ['activity', 'blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'endedAt', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'starFlag', 'startedAt']);
+    const common = ['activity', 'blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'slot', 'starFlag'];
+    assert.deepEqual(Object.keys(w).sort(), (w.mine ? [...common, 'endedAt', 'startedAt'] : common).sort());
+    if (!w.mine) assert.equal(w.durationSeconds % 300, 0);
   }
   assert.deepEqual(asCarol.json.walks.map((w) => w.order), asCarol.json.walks.map((_, i) => i + 1), 'numbered in order');
-  const starts = asCarol.json.walks.map((w) => w.startedAt);
-  assert.deepEqual(starts, [...starts].sort(), 'oldest first');
+  const slots = asCarol.json.walks.map((w) => w.slot).filter((s) => s >= 0);
+  assert.deepEqual(slots, [...slots].sort((a, b) => a - b), 'by session');
+  assert.ok(asCarol.json.totals && asCarol.json.totals.walks === asCarol.json.walks.length, 'exact day totals come along');
   assert.ok(asCarol.json.walks.filter((w) => w.mine).length <= 1, 'Carol only sees her own walk (the manual one) marked');
   const asAlice = await call('GET', `/api/impact/day?date=${day}`, { user: ALICE });
   const aliceMine = asAlice.json.walks.filter((w) => w.mine).length;
@@ -325,8 +331,15 @@ test('a dog\'s walk history marks only your own walks, and never says who else w
   const r = await call('GET', `/api/dogs/7/walk-history?userId=${ids.bob}`, { user: ALICE });
   assert.equal(r.status, 200);
   assert.equal(r.json.walks.length, 2, 'finished walks only');
-  assert.deepEqual(r.json.walks.map((w) => w.mine), [false, true], 'newest first; only Alice\'s is hers, whatever userId is sent');
-  for (const w of r.json.walks) assert.deepEqual(Object.keys(w).sort(), ['activity', 'durationSeconds', 'endedAt', 'mine', 'startedAt']);
+  // Same day and walk window: yours first, then the rest (never by their real times).
+  assert.deepEqual(r.json.walks.map((w) => w.mine), [true, false], 'only Alice\'s is hers, whatever userId is sent');
+  // security3: your own walks keep their times; anyone else's is just a
+  // date, a walk window and a length to the nearest 5 minutes.
+  for (const w of r.json.walks) {
+    assert.deepEqual(Object.keys(w).sort(), w.mine
+      ? ['activity', 'date', 'durationSeconds', 'endedAt', 'mine', 'slot', 'startedAt']
+      : ['activity', 'date', 'durationSeconds', 'mine', 'slot']);
+  }
   const text = r.text.toLowerCase();
   for (const forbidden of ['alice', 'bob', 'carol', 'zebrafish', '@example', 'user', 'note', 'email']) {
     assert.ok(!text.includes(forbidden), `walk history must not contain "${forbidden}"`);
@@ -351,10 +364,10 @@ test('hide-my-name-while-walking: the live "currently out" name only shows when 
   // Brand-new accounts default to hidden (privacy-by-default) -- Bob's test
   // account was created fresh in this file's setup, so this is that default.
   const hidden = await call('GET', '/api/dogs/6', { user: CAROL });
-  assert.equal(hidden.json.dog.currentWalk.userName, 'a Volunteer', 'hidden by default for a new account');
+  assert.equal(hidden.json.dog.currentWalk.userName, 'a volunteer', 'hidden by default for a new account');
   assert.ok(!hidden.text.includes(bobName));
   const clashHidden = await call('POST', '/api/walks/start', { user: ALICE, body: { dogId: 6, userId: ids.alice } });
-  assert.ok(clashHidden.json.error.includes('already out with a Volunteer'));
+  assert.ok(clashHidden.json.error.includes('already out with a volunteer'));
   assert.ok(!clashHidden.text.includes(bobName), 'the "already out" error must not leak the real name either');
 
   // Turn privacy off, then re-check both of those same places.

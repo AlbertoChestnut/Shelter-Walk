@@ -3,11 +3,8 @@
 // hours" and "stopped at closing time" are testable whenever the suite runs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
 const nyNow = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' })
   .formatToParts(new Date()).reduce((acc, p) => (p.type === 'hour' ? acc + Number(p.value) * 60 : p.type === 'minute' ? acc + Number(p.value) : acc), 0);
@@ -18,12 +15,8 @@ const WALK_HOURS = tooEarly ? '00:00-00:01' : `${hhmm(nyNow - 65)}-${hhmm(nyNow 
 process.env.WALK_HOURS = WALK_HOURS;
 const { walkWindow, HOURS_LABEL, CLOSE_LABEL } = require('../src/walkHours');
 
-const PORT = 3800 + Math.floor(Math.random() * 100);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-hours-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
+let base, dbFile, server;
 const USER = 'hours@example.com';
-let proc;
 
 async function call(method, url, body) {
   const res = await fetch(base + url, { method, headers: { 'content-type': 'application/json', 'x-auth-email': USER }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -36,18 +29,15 @@ const { opensAt, closesAt } = walkWindow(new Date());
 const skip = tooEarly && 'too close to midnight to set up the test window';
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) {
-    try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  server = await startServer({ prefix: 'sw-hours-', env: { WALK_HOURS } });
+  ({ base, dbFile } = server);
   await call('GET', '/api/me');
   const db = new Database(dbFile);
   const now = new Date().toISOString();
   db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (1, 'Night', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(now, now);
   db.close();
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
+test.after(async () => { if (server) await server.stop(); });
 
 test('no walks can start, or be logged, outside walking hours', { skip }, async () => {
   const me = (await call('GET', '/api/me')).json;
@@ -87,7 +77,9 @@ test('a daycation is not stopped at closing time, and can be logged past it', { 
   const me = (await call('GET', '/api/me')).json;
   const startedAt = new Date(closesAt.getTime() - 10 * 60000).toISOString(); // 10 minutes before closing
   const db = new Database(dbFile);
-  db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ?').run(me.id);
+  // The earlier tests' walks go: the daycation logged below spans the whole
+  // window, and a walker's entries can't overlap.
+  db.prepare('DELETE FROM walks WHERE user_id = ?').run(me.id);
   const id = db.prepare("INSERT INTO walks (dog_id, user_id, started_at, activity) VALUES (1, ?, ?, 'daycation')").run(me.id, startedAt).lastInsertRowid;
   db.close();
   const active = await call('GET', '/api/walks/active');

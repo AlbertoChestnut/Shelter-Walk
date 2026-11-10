@@ -1,17 +1,12 @@
 // End-to-end API tests: boots the real server against a throwaway DB.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer: bootServer, tempDirs } = require('./_helpers');
 
-const PORT = 3400 + Math.floor(Math.random() * 400);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-api-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+const { dir, dbFile } = tempDirs('sw-api-');
+let base;
+let server;
 
 const as = (email, staff) => ({ 'content-type': 'application/json', 'x-auth-email': email, ...(staff ? { 'x-auth-staff': '1' } : {}) });
 async function call(method, url, { user = 'walker@example.com', staff = false, body, headers } = {}) {
@@ -20,15 +15,12 @@ async function call(method, url, { user = 'walker@example.com', staff = false, b
   let json = null; try { json = JSON.parse(text); } catch (e) { /* not json */ }
   return { status: res.status, json, text };
 }
+// Restarts reuse the same DB; the port (and so `base`) changes each time.
 async function startServer() {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) {
-    try { if ((await fetch(`${base}/healthz`)).ok) return; } catch (e) { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error('server did not start');
+  server = await bootServer({ dir, dbFile });
+  base = server.base;
 }
-async function stopServer() { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); proc = null; } }
+async function stopServer() { if (server) { await server.stop(); server = null; } }
 
 test.before(async () => {
   await startServer();
@@ -39,6 +31,11 @@ test.before(async () => {
   ins.run(1, 'Listed', 1, now, now);
   ins.run(2, 'Gone', 0, now, now);
   ins.run(3, 'Other', 1, now, now);
+  // Own dogs for the tests that insert open walks directly: the database
+  // allows only one open walk per dog (and per walker).
+  ins.run(43, 'Ender', 1, now, now);
+  ins.run(44, 'Wrapper', 1, now, now);
+  ins.run(45, 'Alerts', 1, now, now);
   db.close();
 });
 test.after(stopServer);
@@ -141,13 +138,19 @@ test('a note left at the end of a play group session is tagged "playgroup", not 
   const user = 'pgnotes@example.com';
   const userId = (await call('GET', '/api/me', { user })).json.id;
   const now = Date.now();
+  // A dog of its own: manual entries can't overlap another walk of the same dog.
+  const dogId = 46;
+  const seed = new Database(dbFile);
+  const ts = new Date().toISOString();
+  seed.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (?, 'Grouper', 'Male', '3 Years', '2026-07-01T00:00:00', 1, ?, ?)").run(dogId, ts, ts);
+  seed.close();
   const pg = await call('POST', '/api/walks/manual', { user, body: {
-    dogId: 1, userId, activity: 'playgroup', notes: 'Did great with the group',
+    dogId, userId, activity: 'playgroup', notes: 'Did great with the group',
     startedAt: new Date(now - 30 * 60000).toISOString(), endedAt: new Date(now - 10 * 60000).toISOString()
   } });
   assert.equal(pg.status, 200);
   const walk = await call('POST', '/api/walks/manual', { user, body: {
-    dogId: 1, userId, notes: 'Pulled on leash a bit',
+    dogId, userId, notes: 'Pulled on leash a bit',
     startedAt: new Date(now - 90 * 60000).toISOString(), endedAt: new Date(now - 60 * 60000).toISOString()
   } });
   assert.equal(walk.status, 200);
@@ -245,11 +248,16 @@ test('ending a walk by hand uses the moment End Walk was tapped', async () => {
   const userId = (await call('GET', '/api/me', { user })).json.id;
   const now = Date.now();
   const read = (id) => { const c = new Database(dbFile, { readonly: true }); const r = c.prepare('SELECT * FROM walks WHERE id = ?').get(id); c.close(); return r; };
-  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
+  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (43, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
   const end = (id, body) => call('PUT', `/api/walks/${id}/end`, { user, body });
 
+  // Round 4: a tap "in the future" on an open walk is a fast phone clock:
+  // it ends now (server time) instead of being refused.
+  const fast = insertWalk(30);
+  const fastEnd = await end(fast, { endTappedAt: new Date(now + 10 * 60000).toISOString() });
+  assert.equal(fastEnd.status, 200, 'a fast clock still ends the walk');
+  assert.ok(Math.abs(new Date(fastEnd.json.endedAt) - Date.now()) < 5000, 'at the server\'s now');
   const w = insertWalk(25);
-  assert.equal((await end(w, { endTappedAt: new Date(now + 10 * 60000).toISOString() })).status, 400, 'not in the future');
   assert.equal((await end(w, { endTappedAt: 'soon' })).status, 400, 'not garbage');
   const tappedAt = new Date(now - 60000).toISOString();
   const r = await end(w, { notes: 'x', endTappedAt: tappedAt, endedAt: new Date(now - 20 * 60000).toISOString() });
@@ -275,7 +283,7 @@ test('a walk the time limit stopped asks when it really ended', async () => {
   const userId = (await call('GET', '/api/me', { user })).json.id;
   const now = Date.now();
   const read = (id) => { const c = new Database(dbFile, { readonly: true }); const r = c.prepare('SELECT * FROM walks WHERE id = ?').get(id); c.close(); return r; };
-  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
+  const insertWalk = (minutesAgo) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (44, ?, ?)').run(userId, new Date(now - minutesAgo * 60000).toISOString()).lastInsertRowid; c.close(); return id; };
   const end = (id, body) => call('PUT', `/api/walks/${id}/end`, { user, body });
 
   // Stopped while the app was closed: opening it again offers the end screen.
@@ -334,18 +342,19 @@ test('walk length alerts: up to 3, saved per walker, each sent once and never st
   assert.equal((await call('PUT', `/api/users/${userId}/walk-alerts`, { user: 'walker@example.com', body: { minutes: [1] } })).status, 403);
 
   const now = Date.now();
-  const c = new Database(dbFile);
-  const insert = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (1, ?, ?)');
-  const justPast7 = insert.run(userId, new Date(now - (7 * 60 + 20) * 1000).toISOString()).lastInsertRowid;
-  const past10Late = insert.run(userId, new Date(now - 14 * 60000).toISOString()).lastInsertRowid;
-  c.close();
-  await call('GET', '/api/walks/active', { user }); // runs the sweep
+  // One open walk at a time per walker (and per dog), so the two cases run
+  // one after the other.
+  const insertOpen = (startedAt) => { const c = new Database(dbFile); const id = c.prepare('INSERT INTO walks (dog_id, user_id, started_at) VALUES (45, ?, ?)').run(userId, startedAt).lastInsertRowid; c.close(); return id; };
+  const remove = (id) => { const d = new Database(dbFile); d.prepare('DELETE FROM walks WHERE id = ?').run(id); d.close(); };
   const read = (id) => { const r = new Database(dbFile, { readonly: true }); const row = r.prepare('SELECT alerted_minutes FROM walks WHERE id = ?').get(id); r.close(); return row.alerted_minutes; };
+  const justPast7 = insertOpen(new Date(now - (7 * 60 + 20) * 1000).toISOString());
+  await call('GET', '/api/walks/active', { user }); // runs the sweep
   assert.equal(read(justPast7), 7, 'the 7 minute alert went out');
+  remove(justPast7);
+  const past10Late = insertOpen(new Date(now - 14 * 60000).toISOString());
+  await call('GET', '/api/walks/active', { user });
   assert.equal(read(past10Late), 10, 'only the latest due alert counts; 10 min is 4 minutes stale so it is skipped, not resent');
-  const d = new Database(dbFile);
-  d.prepare('DELETE FROM walks WHERE id IN (?, ?)').run(justPast7, past10Late);
-  d.close();
+  remove(past10Late);
   assert.deepEqual((await put([])).json.minutes, [], 'can be cleared');
 });
 

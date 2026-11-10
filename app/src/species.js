@@ -22,8 +22,8 @@
 //   wrapUpChecks: reminders ticked off on the end screen (latch, locks,
 //               hands). An animal mid-adoption also gets a "relock" one.
 //   notePlaceholder: example text for the end screen's shared note
-//   terms:      what the app calls time with one (owner, 2026-11-06: dogs are
-//               walked, cats are played with). Where more than one species
+//   terms:      what the app calls time with one (owner: dogs are walked;
+//               cats are cuddled, 2026-11-10, was "played with"). Where more than one species
 //               is covered, the app says "engage" instead (app.js termsFor).
 const SPECIES = {
   dog: {
@@ -58,7 +58,7 @@ const SPECIES = {
       'Hands sanitized before the next condo'
     ],
     notePlaceholder: 'e.g. Shy at first, loves the wand toy, purrs for chin scratches',
-    terms: { verb: 'play', verbWith: 'play with', past: 'played with', noun: 'play session', nouns: 'play sessions', ing: 'playing' }
+    terms: { verb: 'cuddle', verbWith: 'cuddle', past: 'cuddled', noun: 'cuddle', nouns: 'cuddles', ing: 'cuddling' }
   }
 };
 const SPECIES_KEYS = Object.keys(SPECIES);

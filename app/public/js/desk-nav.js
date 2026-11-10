@@ -23,20 +23,27 @@
       </span>
       ${current ? `<label class="desk-nav-start">
         <input type="checkbox" id="deskNavStart"${me.desktop.start === current.key ? ' checked' : ''} />
-        Open this page first on a computer
+        <span class="desk-nav-start-long">Open this page first on a computer</span><span class="desk-nav-start-short" title="Open this page first on a computer">Start here</span>
       </label>` : ''}`;
     const box = document.getElementById('deskNavStart');
     if (!box) return;
     box.addEventListener('change', async () => {
-      // Unticking goes back to the default for who you are.
-      const desktopView = box.checked ? current.key : null;
+      // Unticking picks the volunteer app. Not null ("the default for who
+      // you are"): for staff that default is this very page, so the box
+      // would just tick itself again.
+      const desktopView = box.checked ? current.key : 'app';
       box.disabled = true;
       try {
-        const res = await fetch(`/api/users/${me.id}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ desktopView }) });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Not saved');
+        const res = await fetch(`/api/users/${me.id}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ desktopView }) }).catch(() => null);
+        if (!res) throw new Error("Couldn't reach the server.");
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          // A 4xx's own `error` is written for people; anything else gets a plain line.
+          throw new Error(res.status < 500 && typeof body.error === 'string' && body.error ? body.error : 'Something went wrong on our end.');
+        }
       } catch (err) {
         box.checked = !box.checked;
-        window.alert(`Couldn't save that: ${err.message}`);
+        window.alert(`Couldn't save that. ${err.message} Try again in a moment.`);
       }
       await render();
     });

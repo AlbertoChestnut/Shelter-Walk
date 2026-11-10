@@ -17,8 +17,11 @@ const crypto = require('crypto');
 
 const DEV_PEPPER = 'dev-only-insecure-pepper-do-not-use-in-production';
 const PEPPER = process.env.EMAIL_HASH_PEPPER || DEV_PEPPER;
+// In production a missing pepper is fatal, not a warning: starting with the
+// dev pepper and setting the real one later would change every hash and
+// orphan every account.
 if (PEPPER === DEV_PEPPER && process.env.NODE_ENV === 'production') {
-  console.warn('[email-hash] EMAIL_HASH_PEPPER is not set -- using an insecure default pepper in production.');
+  throw new Error('[email-hash] EMAIL_HASH_PEPPER is not set. Refusing to start in production without it.');
 }
 
 function hashEmail(email) {

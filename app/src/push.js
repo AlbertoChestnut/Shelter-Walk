@@ -22,13 +22,19 @@ const getPref = db.prepare('SELECT enabled FROM notification_prefs WHERE user_id
 // Sends to every device this user has subscribed on. A subscription the
 // push service reports as gone (404/410 -- the user uninstalled, cleared
 // site data, etc) is deleted rather than retried forever.
-async function sendPushToUser(userId, payload) {
+//
+// TTL (seconds) is how long the push service keeps trying a phone that's
+// offline. web-push's own default is 4 weeks, so a walk alert could arrive
+// days after the walk ended; a day is the default here, and walk alerts pass
+// a few minutes with urgency 'high'.
+const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+async function sendPushToUser(userId, payload, { TTL = DEFAULT_TTL_SECONDS, urgency = 'normal' } = {}) {
   if (!enabled) return;
   const subs = getSubscriptionsForUser.all(userId);
   for (const sub of subs) {
     const subscription = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
     try {
-      await webpush.sendNotification(subscription, JSON.stringify(payload));
+      await webpush.sendNotification(subscription, JSON.stringify(payload), { TTL, urgency });
     } catch (err) {
       if (err.statusCode === 404 || err.statusCode === 410) {
         deleteSubscription.run(sub.id);
@@ -44,4 +50,7 @@ function hasPref(userId, prefKey) {
   return !!(row && row.enabled);
 }
 
-module.exports = { sendPushToUser, hasPref, isPushEnabled: () => enabled, VAPID_PUBLIC_KEY };
+// For walk notices: useless once the moment has passed.
+const WALK_ALERT_PUSH = { TTL: 300, urgency: 'high' };
+
+module.exports = { sendPushToUser, hasPref, isPushEnabled: () => enabled, VAPID_PUBLIC_KEY, WALK_ALERT_PUSH };

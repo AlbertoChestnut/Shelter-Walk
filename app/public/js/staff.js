@@ -20,13 +20,53 @@
     clearTimeout(timer);
     const isJson = res.headers.get('content-type')?.includes('application/json');
     const body = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) throw new Error((body && body.error) || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(httpErrorMessage(res.status, body));
     return body;
+  }
+  // Same wording as app.js's httpErrorMessage(): a 4xx's own `error` (written
+  // for people), else a plain line -- never "Request failed (500)".
+  function httpErrorMessage(status, body) {
+    if (status < 500 && body && typeof body.error === 'string' && body.error) return body.error;
+    if (status === 404) return "That couldn't be found. It may have been removed.";
+    if (status === 401 || status === 403) return "You don't have access to that. Reload the page to sign in again.";
+    if (status === 429) return 'Too many tries in a row. Wait a moment and try again.';
+    if (status >= 502 && status <= 504) return "The server isn't responding right now. Try again in a minute.";
+    return 'Something went wrong on our end. Try again in a moment.';
   }
 
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = `toast${kind === 'error' ? ' error' : ''}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('hidden'), 4000);
+  }
+  window.staffToast = toast; // staff-settings.js uses it too
+
+  // "Today" is always the shelter's date (America/New_York), never this
+  // computer's own time zone or UTC -- the server counts days the same way.
+  const SHELTER_TZ = 'America/New_York';
+  const shelterKeyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: SHELTER_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+  function shelterTodayKey() { return shelterKeyFmt.format(new Date()); }
+  function addDaysKey(key, n) {
+    const d = new Date(`${key}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  // "Mon, Oct 12" (with the year when it isn't this year).
+  function friendlyDate(key) {
+    const [y, m, d] = key.split('-').map(Number);
+    const opts = { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' };
+    if (String(y) !== shelterTodayKey().slice(0, 4)) opts.year = 'numeric';
+    return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString('en-US', opts);
+  }
+  const NOUNS = { dog: 'Dogs', cat: 'Cats', all: 'Animals' };
 
   // ---- Fit-to-screen: shrinks (or modestly grows) the whole page via CSS
   // zoom so it fits one screen's height without scrolling -- meant for an
@@ -106,6 +146,7 @@
 
   // ==================== Live board ====================
   let demoMode = false;
+  let liveSpecies = 'dog'; // the Show: Dogs / Cats / Dogs and cats switch
   const previousStatValues = {};
 
   function formatElapsed(startedAtIso) {
@@ -138,22 +179,25 @@
 
   function entryHtml(entry, activityAverages) {
     const icon = ACTIVITY_ICONS[entry.activity] || '';
-    const activityNote = entry.activity !== 'walk' ? ` <span class="meta">(${entry.activityLabel})</span>` : '';
-    const avgSeconds = (activityAverages && activityAverages[entry.activity]) || 30 * 60;
-    const prog = progressInfo(entry.startedAt, avgSeconds);
+    const activityNote = entry.activity !== 'walk' ? ` <span class="meta">(${escapeHtml(entry.activityLabel)})</span>` : '';
+    // A daycation is a day out, not a walk that's running long: no average
+    // bar or "above average" badge for it.
+    const compare = entry.activity !== 'daycation';
+    const avgSeconds = compare ? ((activityAverages && activityAverages[entry.activity]) || 30 * 60) : 0;
+    const prog = compare ? progressInfo(entry.startedAt, avgSeconds) : null;
     return `
       <div class="walk-entry" data-avg-seconds="${avgSeconds}">
         <div class="entry-head">
-          <img class="dog-avatar" src="${escapeHtml(entry.photoUrl || '')}" alt="" loading="lazy" />
+          <img class="dog-avatar" src="${escapeHtml(String(entry.photoUrl || '').replace(/^\/cached-images\/(\d+\.jpg)/, '/cached-images/thumbs/$1'))}" alt="" loading="lazy" />
           <div class="entry-head-text">
             <div class="dog-name"><span class="activity-icon" title="${escapeHtml(entry.activityLabel)}" aria-hidden="true">${icon}</span>${escapeHtml(entry.dogName)}${activityNote}</div>
             <div class="elapsed" data-started="${entry.startedAt}">${formatElapsed(entry.startedAt)}</div>
           </div>
         </div>
-        <div class="progress-track" title="Average ${escapeHtml(entry.activityLabel)} duration: ${formatMinutes(avgSeconds)}">
+        ${prog ? `<div class="progress-track" title="Average ${escapeHtml(entry.activityLabel.toLowerCase())} length: ${formatMinutes(avgSeconds)}">
           <div class="progress-fill ${prog.state !== 'good' ? prog.state : ''}" style="width:${prog.pct.toFixed(1)}%"></div>
         </div>
-        ${prog.note ? `<div class="progress-note ${prog.state}">${prog.note}</div>` : ''}
+        ${prog.note ? `<div class="progress-note ${prog.state}">${prog.note}</div>` : ''}` : ''}
         <div class="meta">with ${escapeHtml(entry.walkerName)}</div>
       </div>`;
   }
@@ -222,7 +266,7 @@
       const x = padL + i * barW + 1;
       const y = yFor(n);
       const height = Math.max(1, (padT + plotH) - y);
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0, barW - 2).toFixed(1)}" height="${height.toFixed(1)}" class="spark-bar"><title>${hourLabel(h)} - ${n} walk${n === 1 ? '' : 's'}</title></rect>`;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0, barW - 2).toFixed(1)}" height="${height.toFixed(1)}" class="spark-bar"><title>${hourLabel(h)} - ${n} engagement${n === 1 ? '' : 's'}</title></rect>`;
     }).join('');
 
     const xLabels = [7, 9, 11, 13, 15, 17, 19].map((h) => {
@@ -234,14 +278,15 @@
     const baseline = `<line x1="${padL}" y1="${(padT + plotH).toFixed(1)}" x2="${W}" y2="${(padT + plotH).toFixed(1)}" class="spark-axis-line" />`;
 
     document.getElementById('sparklineBars').innerHTML = `
-      <svg viewBox="0 0 ${W} ${H}" class="spark-svg" role="img" aria-label="Walks started per hour today, 7am to 7pm">
+      <svg viewBox="0 0 ${W} ${H}" class="spark-svg" role="img" aria-label="Finished engagements per hour they started, today, 7am to 7pm">
         ${gridLines}${bars}${baseline}${xLabels}
       </svg>`;
   }
 
   function renderOutsToday(outsToday, dogsOutToday) {
+    const noun = (NOUNS[liveSpecies] || 'Dogs').toLowerCase();
     document.getElementById('dogsOutTodayTotal').textContent =
-      dogsOutToday ? `— ${dogsOutToday} dog${dogsOutToday === 1 ? '' : 's'}` : '';
+      dogsOutToday ? `— ${dogsOutToday} ${dogsOutToday === 1 ? noun.replace(/s$/, '') : noun}` : '';
     const boxes = document.getElementById('outsTodayBuckets');
     if (!outsToday) { boxes.innerHTML = ''; return; }
     boxes.innerHTML = [['1', '1 time'], ['2', '2 times'], ['3', '3 times'], ['4plus', '4+ times']]
@@ -260,7 +305,7 @@
     document.getElementById('daycationEntries').innerHTML = list.map((e) => entryHtml(e, activityAverages)).join('');
   }
 
-  const ACTIVITY_TITLES = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Play Group' };
+  const ACTIVITY_TITLES = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Play group' };
   let viewMode = 'location';
 
   function renderGrid(data) {
@@ -284,7 +329,7 @@
       const list = data.locations[key] || [];
       const body = list.length
         ? list.map((entry) => entryHtml(entry, data.activityAverages)).join('')
-        : '<p class="muted small" style="margin:0;">No dogs out</p>';
+        : `<p class="muted small" style="margin:0;">No ${(NOUNS[liveSpecies] || 'Dogs').toLowerCase()} out</p>`;
       return `
         <div class="location-card ${list.length ? '' : 'empty'}">
           <h2>${LOCATION_LABELS[key]} <span class="muted small">(${list.length})</span></h2>
@@ -293,12 +338,22 @@
     }).join('');
   }
 
-  document.querySelectorAll('.view-toggle-btn').forEach((btn) => {
+  document.querySelectorAll('.view-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       viewMode = btn.dataset.view;
-      document.querySelectorAll('.view-toggle-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.view-btn').forEach((b) => b.classList.toggle('active', b === btn));
       if (lastLiveData) renderGrid(lastLiveData);
       fitToScreen();
+    });
+  });
+  // Every number on the board follows this switch: "Dogs out now" really is
+  // dogs only unless Cats or Dogs and cats is picked.
+  document.querySelectorAll('.species-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      liveSpecies = btn.dataset.species;
+      document.querySelectorAll('.species-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('#liveSection .noun-many').forEach((el) => { el.textContent = NOUNS[liveSpecies]; });
+      refreshLive();
     });
   });
 
@@ -314,14 +369,14 @@
     const arrowEl = document.getElementById('walksTrendArrow');
     if (typeof data.walksYesterday === 'number') {
       const delta = data.walksToday - data.walksYesterday;
-      arrowEl.textContent = delta === 0 ? '' : (delta > 0 ? `▲${delta}` : `▼${Math.abs(delta)}`);
+      arrowEl.textContent = delta === 0 ? 'same as yesterday' : `${delta > 0 ? '▲' : '▼'}${Math.abs(delta)} vs yesterday`;
       arrowEl.title = `${data.walksYesterday} by this time yesterday`;
     } else {
       arrowEl.textContent = '';
     }
 
     document.getElementById('lastUpdated').innerHTML =
-      `<span class="live-dot" aria-hidden="true"></span>Updated ${new Date(data.generatedAt).toLocaleTimeString()}`;
+      `<span class="live-dot" aria-hidden="true"></span>Updated ${new Date(data.generatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
     renderSparkline(data.hourlyToday);
     renderOutsToday(data.outsToday, data.dogsOutToday);
@@ -333,7 +388,9 @@
   async function refreshLive() {
     if (demoMode) return;
     try {
-      renderLive(await api('/api/staff/live'));
+      const species = liveSpecies;
+      const data = await api(`/api/staff/live?species=${encodeURIComponent(species)}`);
+      if (species === liveSpecies && !demoMode) renderLive(data);
     } catch (err) {
       document.getElementById('lastUpdated').textContent = err.message;
     }
@@ -342,7 +399,7 @@
   // ---- Demo mode: a fabricated, clearly-labeled roster for showing the
   // board off (e.g. to the county) without exposing real shelter data.
   // Entirely client-side -- never touches the server or the database. ----
-  const DEMO_ACTIVITY_LABELS = { walk: 'walking', playgroup: 'at play group', matchmaking: 'at matchmaking', daycation: 'on a daycation' };
+  const DEMO_ACTIVITY_LABELS = { walk: 'Walk', playgroup: 'Play group', matchmaking: 'Matchmaking', daycation: 'Daycation' };
   // Made-up "running average" durations for the demo, in the same shape the
   // real /api/staff/live sends -- realistic, on the short side (most walks
   // and sessions are quick), not the old 30-min time-limit-ish numbers.
@@ -414,8 +471,9 @@
       const elapsedEl = entryEl.querySelector('.elapsed');
       const startedAt = elapsedEl && elapsedEl.dataset.started;
       const avgSeconds = Number(entryEl.dataset.avgSeconds);
-      if (!startedAt || !avgSeconds) return;
+      if (!startedAt) return;
       elapsedEl.textContent = formatElapsed(startedAt);
+      if (!avgSeconds) return; // daycations: no average to compare with
       const prog = progressInfo(startedAt, avgSeconds);
       const fill = entryEl.querySelector('.progress-fill');
       if (fill) {
@@ -441,18 +499,25 @@
   setInterval(refreshLive, 5000);
 
   // ==================== Reports ====================
-  function todayKey() { return new Date().toISOString().slice(0, 10); }
-  function daysAgoKey(n) {
-    const d = new Date();
-    d.setDate(d.getDate() - n);
-    return d.toISOString().slice(0, 10);
-  }
-
   const fromInput = document.getElementById('reportFrom');
   const toInput = document.getElementById('reportTo');
   const granularitySelect = document.getElementById('reportGranularity');
-  fromInput.value = daysAgoKey(29);
-  toInput.value = todayKey();
+  const speciesSelect = document.getElementById('reportSpecies');
+  toInput.value = shelterTodayKey();
+  fromInput.value = addDaysKey(toInput.value, -29);
+  toInput.max = shelterTodayKey();
+
+  // From must not be after To. Returns false (and says so) when it is.
+  function rangeIsValid() {
+    const errEl = document.getElementById('reportRangeError');
+    const bad = fromInput.value && toInput.value && fromInput.value > toInput.value;
+    errEl.textContent = bad ? '"From" is after "To". Pick a From date on or before the To date.' : '';
+    fromInput.setAttribute('aria-invalid', bad ? 'true' : 'false');
+    document.querySelector('.export-links').classList.toggle('disabled', !!bad);
+    return !bad;
+  }
+  [fromInput, toInput].forEach((el) => el.addEventListener('change', rangeIsValid));
+  speciesSelect.addEventListener('change', () => refreshReport());
 
   function allSectionKeys() {
     return [...document.querySelectorAll('#sectionsGrid input[type=checkbox]')].map((cb) => cb.value);
@@ -489,7 +554,7 @@
     const name = input.value.trim();
     if (!name) return;
     const match = dogsIndex.find((d) => d.name.toLowerCase() === name.toLowerCase());
-    if (!match) { errEl.textContent = `No dog named "${name}" found.`; return; }
+    if (!match) { errEl.textContent = `No animal named "${name}" found.`; return; }
     errEl.textContent = '';
     if (!selectedDogs.some((d) => d.id === match.id)) selectedDogs.push(match);
     input.value = '';
@@ -550,7 +615,8 @@
       });
       nameInput.value = '';
       await loadSavedReportsList();
-    } catch (err) { alert(err.message); }
+      toast(`Saved "${name}".`);
+    } catch (err) { toast(`Couldn't save. ${err.message}`, 'error'); }
   });
 
   document.getElementById('deleteSavedReportBtn').addEventListener('click', async () => {
@@ -560,7 +626,7 @@
       await api(`/api/staff/saved-reports/${id}`, { method: 'DELETE' });
       await loadSavedReportsList();
       document.getElementById('deleteSavedReportBtn').classList.add('hidden');
-    } catch (err) { alert(err.message); }
+    } catch (err) { toast(`Couldn't delete. ${err.message}`, 'error'); }
   });
 
   // ---- Fetching, trimming and rendering the report itself ----
@@ -570,7 +636,7 @@
   let lastFullReport = null;
 
   function baseParams() {
-    const params = new URLSearchParams({ from: fromInput.value, to: toInput.value, granularity: granularitySelect.value });
+    const params = new URLSearchParams({ from: fromInput.value, to: toInput.value, granularity: granularitySelect.value, species: speciesSelect.value });
     if (selectedDogs.length) params.set('dogIds', selectedDogs.map((d) => d.id).join(','));
     return params;
   }
@@ -593,32 +659,36 @@
   }
 
   function reportTableHtml(title, columns, rows) {
-    const header = columns.map((c) => `<th>${c}</th>`).join('');
+    const header = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
     const body = rows.map((r) => `<tr>${r.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
-      || `<tr><td colspan="${columns.length}" class="muted">Nothing in range.</td></tr>`;
-    return `<table><caption>${title}</caption><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
+      || `<tr><td colspan="${columns.length}" class="muted">Nothing to show in this range.</td></tr>`;
+    return `<table><caption>${escapeHtml(title)}</caption><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
   }
 
-  function statsBlockHtml(totals, highlights) {
+  function statsBlockHtml(totals, highlights, species) {
+    const noun = (NOUNS[species] || 'Dogs').toLowerCase();
     let html = `<div class="stat-row">
-      <div class="stat-tile"><span class="stat-value">${totals.walks}</span><span class="stat-label">Total walks</span></div>
+      <div class="stat-tile"><span class="stat-value">${totals.walks}</span><span class="stat-label">Engagements</span></div>
       <div class="stat-tile"><span class="stat-value">${totals.hours}</span><span class="stat-label">Volunteer hours</span></div>
-      <div class="stat-tile"><span class="stat-value">${totals.uniqueDogs}</span><span class="stat-label">Unique dogs</span></div>
+      <div class="stat-tile"><span class="stat-value">${totals.uniqueDogs}</span><span class="stat-label">Unique ${noun}</span></div>
       <div class="stat-tile"><span class="stat-value">${totals.volunteerHeadcount}</span><span class="stat-label">Volunteers active</span></div>
     </div>`;
     if (highlights) {
+      // Busiest/quietest are left out by the server when they'd tie (or a
+      // day has too few engagements to show); the tiles go with them.
+      const dayTile = (d, label) => (d ? `<div class="stat-tile"><span class="stat-value stat-value-date">${escapeHtml(friendlyDate(d.dateKey))}</span><span class="stat-label">${label} (${d.walks} engagements)</span></div>` : '');
       html += `<div class="stat-row">
-        <div class="stat-tile"><span class="stat-value" style="font-size:1.3rem;">${highlights.busiestDay ? highlights.busiestDay.dateKey : '—'}</span><span class="stat-label">Busiest day${highlights.busiestDay ? ` (${highlights.busiestDay.walks} walks)` : ''}</span></div>
-        <div class="stat-tile"><span class="stat-value" style="font-size:1.3rem;">${highlights.quietestDay ? highlights.quietestDay.dateKey : '—'}</span><span class="stat-label">Quietest day${highlights.quietestDay ? ` (${highlights.quietestDay.walks} walks)` : ''}</span></div>
-        <div class="stat-tile"><span class="stat-value">${highlights.avgWalksPerVolunteer ?? '—'}</span><span class="stat-label">Avg walks / volunteer</span></div>
-        <div class="stat-tile"><span class="stat-value">${highlights.avgWalkMinutes ?? '—'}</span><span class="stat-label">Avg walk length (min)</span></div>
+        ${dayTile(highlights.busiestDay, 'Busiest day')}
+        ${dayTile(highlights.quietestDay, 'Quietest day')}
+        <div class="stat-tile"><span class="stat-value">${highlights.avgWalksPerVolunteer ?? '—'}</span><span class="stat-label">Avg engagements per volunteer</span></div>
+        <div class="stat-tile" title="Walks only (not cuddles, play group or daycations), finished, a minute or longer"><span class="stat-value">${highlights.avgWalkMinutes ?? '—'}</span><span class="stat-label">Avg walk length (min)</span></div>
       </div>`;
     }
     return html;
   }
 
   function renderReport(report) {
-    let html = statsBlockHtml(report.stats.totals, report.stats.highlights);
+    let html = statsBlockHtml(report.stats.totals, report.stats.highlights, report.species);
     const tables = Object.values(report.tables);
     if (tables.length) {
       html += `<div class="report-tables">${tables.map((t) => reportTableHtml(t.title, t.columns, t.rows)).join('')}</div>`;
@@ -626,9 +696,12 @@
     if (report.dogDetail && report.dogDetail.length) {
       html += report.dogDetail.map((dog) => `
         <div class="dog-detail-card">
-          <h4>${escapeHtml(dog.dogName)} — ${dog.totals.walks} walks, ${dog.totals.hours}h</h4>
+          <h4>${escapeHtml(dog.dogName)} — ${dog.totals.walks} engagement${dog.totals.walks === 1 ? '' : 's'}, ${dog.totals.hours}h</h4>
           <div class="report-tables">${reportTableHtml(dog.table.title, dog.table.columns, dog.table.rows)}</div>
         </div>`).join('');
+    }
+    if (report.notes && report.notes.length) {
+      html += `<ul class="report-notes muted small">${report.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`;
     }
     document.getElementById('reportOutput').innerHTML = html;
   }
@@ -641,6 +714,11 @@
 
   async function refreshReport() {
     const out = document.getElementById('reportOutput');
+    if (!rangeIsValid()) {
+      lastFullReport = null;
+      out.innerHTML = '';
+      return;
+    }
     try {
       const params = baseParams();
       params.set('sections', allSectionKeys().join(','));
@@ -663,23 +741,30 @@
   // ==================== Hours & alerts ====================
   // Usual weekly hours, special days (closed / other hours / a note) and
   // shelter alerts. The server side is src/shelterSchedule.js.
-  const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const fmtWhen = (iso) => new Date(iso).toLocaleString('en-US', { timeZone: SHELTER_TZ, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   function setStatus(id, text, isError) {
     const el = document.getElementById(id);
     el.textContent = text;
     el.style.color = isError ? 'var(--red)' : '';
   }
 
+  // Midnight to midnight (the server's "12am to 12am"), or to 11:59pm (what
+  // the weekly table's time boxes can hold), reads as "all day" in both the
+  // summary and the table, so the two never look like they disagree.
+  const ALL_DAY_LABELS = ['12am to 12am', '12am to 11:59pm'];
+  const hoursText = (label) => (ALL_DAY_LABELS.includes(label) ? 'all day' : label);
+  const isAllDay = (open, close) => open === '00:00' && (close === '23:59' || close === '24:00');
+
   function renderSchedule(data) {
     const t = data.today;
     document.getElementById('hoursToday').innerHTML = `<strong>Today (${escapeHtml(t.label)}):</strong> `
-      + (t.closed ? 'Closed' : `walks ${escapeHtml(t.hoursLabel)}`)
+      + (t.closed ? 'Closed' : `walks ${escapeHtml(hoursText(t.hoursLabel))}`)
       + (t.note ? ` · ${escapeHtml(t.note)}` : '');
 
     document.getElementById('alertList').innerHTML = data.alerts.length
       ? data.alerts.map((a) => `
         <li>
-          <div><strong>${escapeHtml(a.title)}</strong>${a.body && a.body !== a.title ? `<div class="small">${escapeHtml(a.body)}</div>` : ''}
+          <div><strong>${escapeHtml(a.title)}</strong>${a.body && a.body !== a.title ? `<div class="small alert-body">${escapeHtml(a.body)}</div>` : ''}
           <div class="small muted">${escapeHtml(fmtWhen(a.occurredAt))}</div></div>
           <button type="button" class="link-btn" data-delete-alert="${a.id}" title="Remove it from the Updates tab (a push already sent stays sent)">Remove</button>
         </li>`).join('')
@@ -688,7 +773,7 @@
     document.getElementById('specialList').innerHTML = data.specialDays.length
       ? data.specialDays.map((d) => `
         <li>
-          <div><strong>${escapeHtml(d.label)}</strong> · ${d.closed ? '<span class="closed-tag">Closed</span>' : escapeHtml(d.hoursLabel)}
+          <div><strong>${escapeHtml(d.label)}</strong> · ${d.closed ? '<span class="closed-tag">Closed</span>' : escapeHtml(hoursText(d.hoursLabel))}
           ${d.note ? `<div class="small">${escapeHtml(d.note)}</div>` : ''}</div>
           <span class="row-actions">
             <button type="button" class="link-btn" data-edit-day="${d.dateKey}">Edit</button>
@@ -700,8 +785,8 @@
 
     document.getElementById('weeklyRows').innerHTML = data.weekly.map((d) => `
       <tr data-dow="${d.dow}">
-        <td>${escapeHtml(d.label)}</td>
-        <td><input type="time" class="wk-open" value="${d.open}" ${d.closed ? 'disabled' : ''} aria-label="${escapeHtml(d.label)} opens" /></td>
+        <td>${escapeHtml(d.label)}${!d.closed && isAllDay(d.open, d.close) ? ' <span class="small muted">(all day)</span>' : ''}</td>
+        <td><input type="time" class="wk-open" value="${d.open}" ${d.closed ? 'disabled' : ''} aria-label="${escapeHtml(d.label)} walks start" /></td>
         <td><input type="time" class="wk-close" value="${d.close}" ${d.closed ? 'disabled' : ''} aria-label="${escapeHtml(d.label)} walks end" /></td>
         <td><input type="checkbox" class="wk-closed" ${d.closed ? 'checked' : ''} aria-label="${escapeHtml(d.label)} closed" /></td>
       </tr>`).join('');
@@ -715,7 +800,7 @@
     try {
       renderSchedule(await api('/api/staff/schedule'));
     } catch (err) {
-      document.getElementById('hoursToday').textContent = `Couldn't load hours: ${err.message}`;
+      document.getElementById('hoursToday').textContent = `Couldn't load hours. ${err.message}`;
     }
   }
 
@@ -724,10 +809,36 @@
     document.getElementById('specialTimes').classList.toggle('hidden', specialMode() !== 'hours');
   }
   document.querySelectorAll('input[name="specialMode"]').forEach((r) => r.addEventListener('change', syncSpecialMode));
-  // The browser's own date (todayKey() above is UTC, a day ahead every evening).
-  const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-  document.getElementById('specialDate').min = localToday();
-  document.getElementById('specialDate').value = localToday();
+  document.getElementById('specialDate').min = shelterTodayKey();
+  document.getElementById('specialDate').value = shelterTodayKey();
+
+  // Edit mode for a special day: the button says what it will do ("Update
+  // Thu, Nov 26") and Cancel puts the form back to adding a new day.
+  let editingDay = null;
+  function setSpecialEditMode(dateKey) {
+    editingDay = dateKey;
+    const saveBtn = document.getElementById('specialSaveBtn');
+    saveBtn.textContent = dateKey ? `Update ${friendlyDate(dateKey)}` : 'Save day';
+    document.getElementById('specialCancelBtn').classList.toggle('hidden', !dateKey);
+    document.getElementById('specialForm').classList.toggle('editing', !!dateKey);
+  }
+  function resetSpecialForm() {
+    document.getElementById('specialDate').value = shelterTodayKey();
+    document.querySelector('input[name="specialMode"][value="closed"]').checked = true;
+    document.getElementById('specialOpen').value = '07:00';
+    document.getElementById('specialClose').value = '19:00';
+    document.getElementById('specialNote').value = '';
+    document.getElementById('specialNotify').checked = false;
+    syncSpecialMode();
+    setSpecialEditMode(null);
+  }
+  document.getElementById('specialCancelBtn').addEventListener('click', () => {
+    resetSpecialForm();
+    setStatus('specialStatus', '');
+  });
+  document.getElementById('specialDate').addEventListener('change', () => {
+    if (editingDay && document.getElementById('specialDate').value !== editingDay) setSpecialEditMode(null);
+  });
 
   document.getElementById('alertForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -758,9 +869,9 @@
     setStatus('specialStatus', 'Saving…');
     try {
       const r = await api(`/api/staff/schedule/days/${encodeURIComponent(date)}`, { method: 'PUT', body: JSON.stringify(payload) });
-      document.getElementById('specialNote').value = '';
-      document.getElementById('specialNotify').checked = false;
-      setStatus('specialStatus', `Saved ${r.day.label}.${r.alert ? ` Alert sent to ${r.alert.pushedTo}.` : ''}`);
+      const wasEditing = !!editingDay;
+      resetSpecialForm();
+      setStatus('specialStatus', `${wasEditing ? 'Updated' : 'Saved'} ${r.day.label}.${r.alert ? ` Alert sent to ${r.alert.pushedTo}.` : ''}`);
       loadSchedule();
     } catch (err) { setStatus('specialStatus', err.message, true); }
   });
@@ -794,6 +905,9 @@
       if (d.close) document.getElementById('specialClose').value = d.close;
       document.getElementById('specialNote').value = d.note || '';
       syncSpecialMode();
+      setSpecialEditMode(d.dateKey);
+      setStatus('specialStatus', '');
+      document.getElementById('specialForm').scrollIntoView({ block: 'nearest' });
       document.getElementById('specialDate').focus();
       return;
     }
@@ -801,7 +915,8 @@
     if (!window.confirm(isAlert ? 'Remove this alert from the Updates tab? (Phones that already got it keep the notification.)' : 'Remove this special day? It goes back to the usual hours.')) return;
     try {
       await api(isAlert ? `/api/staff/alerts/${btn.dataset.deleteAlert}` : `/api/staff/schedule/days/${btn.dataset.deleteDay}`, { method: 'DELETE' });
+      if (!isAlert && btn.dataset.deleteDay === editingDay) resetSpecialForm();
       loadSchedule();
-    } catch (err) { window.alert(err.message); }
+    } catch (err) { toast(`Couldn't remove it. ${err.message}`, 'error'); }
   });
 })();

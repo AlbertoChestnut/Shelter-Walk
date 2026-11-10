@@ -2,17 +2,10 @@
 // is asked once whether to move up to Established.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 4010 + Math.floor(Math.random() * 9);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-levelup-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base; let dbFile; let server;
 const ALICE = 'alice.level@example.com';
 const BOB = 'bob.level@example.com';
 const CAROL = 'carol.level@example.com';
@@ -41,8 +34,8 @@ function addWalks(userId, hours) {
 
 const ids = {};
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-levelup-' });
+  ({ base, dbFile } = server);
   for (const [k, e] of [['alice', ALICE], ['bob', BOB], ['carol', CAROL]]) ids[k] = (await call('GET', '/api/me', { user: e })).json.id;
   const db = new Database(dbFile);
   const now = new Date().toISOString();
@@ -50,7 +43,7 @@ test.before(async () => {
   db.prepare("UPDATE users SET experience_level = 'beginner'").run();
   db.close();
 });
-test.after(() => { if (proc) proc.kill(); });
+test.after(async () => { if (server) await server.stop(); });
 
 const offered = async (user) => (await call('GET', '/api/me', { user })).json.levelUpOffer;
 

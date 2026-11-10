@@ -7,3 +7,35 @@
 a.desk-nav-link:hover { background: rgba(127, 127, 127, 0.12); }
 .desk-nav-link.current { background: var(--green); color: #fff; font-weight: 600; }
 .desk-nav-start { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+
+/* Inside the green header bar (both desk pages): white on green. */
+.topbar .desk-nav-views { border-color: rgba(255, 255, 255, 0.55); }
+.topbar .desk-nav-link { color: #fff; }
+.topbar .desk-nav-link + .desk-nav-link { border-left-color: rgba(255, 255, 255, 0.55); }
+.topbar a.desk-nav-link:hover { background: rgba(255, 255, 255, 0.15); }
+.topbar .desk-nav-link.current { background: #fff; color: #1f4d36; }
+.topbar .desk-nav-start { color: rgba(255, 255, 255, 0.92); }
+.topbar .desk-nav-start input { accent-color: #fff; }
+
+/* Tablet-width windows: a shorter label and tighter links, so the green bar
+   stays one row. */
+.desk-nav-start-short { display: none; }
+@media (max-width: 1000px) {
+  .desk-nav-start-long { display: none; }
+  .desk-nav-start-short { display: inline; }
+  .desk-nav-link { padding: 6px 10px; }
+}
+
+/* Narrow phones (320px): tighter links, and if they still don't fit, the
+   switcher scrolls sideways inside itself instead of widening the page. */
+@media (max-width: 420px) {
+  .desk-nav { min-width: 0; max-width: 100%; }
+  .desk-nav-views { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .desk-nav-views::-webkit-scrollbar { display: none; }
+  .desk-nav-link { padding: 5px 8px; font-size: 0.78rem; }
+}
+
+/* "Open this page first on a computer" means nothing on a phone. */
+@media (max-width: 600px), (hover: none) and (pointer: coarse) {
+  .desk-nav-start { display: none; }
+}

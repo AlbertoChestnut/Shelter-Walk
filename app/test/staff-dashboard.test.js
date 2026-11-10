@@ -4,17 +4,10 @@
 // impact.js uses) is correct and agrees across JSON/CSV/XLSX/PDF.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 4300 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-staff-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base, dbFile, server;
 
 const WALKER_A = 'walker.a@example.com';
 const WALKER_B = 'walker.b@example.com';
@@ -33,8 +26,8 @@ async function call(method, url, { user = WALKER_A, staff = false, body, headers
 
 const ids = {};
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-staff-' });
+  ({ base, dbFile } = server);
 
   for (const [k, e] of [['a', WALKER_A], ['b', WALKER_B], ['priv', PRIVATE_WALKER]]) {
     ids[k] = (await call('GET', '/api/me', { user: e })).json.id;
@@ -49,7 +42,7 @@ test.before(async () => {
   for (let d = 4; d <= 20; d += 1) insDog.run(d, `Dog${d}`, null, now, now);
   db.close();
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); proc = null; } });
+test.after(async () => { if (server) { await server.stop(); server = null; } });
 
 test('access is gated on X-Auth-Staff alone', async () => {
   assert.equal((await call('GET', '/staff')).status, 403);
@@ -138,7 +131,7 @@ test('live board groups active walks by location and honors hide_name_while_walk
   assert.equal(live.json.locations.unassigned.length, 1);
   const privEntry = live.json.locations.unassigned[0];
   assert.equal(privEntry.dogName, 'Spot');
-  assert.equal(privEntry.walkerName, 'a Volunteer', 'hide_name_while_walking must be honored on the staff board too');
+  assert.equal(privEntry.walkerName, 'a volunteer', 'hide_name_while_walking must be honored on the staff board too');
 
   await call('DELETE', `/api/walks/${startA.json.walkId}`, { user: WALKER_A });
   await call('DELETE', `/api/walks/${startB.json.walkId}`, { user: WALKER_B });
@@ -220,12 +213,12 @@ test('reports: totals/byActivity are correct and byPeriod drops below-MIN_CELL d
   assert.equal(report.json.stats.highlights, undefined, 'highlights is opt-in, not included by default');
 
   const byActivityRows = report.json.tables.byActivity.rows;
-  assert.deepEqual(byActivityRows.find((r) => r[0] === 'walking').slice(1), [3, 1], 'dog4, dog5 (day1) + dog7 (day2) are all "walk"');
-  assert.deepEqual(byActivityRows.find((r) => r[0] === 'cuddling').slice(1), [1, 0.2]);
+  assert.deepEqual(byActivityRows.find((r) => r[0] === 'Walk').slice(1), [3, 1], 'dog4, dog5 (day1) + dog7 (day2) are all "walk"');
+  assert.ok(!byActivityRows.some((r) => r[0] === 'Cuddle'), 'a single cuddle is below MIN_CELL, so it is left out of the breakdown (audit 2026-11-10)');
 
   const byPeriodRows = report.json.tables.byPeriod.rows;
   assert.equal(byPeriodRows.length, 1, 'the below-MIN_CELL day is dropped from the breakdown');
-  assert.deepEqual(byPeriodRows[0], [day1, 3, 0.8, 3], 'day1: dog4+dog5+dog6, 3000s = 0.8h, 3 distinct dogs');
+  assert.deepEqual(byPeriodRows[0], ['Tue, Sep 1, 2026', 3, 0.8, 3], 'day1: dog4+dog5+dog6, 3000s = 0.8h, 3 distinct dogs');
 
   // sections= actually trims the response, not just hides it client-side.
   const trimmed = await call('GET', `/api/staff/reports?from=${day1}&to=${day2}&sections=byActivity`, { staff: true });
@@ -254,11 +247,12 @@ test('reports: byLocation, byDayOfWeek, byTimeOfDay, uniqueDogsServed, shelterCo
   assert.deepEqual(new Set(Object.keys(report.json.tables)), new Set(['byLocation', 'byDayOfWeek', 'byTimeOfDay', 'shelterContext', 'uniqueDogsServed']));
 
   const byLocation = Object.fromEntries(report.json.tables.byLocation.rows.map((r) => [r[0], r[1]]));
-  assert.deepEqual(byLocation, { A: 2, B: 1, C: 1, Unassigned: 1 }, 'no MIN_CELL suppression here -- day2\'s single walk (wing C) still counts');
+  assert.deepEqual(byLocation, {}, 'every wing has fewer than MIN_CELL engagements here, so none is listed (audit 2026-11-10: same rule as Together)');
 
   const byTimeOfDay = Object.fromEntries(report.json.tables.byTimeOfDay.rows.map((r) => [r[0], r[1]]));
-  assert.equal(byTimeOfDay['Morning (7-11am)'], 3, 'dog8, dog9 on day1 + dog12 on day2, all ~10am EDT');
-  assert.equal(byTimeOfDay['Midday (11am-4pm)'], 2, 'dog10, dog11 on day1');
+  // Same buckets as Together (impact.js): 7-10, 10-1, 1-4, 4-8.
+  assert.equal(byTimeOfDay['Midday (10am-1pm)'], 4, 'dog8, dog9, dog10 on day1 + dog12 on day2, 10am-12pm EDT');
+  assert.equal(byTimeOfDay['Afternoon (1-4pm)'], undefined, 'dog11 alone at 1pm is below MIN_CELL');
 
   const dowLabel = (dateKey) => {
     const [y, m, d] = dateKey.split('-').map(Number);
@@ -267,7 +261,7 @@ test('reports: byLocation, byDayOfWeek, byTimeOfDay, uniqueDogsServed, shelterCo
   };
   const byDow = Object.fromEntries(report.json.tables.byDayOfWeek.rows.map((r) => [r[0], r[1]]));
   assert.equal(byDow[dowLabel(day1)], 4);
-  assert.equal(byDow[dowLabel(day2)], 1);
+  assert.equal(byDow[dowLabel(day2)], undefined, 'a single engagement on that weekday is below MIN_CELL');
 
   const dogNames = report.json.tables.uniqueDogsServed.rows.map((r) => r[0]);
   assert.ok(['Dog8', 'Dog9', 'Dog10', 'Dog11', 'Dog12'].every((n) => dogNames.includes(n)));
@@ -276,9 +270,10 @@ test('reports: byLocation, byDayOfWeek, byTimeOfDay, uniqueDogsServed, shelterCo
   assert.deepEqual(shelterContext, { 'New dogs listed': 1, Adopted: 1, Returned: 1, 'Removed (other)': 0 });
 
   const h = report.json.stats.highlights;
-  assert.equal(h.busiestDay.dateKey, day1);
-  assert.equal(h.busiestDay.walks, 4);
-  assert.equal(h.quietestDay.dateKey, day1, 'the below-MIN_CELL day2 is never the one spotlighted as quietest');
+  // day2 is below MIN_CELL, so day1 is the only candidate: busiest and
+  // quietest would be the same day, so neither is shown (audit 2026-11-10).
+  assert.equal(h.busiestDay, null);
+  assert.equal(h.quietestDay, null, 'the below-MIN_CELL day2 is never the one spotlighted as quietest');
   assert.equal(h.avgWalksPerVolunteer, 2.5); // 5 walks / 2 volunteers
   assert.equal(h.avgWalkMinutes, 14); // 4200s total / 5 walks / 60
 });

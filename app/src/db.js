@@ -10,6 +10,9 @@ db.pragma('journal_mode = WAL');
 // holding a lock briefly should make us wait, not throw SQLITE_BUSY at a
 // volunteer mid-walk.
 db.pragma('busy_timeout = 5000');
+// Deleted rows (a deleted account, an erased note) are overwritten with
+// zeros instead of lingering in the file's free pages until reused.
+db.pragma('secure_delete = ON');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS dogs (
@@ -281,17 +284,12 @@ if (!dogColumns.includes('previous_days_in_shelter')) {
 // Walk history, per-user experience level, and adoption notifications are
 // personal; dog data (markers, POO, kennel location, walk counts/notes shown
 // to any walker) stays shared and untouched by any of this.
-const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-if (userCount === 0) {
-  const now = new Date().toISOString();
-  // experience_level left NULL — the onboarding prompt picks it up on their
-  // first sign-in rather than guessing.
-  const insertUser = db.prepare(
-    'INSERT INTO users (name, created_at, is_privileged, can_audit) VALUES (?, ?, ?, ?)'
-  );
-  insertUser.run('Alberto', now, 1, 1);
-  insertUser.run('Volunteer', now, 0, 0);
-}
+// A fresh database starts with no users at all: everyone is created on first
+// sign-in, unprivileged. (It used to seed a privileged "Alberto" and a
+// "Volunteer", which the first sign-in with a matching name could claim;
+// databases that already have those rows keep them exactly as they are.)
+// Permissions are granted afterwards from the auth service's staff panel.
+//
 // Existing data (from before multi-user support) is attributed to whoever
 // was the first/seed user -- originally always named "Alberto", but that's
 // just a name on a row someone can (and did) change, so don't assume it's
@@ -305,7 +303,7 @@ const defaultUserId = (
 const walkColumns = db.prepare('PRAGMA table_info(walks)').all().map((c) => c.name);
 if (!walkColumns.includes('user_id')) {
   db.exec('ALTER TABLE walks ADD COLUMN user_id INTEGER REFERENCES users(id)');
-  db.prepare('UPDATE walks SET user_id = ? WHERE user_id IS NULL').run(defaultUserId);
+  if (defaultUserId != null) db.prepare('UPDATE walks SET user_id = ? WHERE user_id IS NULL').run(defaultUserId);
 }
 // manual_entry: logged after the fact via "Add Past Walk" rather than a live
 // scan. edited: times were corrected after the walk was originally recorded.
@@ -419,6 +417,21 @@ db.exec(`
     in_foster INTEGER NOT NULL,
     recorded_at TEXT NOT NULL
   );
+`);
+// The same per species (Stats > Shelter has cat trends too, owner 2026-11-09).
+// shelter_daily_counts was dogs only and is no longer written; its days are
+// copied in as the dog rows (never over a newer count).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shelter_species_counts (
+    date_key TEXT NOT NULL,
+    species TEXT NOT NULL,
+    listed INTEGER NOT NULL,
+    in_foster INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (date_key, species)
+  );
+  INSERT OR IGNORE INTO shelter_species_counts (date_key, species, listed, in_foster, recorded_at)
+    SELECT date_key, 'dog', listed, in_foster, recorded_at FROM shelter_daily_counts;
 `);
 
 // Small key/value store for app-level flags (e.g. "wiki already seeded").
@@ -604,7 +617,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'matchmaker_pitch_stripped'"
 if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'sticker_events_backfilled'").get()) {
   const STICKER_LABELS = {
     star: 'Good for beginners (star)',
-    pb: 'PB: Potty break OK',
+    pb: 'PB: Potty break only',
     poo: 'POO: Potty Outside Only',
     poo_priority: 'POO: priority (first out, last in)',
     blue_c: 'Blue: Difficult to collar',
@@ -692,7 +705,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_walks_started ON walks(started_at);
   CREATE INDEX IF NOT EXISTS idx_events_occurred ON shelter_events(occurred_at);
   CREATE INDEX IF NOT EXISTS idx_dogs_listed ON dogs(still_listed);
+  CREATE INDEX IF NOT EXISTS idx_events_dog_kind ON shelter_events(dog_id, kind, occurred_at);
 `);
+
+// At most one walk still going per walker and per dog, enforced by the
+// database too (the routes already check, but two taps can race). Only
+// created when the data already obeys it: existing rows are never changed
+// or deleted here, so if there are duplicates it logs them and carries on
+// (the route checks still apply); once they're fixed, the next server
+// restart creates the index.
+for (const [name, column] of [['idx_walks_one_open_per_user', 'user_id'], ['idx_walks_one_open_per_dog', 'dog_id']]) {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) continue;
+  const dupes = db.prepare(`
+    SELECT ${column} AS id, COUNT(*) AS n FROM walks WHERE ended_at IS NULL AND ${column} IS NOT NULL
+    GROUP BY ${column} HAVING COUNT(*) > 1
+  `).all();
+  if (dupes.length) {
+    console.warn(`[db] not creating ${name}: more than one open walk for ${column} ${dupes.map((d) => `${d.id} (${d.n})`).join(', ')}`);
+    continue;
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON walks(${column}) WHERE ended_at IS NULL`);
+}
 
 // The module system (src/modules.js): which optional modules (app/modules/*)
 // are turned on, and their admin-entered config. A dedicated table rather

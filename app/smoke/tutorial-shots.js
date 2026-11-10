@@ -2,21 +2,16 @@
 // dogs, then walks through every screen in headless Chromium at phone size
 // and saves a PNG of each to docs/tutorial/. The Scan step is a real scan: a
 // fake camera plays a kennel card with a QR code on it.
-// Needs Playwright, which isn't an app dependency:
-//   npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/tutorial-shots.js
-const { spawn } = require('child_process');
-const os = require('os');
+// Not part of smoke:all, since it rewrites docs/tutorial/*.png.
 const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
-const { chromium } = require('playwright');
 const Database = require('better-sqlite3');
+const { startSmoke, launch } = require('./_harness');
 
-const PORT = 3900 + Math.floor(Math.random() * 90);
-const base = `http://127.0.0.1:${PORT}`;
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-shots-'));
-const dbFile = path.join(dir, 'shots.db');
+let base, dir, dbFile;
 const outDir = path.join(__dirname, '..', '..', 'docs', 'tutorial');
 const EMAIL = 'tutorial@example.com';
 const NEW_EMAIL = 'newcomer@example.com';
@@ -152,27 +147,26 @@ function seed(db, meId) {
 }
 
 async function main() {
+  // Check before deleting the old screenshots, so a missing photo can't leave
+  // the tutorial with no images.
+  if (!fs.existsSync(CARD_PHOTO)) {
+    throw new Error(`Missing ${path.relative(process.cwd(), CARD_PHOTO)}: the kennel card photo the fake camera scans. `
+      + 'Restore it (git restore --source=HEAD docs/tutorial/kennel-card.jpg, or any kennel card photo with the QR and barcode at the CROPS positions) and run again.');
+  }
   fs.mkdirSync(outDir, { recursive: true });
   for (const f of fs.readdirSync(outDir)) if (f.endsWith('.png')) fs.rmSync(path.join(outDir, f));
-  const server = spawn('node', ['src/server.js'], {
-    cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' },
-    stdio: ['ignore', 'ignore', 'inherit']
-  });
+  const server = await startSmoke({ prefix: 'sw-shots-' });
+  ({ base, dir, dbFile } = server);
   let browser;
   try {
-    for (let i = 0; i < 50; i += 1) {
-      try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 100));
-    }
     const me = await (await fetch(`${base}/api/me`, { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(dbFile);
     seed(db, me.id);
     db.close();
 
-    const plain = await chromium.launch();
+    const plain = await launch();
     const videos = await writeCameraVideos(plain);
-    const cameraBrowser = (video) => chromium.launch({
+    const cameraBrowser = (video) => launch({
       args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${video}`]
     });
     browser = await cameraBrowser(videos.qr);
@@ -304,9 +298,8 @@ async function main() {
     console.log(`Saved ${n} screenshots to ${outDir}`);
   } finally {
     if (browser) await browser.close();
-    server.kill();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await server.stop();
   }
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((err) => { console.error(err.message || err); process.exit(1); });

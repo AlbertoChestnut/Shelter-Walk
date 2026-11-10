@@ -4,12 +4,9 @@
 // child-process/HTTP test can't reach into to mock.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
+const { isolateEnv } = require('./_helpers');
 
-const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sw-ytpoll-')), 'test.db');
-process.env.DB_PATH = dbFile;
+isolateEnv('sw-ytpoll-');
 const db = require('../src/db');
 const { pollChannel } = require('../modules/youtube-channel/poll');
 

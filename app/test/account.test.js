@@ -2,19 +2,12 @@
 // changes); then walks are kept but disowned and everything personal is removed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
 const http = require('http');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
 const Database = require('better-sqlite3');
 const { hashEmail } = require('../src/emailHash');
+const { startServer } = require('./_helpers');
 
-const PORT = 4100 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-acct-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc; let stub; let stubPort;
+let base; let dbFile; let server; let stub; let stubPort;
 let stubMode = 'ok'; // 'ok' | 'staff' | 'down'
 const stubCalls = [];
 
@@ -44,15 +37,14 @@ test.before(async () => {
   });
   await new Promise((r) => stub.listen(0, '127.0.0.1', r));
   stubPort = stub.address().port;
-  proc = spawn('node', ['src/server.js'], {
-    cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00', DJANGO_INTERNAL_URL: `http://127.0.0.1:${stubPort}`, INTERNAL_API_TOKEN: 'test-token' },
-    stdio: 'ignore'
+  server = await startServer({
+    prefix: 'sw-acct-',
+    env: { DJANGO_INTERNAL_URL: `http://127.0.0.1:${stubPort}`, INTERNAL_API_TOKEN: 'test-token' }
   });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  ({ base, dbFile } = server);
 });
 test.after(async () => {
-  if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); }
+  if (server) await server.stop();
   stub.close();
 });
 

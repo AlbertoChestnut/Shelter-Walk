@@ -64,6 +64,13 @@ function setLoginName(email, name) {
   return postToLoginApp('/internal/set-name/', { email, name });
 }
 
+// Optional features (app/modules/*) keep their own per-person rows (walker
+// chat messages, ...). Each registers a cleanup here through its module
+// context (onAccountDeleted, see modules.js); they run inside the same
+// transaction as the rest of the deletion, so a failure undoes all of it.
+const deletionHooks = [];
+function onAccountDeleted(fn) { deletionHooks.push(fn); }
+
 function register(app, { db }) {
   // Shared by both "delete my data" and "delete my account": detach this
   // user's walk history so it can never be matched back to them again. Kept
@@ -95,6 +102,7 @@ function register(app, { db }) {
     db.prepare('DELETE FROM favorite_dogs WHERE user_id = ?').run(userId);
     // Guide sections remember the last editor's name; forget it.
     db.prepare('UPDATE wiki_sections SET updated_by = NULL WHERE updated_by = ?').run(name);
+    for (const hook of deletionHooks) hook(userId);
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   });
 
@@ -113,7 +121,7 @@ function register(app, { db }) {
       wipeWalkData(me.id);
     } catch (err) {
       console.error(`[account] wipe-my-data failed for user ${me.id}:`, err);
-      return res.status(500).json({ error: 'Something went wrong, so nothing was deleted. Please try again.' });
+      return res.status(500).json({ error: 'Something went wrong, so nothing was deleted. Please try again.', userFacing: true });
     }
     console.warn(`[account] user ${me.id} deleted their walk data; account kept`);
     res.json({ deleted: true });
@@ -135,7 +143,8 @@ function register(app, { db }) {
       result = await deleteLoginAccount(email);
     } catch (err) {
       console.error('[account] could not reach the login system:', err.message);
-      return res.status(502).json({ error: "Couldn't reach the sign-in system, so your account was NOT deleted. Please try again in a moment." });
+      // userFacing: written for the person, so the app shows it even on a 5xx.
+      return res.status(502).json({ error: "Couldn't reach the sign-in system, so your account was NOT deleted. Please try again in a moment.", userFacing: true });
     }
     if (result.status === 403) {
       return res.status(403).json({ error: 'This account cannot be deleted here. Please ask a staff member.' });
@@ -143,7 +152,7 @@ function register(app, { db }) {
     // 404 = the login account is already gone; carry on and finish the cleanup.
     if (result.status !== 200 && result.status !== 404) {
       console.error('[account] login system refused deletion:', result.status);
-      return res.status(502).json({ error: 'Your account was NOT deleted because the sign-in system did not confirm. Please try again later.' });
+      return res.status(502).json({ error: 'Your account was NOT deleted because the sign-in system did not confirm. Please try again later.', userFacing: true });
     }
 
     try {
@@ -153,11 +162,11 @@ function register(app, { db }) {
       // leftover is one orphaned row that a rerun of this same statement set
       // will clean up. Say so loudly so it gets noticed.
       console.error(`[account] login deleted but app cleanup FAILED for user ${me.id}:`, err);
-      return res.status(500).json({ error: 'Your sign-in was removed, but finishing the cleanup hit a problem. Staff have been notified in the logs.' });
+      return res.status(500).json({ error: 'Your sign-in was removed, but finishing the cleanup hit a problem. Staff have been notified in the logs.', userFacing: true });
     }
     console.warn(`[account] user ${me.id} deleted their account; walks kept, unattributed`);
     res.json({ deleted: true });
   });
 }
 
-module.exports = { register, setLoginName };
+module.exports = { register, setLoginName, onAccountDeleted };

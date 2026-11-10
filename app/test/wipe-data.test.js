@@ -3,18 +3,11 @@
 // disowned, the account itself (and everyone else's data) is untouched.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const Database = require('better-sqlite3');
 const { hashEmail } = require('../src/emailHash');
+const { startServer } = require('./_helpers');
 
-const PORT = 4200 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-wipe-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base, dbFile, server;
 
 async function call(method, url, { user, staff = false, body } = {}) {
   const res = await fetch(base + url, {
@@ -28,14 +21,10 @@ async function call(method, url, { user, staff = false, body } = {}) {
 }
 
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], {
-    cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' },
-    stdio: 'ignore'
-  });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-wipe-' });
+  ({ base, dbFile } = server);
 });
-test.after(async () => { if (proc) { proc.kill(); await new Promise((r) => proc.on('exit', r)); } });
+test.after(async () => { if (server) await server.stop(); });
 
 const WIPER = 'wiper.narwhal@example.com';
 const STAFFER = 'staffer.narwhal@example.com';

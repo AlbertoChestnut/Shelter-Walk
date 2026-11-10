@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Shelter Walk — Staff</title>
+<title>Staff dashboard · Shelter Walk</title>
 <meta name="theme-color" content="#2f6f4f" />
 <meta name="color-scheme" content="light dark" />
 <link rel="icon" href="/icons/icon-192.png" />
@@ -14,41 +14,54 @@
 <body>
 
 <header class="topbar">
-  <h1>Shelter Walk <span class="muted">Staff</span></h1>
+  <h1>Shelter Walk <span class="topbar-sub">Staff dashboard</span></h1>
+  <div id="deskNav" class="desk-nav"></div>
+</header>
+<div class="subbar">
   <nav class="section-tabs">
     <button class="tab-btn active" data-section="live">Live board</button>
     <button class="tab-btn" data-section="reports">Reports</button>
     <button class="tab-btn" data-section="hours">Hours &amp; alerts</button>
     <button class="tab-btn" data-section="settings">Settings</button>
   </nav>
-  <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
-  <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
-  <div id="deskNav" class="desk-nav"></div>
-</header>
+  <span class="subbar-end">
+    <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
+    <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
+  </span>
+</div>
 
 <main id="app">
   <section id="liveSection" class="panel">
     <div id="demoBanner" class="demo-banner hidden">DEMO MODE — not real data</div>
+    <div class="view-toggle species-toggle" role="group" aria-label="Which animals">
+      <span class="muted small">Show:</span>
+      <button type="button" class="view-toggle-btn species-btn active" data-species="dog">🐕 Dogs</button>
+      <button type="button" class="view-toggle-btn species-btn" data-species="cat">🐈 Cats</button>
+      <button type="button" class="view-toggle-btn species-btn" data-species="all">Dogs and cats</button>
+    </div>
     <div class="stat-row">
-      <div class="stat-tile"><span class="stat-value" id="statActiveWalkers">—</span><span class="stat-label">Active walkers</span></div>
-      <div class="stat-tile"><span class="stat-value" id="statActiveCount">—</span><span class="stat-label">Dogs out now</span></div>
-      <div class="stat-tile"><span class="stat-value" id="statWalksToday">—</span><span class="stat-label">Walks today <span id="walksTrendArrow" class="trend-arrow"></span></span></div>
+      <div class="stat-tile"><span class="stat-value" id="statActiveWalkers">—</span><span class="stat-label">Volunteers out now</span></div>
+      <div class="stat-tile"><span class="stat-value" id="statActiveCount">—</span><span class="stat-label"><span class="noun-many">Dogs</span> out now</span></div>
+      <div class="stat-tile" title="Walks, cuddles, matchmaking, play group and daycations that started today and have finished. One still out counts once it ends, the same as Together in the app.">
+        <span class="stat-value" id="statWalksToday">—</span>
+        <span class="stat-label">Engagements today <span id="walksTrendArrow" class="trend-arrow"></span></span>
+      </div>
     </div>
     <div class="chart-row">
       <div class="sparkline-card">
-        <h3>Today's activity by hour</h3>
+        <h3>Today's engagements by hour started</h3>
         <div class="sparkline-bars" id="sparklineBars"></div>
       </div>
       <div class="outs-today-card">
-        <h3>Dogs out today <span class="muted" id="dogsOutTodayTotal"></span></h3>
+        <h3><span><span class="noun-many">Dogs</span> out today</span> <span class="muted" id="dogsOutTodayTotal"></span></h3>
         <div class="outs-today-boxes" id="outsTodayBuckets"></div>
       </div>
     </div>
 
     <div class="view-toggle">
       <span class="muted small">View by:</span>
-      <button type="button" class="view-toggle-btn active" data-view="location">📍 Location</button>
-      <button type="button" class="view-toggle-btn" data-view="activity">🏷️ Activity</button>
+      <button type="button" class="view-toggle-btn view-btn active" data-view="location">📍 Location</button>
+      <button type="button" class="view-toggle-btn view-btn" data-view="activity">🏷️ Activity</button>
     </div>
     <div class="location-grid" id="locationGrid"></div>
 
@@ -81,7 +94,15 @@
           <option value="month">Month</option>
         </select>
       </label>
+      <label>Animals
+        <select id="reportSpecies">
+          <option value="dog">Dogs</option>
+          <option value="cat">Cats</option>
+          <option value="all">Dogs and cats</option>
+        </select>
+      </label>
       <button type="submit">Update</button>
+      <span id="reportRangeError" class="form-error small" role="alert"></span>
     </form>
 
     <div class="sections-grid" id="sectionsGrid">
@@ -91,21 +112,22 @@
       <label><input type="checkbox" value="byDayOfWeek" /> By day of week</label>
       <label><input type="checkbox" value="byTimeOfDay" /> By time of day</label>
       <label><input type="checkbox" value="shelterContext" /> Shelter context</label>
-      <label><input type="checkbox" value="uniqueDogsServed" /> Unique dogs served</label>
+      <label><input type="checkbox" value="uniqueDogsServed" /> Each animal served</label>
       <label><input type="checkbox" value="highlights" /> Highlights</label>
     </div>
 
     <div class="dog-picker">
-      <label class="muted small" style="width:100%;">Individual dog report (optional)
-        <input type="text" id="dogPickerInput" list="dogPickerList" placeholder="Type a dog's name…" />
-      </label>
-      <datalist id="dogPickerList"></datalist>
-      <button type="button" id="addDogBtn">Add</button>
-      <span id="dogPickerError" class="small" style="color:var(--red);"></span>
+      <label for="dogPickerInput">Report on one animal (optional)</label>
+      <div class="dog-picker-row">
+        <input type="text" id="dogPickerInput" list="dogPickerList" placeholder="Type a name…" autocomplete="off" />
+        <datalist id="dogPickerList"></datalist>
+        <button type="button" id="addDogBtn">Add</button>
+      </div>
+      <span id="dogPickerError" class="form-error small"></span>
     </div>
     <div class="dog-chips" id="dogChips"></div>
 
-    <p class="muted small">Totals and most breakdowns are shelter-wide and anonymous — no volunteer is ever named or singled out, and a period with very few walks is left out of the "by period" breakdown so it can't be traced back to one person. "Unique dogs served" and individual dog reports name dogs, never volunteers.</p>
+    <p class="muted small">Everything here is shelter-wide and anonymous: no volunteer is ever named or singled out, and a row with fewer than 3 engagements is left out of the breakdowns so it can't be traced back to one person (it still counts in the totals). "Each animal served" and one-animal reports name animals, never volunteers.</p>
     <div class="export-links">
       Download: <a id="exportCsv" href="#">CSV</a> · <a id="exportXlsx" href="#">Excel</a> · <a id="exportPdf" href="#">PDF</a>
     </div>
@@ -138,12 +160,16 @@
             <label><input type="radio" name="specialMode" value="note" /> Usual hours, just a note</label>
           </fieldset>
           <div id="specialTimes" class="time-row hidden">
-            <label>Opens <input type="time" id="specialOpen" value="07:00" /></label>
+            <label>Walks start <input type="time" id="specialOpen" value="07:00" /></label>
             <label>Walks end <input type="time" id="specialClose" value="19:00" /></label>
           </div>
-          <label>Note for volunteers <input type="text" id="specialNote" maxlength="200" placeholder="e.g. Thanksgiving, emergency renovation, no volunteers today" /></label>
+          <label>Note for volunteers <input type="text" id="specialNote" maxlength="200" placeholder="e.g. Thanksgiving" /></label>
           <label class="check"><input type="checkbox" id="specialNotify" /> Also send a shelter alert to everyone now</label>
-          <div class="form-actions"><button type="submit" class="primary-btn">Save day</button><span id="specialStatus" class="small muted"></span></div>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn" id="specialSaveBtn">Save day</button>
+            <button type="button" class="secondary-btn hidden" id="specialCancelBtn">Cancel</button>
+            <span id="specialStatus" class="small muted"></span>
+          </div>
         </form>
         <h3>Coming up</h3>
         <ul id="specialList" class="hours-list"></ul>
@@ -153,10 +179,12 @@
         <h2>🕒 Usual weekly hours</h2>
         <p class="muted small">When walks can start, and when any walk still out stops by itself.</p>
         <form id="weeklyForm">
+          <div class="weekly-scroll">
           <table class="weekly-table">
-            <thead><tr><th>Day</th><th>Opens</th><th>Walks end</th><th>Closed</th></tr></thead>
+            <thead><tr><th>Day</th><th>Walks start</th><th>Walks end</th><th>Closed</th></tr></thead>
             <tbody id="weeklyRows"></tbody>
           </table>
+          </div>
           <div class="form-actions"><button type="submit" class="primary-btn">Save weekly hours</button><span id="weeklyStatus" class="small muted"></span></div>
         </form>
       </div>
@@ -164,12 +192,14 @@
   </section>
 
   <section id="settingsSection" class="panel hidden">
-    <h2>Modules</h2>
-    <p class="muted small">Optional functionality, each in its own package under <code>app/modules/</code>. Turning one on or off takes effect right away — no restart.</p>
+    <h2>Extra features</h2>
+    <p class="muted small">Optional extras for the app. Turn one on or off and it changes for everyone right away.</p>
     <div id="moduleList" class="module-list"></div>
     <!-- MODULE_STAFF_PANELS -->
   </section>
 </main>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
 <script src="/js/staff.js"></script>
 <script src="/js/staff-settings.js"></script>

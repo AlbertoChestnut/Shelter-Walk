@@ -8,7 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 
-const WIKI_IMAGES_DIR = path.join(__dirname, '..', 'data', 'wiki-images');
+// WIKI_IMAGES_DIR lets tests and throwaway servers keep uploads out of the real folder.
+const WIKI_IMAGES_DIR = process.env.WIKI_IMAGES_DIR || path.join(__dirname, '..', 'data', 'wiki-images');
 fs.mkdirSync(WIKI_IMAGES_DIR, { recursive: true });
 
 const MAX_TITLE = 120;
@@ -45,6 +46,7 @@ try {
   };
 }
 const { demoSections, addedSections } = seedContent;
+const replacedLines = seedContent.replacedLines || (() => []);
 
 function register(app, { db, resolveAuthedUser }) {
   const seeded = db.prepare("SELECT value FROM app_meta WHERE key = 'wiki_seeded'").get();
@@ -76,6 +78,24 @@ function register(app, { db, resolveAuthedUser }) {
         'INSERT INTO wiki_sections (title, icon, body, sort_order, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(s.title, s.icon, s.body, max + 1, now, now, 'demo');
       db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')").run(s.key);
+    })();
+  }
+  // Seed lines fixed after the first seed (e.g. fill-in-the-blank
+  // placeholders), once per database. Only a line that still reads exactly
+  // the old text is replaced, so staff edits are never overwritten.
+  for (const r of replacedLines()) {
+    if (db.prepare('SELECT value FROM app_meta WHERE key = ?').get(r.key)) continue;
+    const swap = new Map(r.lines);
+    db.transaction(() => {
+      for (const row of db.prepare('SELECT id, body FROM wiki_sections').all()) {
+        const body = row.body.split('\n').map((line) => (swap.has(line) ? swap.get(line) : line)).join('\n');
+        if (body !== row.body) {
+          // updated_at/updated_by are left alone: nobody edited the section,
+          // so "last edited by" shouldn't name someone for this.
+          db.prepare('UPDATE wiki_sections SET body = ? WHERE id = ?').run(body, row.id);
+        }
+      }
+      db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')").run(r.key);
     })();
   }
 
@@ -156,7 +176,11 @@ function register(app, { db, resolveAuthedUser }) {
   // Raw image upload (the request body IS the file). Stored under a
   // content-hash name, so re-uploading the same picture is free and names
   // can't be guessed/overwritten.
+  // Only an image Content-Type is taken (server.js lets this route skip its
+  // JSON-only rule for that): a cross-site form can't send one.
   app.post('/api/wiki/images', requireEditor,
+    (req, res, next) => (/^image\//i.test(String(req.headers['content-type'] || '').trim())
+      ? next() : res.status(415).json({ error: 'Upload an image file (JPEG, PNG, WebP or GIF).' })),
     express.raw({ type: () => true, limit: MAX_IMAGE_BYTES }),
     (req, res) => {
       const buf = req.body;

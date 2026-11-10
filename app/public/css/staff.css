@@ -50,18 +50,34 @@ body {
 .small { font-size: 0.85rem; }
 .hidden { display: none !important; }
 
+/* Green header bar, same treatment as the volunteer app's .topbar
+   (style.css): "Shelter Walk" plus the page name, and the page switcher.
+   The page's own tabs sit on a plain bar just below it. */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px 20px;
   flex-wrap: wrap;
-  padding: 14px 24px;
+  padding: 12px 24px;
+  background: var(--green-btn, #2f6f4f);
+  color: #fff;
+}
+html[data-theme="dark"] .topbar { background: #2c7350; }
+.topbar h1 { font-size: 1.1rem; margin: 0; font-weight: 700; white-space: nowrap; }
+.topbar-sub { font-weight: 400; opacity: 0.9; }
+.topbar-sub::before { content: "·"; margin: 0 6px; opacity: 0.7; }
+.topbar :focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.subbar {
+  display: flex;
+  align-items: center;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 10px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--card-bg);
 }
-.topbar h1 { font-size: 1.15rem; margin: 0; }
-.topbar h1 .muted { font-weight: 400; }
-.section-tabs { display: flex; gap: 8px; margin-left: auto; }
+.subbar-end { display: flex; align-items: center; gap: 12px; margin-left: auto; flex-wrap: wrap; }
+.section-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
 .tab-btn {
   border: 1px solid var(--border);
   background: var(--bg);
@@ -155,7 +171,7 @@ html[data-theme="dark"] .walk-entry .progress-note.warning { color: var(--status
   0% { background: color-mix(in srgb, var(--green) 25%, var(--card-bg)); }
   100% { background: var(--card-bg); }
 }
-.trend-arrow { font-size: 0.85rem; font-weight: 600; }
+.trend-arrow { font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
 
 /* Side by side on anything wide enough for two ~360px halves; stacks on a
    narrow screen. Both children share this one row's bottom margin instead
@@ -187,13 +203,18 @@ html[data-theme="dark"] .spark-bar:hover { fill: var(--trend-listed, #3987e5); }
 
 /* Small, compact metric boxes -- same label/value shape as the big stat
    tiles above, just a lot less space per box. */
-/* Flex column so .outs-today-boxes can grow into whatever height the row
-   gives this card (it's side by side with the taller chart card, and a
-   flex row stretches both to match by default) instead of leaving a slab
-   of dead space below a few small boxes. */
-.outs-today-card { display: flex; flex-direction: column; }
+/* A card like the chart beside it, boxes right under the heading (they used
+   to be centered in the stretched row, leaving a big gap above them). */
+.outs-today-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
 .outs-today-card h3 { margin: 0 0 8px; display: flex; align-items: baseline; gap: 6px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
-.outs-today-boxes { flex: 1; display: flex; align-items: center; gap: 14px; }
+.outs-today-boxes { display: flex; align-items: flex-start; gap: 14px; }
 .outs-today-boxes .mini-stat {
   flex: 1 1 0;
   min-width: 0;
@@ -262,12 +283,19 @@ html[data-theme="dark"] .demo-banner { color: #241a00; }
   padding: 6px 16px;
   font-size: 0.9rem;
   cursor: pointer;
-  margin-left: 12px;
+  white-space: nowrap;
 }
 .demo-toggle-btn.active { background: var(--status-warning); color: #3a2a00; border-color: var(--status-warning); }
 
 .report-controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; margin-bottom: 10px; }
 .report-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+/* Dates, selects and Update share one height so they line up on the row's
+   bottom edge (a date box is naturally taller than a select or button). */
+.report-controls input, .report-controls select, .report-controls button {
+  box-sizing: border-box;
+  height: 38px;
+}
+.report-controls .form-error { align-self: center; }
 .report-controls input, .report-controls select {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -288,10 +316,21 @@ html[data-theme="dark"] .demo-banner { color: #241a00; }
 .export-links { margin: 10px 0 18px; }
 .export-links a { color: var(--green-dark); }
 html[data-theme="dark"] .export-links a { color: var(--green); }
+.export-links.disabled { opacity: 0.45; pointer-events: none; }
+.form-error { color: var(--red); font-weight: 600; align-self: center; }
+.stat-value.stat-value-date { font-size: 1.3rem; }
+.report-notes { margin: 16px 0 0; padding-left: 18px; }
+.report-notes li { margin-bottom: 2px; }
 
-.report-tables { display: flex; gap: 20px; flex-wrap: wrap; }
+/* flex-start: each table keeps its own height instead of stretching to the
+   tallest one in the row (short tables got huge rows). */
+.report-tables { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+/* separate (not collapse): with collapse the rounded corners are ignored and
+   the table's square top border showed as a rule under the caption running
+   past the rounded box. */
 .report-tables table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -311,10 +350,31 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.sections-grid label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer; }
+.sections-grid label { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; min-height: 36px; }
+.sections-grid input[type="checkbox"] { width: 18px; height: 18px; margin: 0; flex: 0 0 auto; }
 
-.dog-picker { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
-.dog-picker input { flex: 1 1 220px; }
+.dog-picker { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; max-width: 480px; }
+.dog-picker > label { font-size: 0.85rem; color: var(--muted); }
+.dog-picker-row { display: flex; gap: 8px; }
+.dog-picker input {
+  flex: 1 1 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--card-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+}
+.dog-picker button {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
 .dog-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
 .dog-chip {
   background: var(--bg);
@@ -371,8 +431,8 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
 
 /* Hours & alerts */
 .hours-today { padding: 10px 14px; background: var(--card-bg); border: 1px solid var(--border); border-left: 5px solid var(--amber); border-radius: var(--radius); margin: 0 0 16px; }
-.hours-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
-.hours-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.hours-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; align-items: start; }
+.hours-card { min-width: 0; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
 .hours-card h2 { margin: 0 0 4px; font-size: 1.1rem; }
 .hours-card h3 { margin: 16px 0 6px; font-size: 0.95rem; }
 .hours-form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
@@ -385,7 +445,9 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
 }
 .hours-card input:disabled { opacity: 0.4; }
 .form-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.primary-btn { background: var(--green); color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 0.95rem; cursor: pointer; }
+.primary-btn { background: var(--green); color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 0.95rem; cursor: pointer; text-decoration: none; display: inline-block; }
+.secondary-btn { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 16px; font-size: 0.95rem; cursor: pointer; }
+.hours-form.editing { outline: 2px solid var(--green); outline-offset: 6px; border-radius: 6px; }
 .link-btn { background: none; border: none; color: var(--red); cursor: pointer; font-size: 0.85rem; padding: 2px 4px; }
 
 /* Settings: modules */
@@ -393,6 +455,34 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
 .module-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
 .module-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .module-card label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+/* On/off switch with its state written next to it. */
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
+.switch input { position: absolute; opacity: 0; width: 44px; height: 24px; margin: 0; cursor: pointer; }
+.switch-track { width: 44px; height: 24px; border-radius: 999px; background: var(--border); position: relative; transition: background 0.2s; flex: 0 0 auto; }
+.switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.2s; }
+.switch input:checked + .switch-track { background: var(--green); }
+.switch input:checked + .switch-track::after { transform: translateX(20px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--green); outline-offset: 2px; }
+.switch input:disabled + .switch-track { opacity: 0.6; }
+.switch-state { min-width: 2em; }
+
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); max-width: min(92vw, 480px); background: #1c211f; color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); z-index: 20; }
+.toast.error { background: var(--red); }
+html[data-theme="dark"] .toast.error { color: #1c211f; }
+
+/* /staff for someone without staff access (staff-only.html). */
+.staff-only { display: flex; justify-content: center; padding: 48px 16px; }
+.staff-only-card { max-width: 460px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.staff-only-card h2 { margin: 0 0 8px; font-size: 1.2rem; }
+
+/* Tablet widths: the green bar keeps the title and switcher, the tab bar
+   keeps the tabs plus Demo / Updated -- two rows, never three. */
+@media (max-width: 900px) {
+  .topbar, .subbar { padding-left: 16px; padding-right: 16px; }
+  #app { padding: 16px; }
+  .tab-btn { padding: 6px 12px; }
+  .subbar-end #lastUpdated { display: none; }
+}
 .module-config { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .module-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .module-field input { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 0.95rem; }
@@ -402,7 +492,13 @@ html[data-theme="dark"] .export-links a { color: var(--green); }
 .hours-list li { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
 .row-actions { white-space: nowrap; }
 .closed-tag { color: var(--red); font-weight: 600; }
+/* Phone widths: the table scrolls inside its card rather than pushing the
+   Closed column off the page. */
+.weekly-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .weekly-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+.weekly-table input[type="time"] { min-width: 0; }
+/* Line breaks staff typed into an alert (the text itself stays escaped). */
+.alert-body { white-space: pre-line; }
 .weekly-table th { text-align: left; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 4px; }
 .weekly-table td { padding: 4px; }
 .weekly-table td:last-child, .weekly-table th:last-child { text-align: center; }

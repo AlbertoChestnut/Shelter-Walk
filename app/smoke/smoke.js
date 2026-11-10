@@ -1,36 +1,21 @@
 // Browser smoke test: boots the real server on a throwaway DB, then drives
 // the app in headless Chromium through the main volunteer flow (Available
 // list + filters, starting a session, switching activity, ending it, Stats).
-// Needs Playwright, which isn't an app dependency:
-//   npm i --no-save playwright@1 && npx playwright install chromium
-//   npm run smoke
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
+// Needs Playwright (devDependency): npx playwright install chromium
+//   npm run smoke          (all smokes: npm run smoke:all)
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
 const Database = require('better-sqlite3');
+const { startSmoke, launch } = require('./_harness');
 
-const PORT = 3900 + Math.floor(Math.random() * 90);
-const base = `http://127.0.0.1:${PORT}`;
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-smoke-'));
-const dbFile = path.join(dir, 'smoke.db');
+let base, dbFile;
 const EMAIL = 'smoke@example.com';
 
 async function main() {
-  const server = spawn('node', ['src/server.js'], {
-    cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' },
-    stdio: ['ignore', 'ignore', 'inherit']
-  });
+  const server = await startSmoke();
+  ({ base, dbFile } = server);
   let browser;
   const errors = [];
   try {
-    for (let i = 0; i < 50; i += 1) {
-      try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 100));
-    }
     const me = await (await fetch(`${base}/api/me`, { headers: { 'x-auth-email': EMAIL } })).json();
     const db = new Database(dbFile);
     const now = new Date().toISOString();
@@ -41,7 +26,7 @@ async function main() {
     db.prepare("INSERT INTO shelter_events (kind, dog_id, title, occurred_at) VALUES ('new_dog', 102, 'Pepper arrived', ?)").run(now);
     db.close();
 
-    browser = await chromium.launch();
+    browser = await launch();
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': EMAIL }, serviceWorkers: 'block' });
     const page = await ctx.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
@@ -69,14 +54,14 @@ async function main() {
     await page.waitForSelector('#startWalkBtn');
     await page.click('#changeActivityBtn');
     await page.click('#activityPickRow [data-activity="cuddle"]');
-    assert.match(await page.textContent('#startWalkBtn'), /Start Cuddle/);
+    assert.match(await page.textContent('#startWalkBtn'), /Start cuddle/);
     await page.click('#startWalkBtn');
     await page.waitForSelector('#activityChoice');
-    assert.match(await page.textContent('#endWalkBtn'), /End Cuddle/);
+    assert.match(await page.textContent('#endWalkBtn'), /End cuddle/);
     step('Started a cuddle from the Available list');
 
     await page.click('#activityChoice [data-activity="playgroup"]');
-    await page.waitForFunction(() => /End Play Group/.test(document.getElementById('endWalkBtn').textContent));
+    await page.waitForFunction(() => /End play group/.test(document.getElementById('endWalkBtn').textContent));
     step('Switched to play group mid-session');
 
     await page.click('#endWalkBtn');
@@ -99,58 +84,57 @@ async function main() {
     const tab = async (name) => { await page.click(`.tab-btn[data-tab="${name}"]`); await page.waitForTimeout(150); };
     for (let i = 0; i < 5; i += 1) await tab('walk');
     await back();
-    assert.equal(await title(), 'Dogs to Walk', 'five taps on Scan, one Back: Available');
+    assert.equal(await title(), 'Dogs to walk', 'five taps on Scan, one Back: Available');
     for (let i = 0; i < 3; i += 1) await tab('available');
     await tab('stats'); await tab('updates'); await tab('walk'); await tab('stats');
     await back();
-    assert.equal(await title(), 'Dogs to Walk', 'hopping between tabs, one Back: Available');
+    assert.equal(await title(), 'Dogs to walk', 'hopping between tabs, one Back: Available');
     await tab('stats');
     await page.click('#guideBtn');
     await page.waitForTimeout(300);
     assert.equal(await title(), 'Guide');
     await back();
-    assert.equal(await title(), 'Stats', 'Back from the Guide returns to where it was opened');
+    assert.equal(await title(), 'Stats/Notes', 'Back from the Guide returns to where it was opened');
     await back();
-    assert.equal(await title(), 'Dogs to Walk');
+    assert.equal(await title(), 'Dogs to walk');
     await page.locator('.avail-card .walk-history-btn').first().click();
     await page.waitForSelector('#markerInfoPopup:not(.hidden)');
     await back();
     assert.ok(await page.locator('#markerInfoPopup').evaluate((el) => el.classList.contains('hidden')), 'Back closes a popup');
-    assert.equal(await title(), 'Dogs to Walk', 'and stays on the same tab');
+    assert.equal(await title(), 'Dogs to walk', 'and stays on the same tab');
     // A dog opened from another tab: Back returns to that tab, and the Scan
     // tab afterwards opens on the camera, not on that dog.
     await tab('updates');
     await page.locator('.walk-edit-btn').first().click();
     await page.waitForTimeout(400);
-    assert.equal(await title(), 'Scan a Dog', 'the dog opens on the Scan tab');
+    assert.equal(await title(), 'Scan a dog', 'the dog opens on the Scan tab');
     await back();
     assert.equal(await title(), 'Updates', 'Back from a dog opened in Updates returns to Updates');
     await tab('walk');
     assert.equal(await page.locator('.walk-edit-btn, #startWalkBtn').count(), 0, 'Scan opens on the camera again, not on that dog');
     await back();
-    assert.equal(await title(), 'Dogs to Walk');
+    assert.equal(await title(), 'Dogs to walk');
     await tab('walk'); await tab('guide').catch(() => {}); await tab('updates');
     await page.click('#guideBtn'); await page.waitForTimeout(200);
     await tab('available');
     assert.equal(await page.evaluate(() => history.state && history.state.depth), 0, 'Available from deep inside lands on the first entry');
     await tab('stats');
     await back(); await back(); await back();
-    assert.equal(await title(), 'Dogs to Walk', 'Back from Available stays on Available');
+    assert.equal(await title(), 'Dogs to walk', 'Back from Available stays on Available');
     assert.equal(await page.evaluate(() => history.state && history.state.depth), 0, 'on the base entry');
     for (let i = 0; i < 4; i += 1) {
       await page.goBack().catch(() => {});
       await page.waitForTimeout(300);
     }
     assert.notEqual(page.url(), 'about:blank', 'the browser Back button does not leave the app either');
-    assert.equal(await title(), 'Dogs to Walk');
+    assert.equal(await title(), 'Dogs to walk');
     step('Back button: no stacked tabs, popups and Guide close first, a dog returns to the tab it was opened from, never leaves Available');
 
     assert.deepEqual(errors, [], 'no JavaScript errors on the page');
     console.log('Smoke test passed.');
   } finally {
     if (browser) await browser.close();
-    server.kill();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await server.stop();
   }
 }
 

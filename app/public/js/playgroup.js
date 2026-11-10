@@ -3,7 +3,10 @@
 // session. Same notes and rules as the phone app (playgroupNotes.js); tagging
 // and the date row come from pg-tags.js.
 (function () {
-  const { esc, toEditable, bodyHtml, fmtDate, today, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools } = window.PgTags;
+  const { esc, toEditable, bodyHtml, fmtDate, today, daysAgo, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools } = window.PgTags;
+  // Keyboard tips only where there's a keyboard-and-mouse (not on a phone or tablet).
+  const hasKeyboard = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  if (hasKeyboard) document.getElementById('dogSearch').placeholder = 'Find a dog  ( / )';
 
   const state = {
     me: null,
@@ -16,11 +19,28 @@
   };
 
   async function api(url, opts = {}) {
-    const res = await fetch(url, { headers: { 'content-type': 'application/json' }, ...opts });
+    let res;
+    try {
+      res = await fetch(url, { headers: { 'content-type': 'application/json' }, ...opts });
+    } catch (err) {
+      throw new Error("Couldn't reach the server. Check the connection and try again.");
+    }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(httpErrorMessage(res.status, data));
     return data;
   }
+  // Same wording as app.js's httpErrorMessage(): a 4xx's own `error` (written
+  // for people), else a plain line -- never "Request failed (500)".
+  function httpErrorMessage(status, body) {
+    if (status < 500 && body && typeof body.error === 'string' && body.error) return body.error;
+    if (status === 404) return "That couldn't be found. It may have been removed.";
+    if (status === 401 || status === 403) return "You don't have access to that. Reload the page to sign in again.";
+    if (status === 429) return 'Too many tries in a row. Wait a moment and try again.';
+    if (status >= 502 && status <= 504) return "The server isn't responding right now. Try again in a minute.";
+    return 'Something went wrong on our end. Try again in a moment.';
+  }
+  // Same as app.js's fmtAge(): the listing's "2 Years" reads "2 years".
+  const fmtAge = (age) => String(age || '').replace(/\b(Years?|Months?|Weeks?|Days?)\b/g, (u) => u.toLowerCase());
   let toastTimer = null;
   function toast(msg, kind) {
     const el = document.getElementById('toast');
@@ -54,7 +74,7 @@
   function allDogs() {
     const byId = new Map(state.dogs.map((d) => [String(d.id), d]));
     for (const [id, c] of Object.entries(state.counts)) {
-      if (!byId.has(id)) byId.set(id, { id: Number(id), name: c.name, kennelLocation: c.kennelLocation, gone: !c.stillListed });
+      if (!byId.has(id)) byId.set(id, { id: Number(id), name: c.name, kennelLocation: c.kennelLocation, gone: !c.stillListed, adopted: !!c.adopted });
     }
     return [...byId.values()];
   }
@@ -74,10 +94,23 @@
     const el = document.getElementById('dogList');
     el.innerHTML = list.length ? list.map((d) => `
       <li><button type="button" class="dog-row${String(d.id) === String(state.dogId) ? ' active' : ''}" data-dog="${d.id}" role="option" aria-selected="${String(d.id) === String(state.dogId)}">
-        <span class="dog-row-name">${esc(d.name)}${d.gone ? ' <span class="badge">left</span>' : ''}</span>
+        <span class="dog-row-name">${esc(d.name)}${d.gone ? ` <span class="badge">${d.adopted ? 'Adopted' : 'Left shelter'}</span>` : ''}</span>
         <span class="dog-row-meta">${d.kennelLocation ? `🏠 ${esc(d.kennelLocation)}` : ''}</span>
         <span class="dog-row-count${n(d) ? '' : ' none'}">${n(d) || ''}</span>
       </button></li>`).join('') : '<li class="muted small" style="padding:10px;">No dogs match.</li>';
+  }
+
+  // Back to the list. On a narrow screen the list and the open dog take
+  // turns filling the screen (.has-dog); on a wide one this just clears it.
+  const EMPTY_PANE = document.getElementById('dogPane').innerHTML;
+  function closeDog() {
+    state.dogId = null;
+    const url = new URL(location.href);
+    url.searchParams.delete('dog');
+    history.replaceState(null, '', url);
+    document.getElementById('writeView').classList.remove('has-dog');
+    document.getElementById('dogPane').innerHTML = EMPTY_PANE;
+    renderDogList();
   }
 
   // ---------- One dog: notes and the editor ----------
@@ -86,11 +119,12 @@
     const url = new URL(location.href);
     url.searchParams.set('dog', state.dogId);
     history.replaceState(null, '', url);
+    document.getElementById('writeView').classList.add('has-dog');
     renderDogList();
     const pane = document.getElementById('dogPane');
     pane.innerHTML = '<p class="muted">Loading…</p>';
     let data;
-    try { data = await api(`/api/dogs/${id}/playgroup-notes`); } catch (err) { pane.innerHTML = `<p class="muted">Couldn't load: ${esc(err.message)}</p>`; return; }
+    try { data = await api(`/api/dogs/${id}/playgroup-notes`); } catch (err) { pane.innerHTML = `<p class="muted">Couldn't load this dog's notes. ${esc(err.message)}</p>`; return; }
     if (state.dogId !== String(id)) return; // picked another dog meanwhile
     renderDog(data, focus);
   }
@@ -107,7 +141,7 @@
       <div class="pg-preview"></div>
       <div class="desk-editor-foot">
         ${showSign ? `<label class="small"><input type="checkbox" class="pg-signed"${signed ? ' checked' : ''} /> Sign with my name <span class="muted">(otherwise anonymous)</span></label>` : '<span></span>'}
-        <span class="muted small">Ctrl+Enter to save</span>
+        ${hasKeyboard ? '<span class="muted small kbd-tip">Ctrl+Enter to save</span>' : ''}
         ${cancel ? '<button type="button" class="btn" data-act="cancel">Cancel</button>' : ''}
         <button type="button" class="btn primary" data-act="save">${saveLabel}</button>
       </div>
@@ -170,11 +204,12 @@
       </li>`;
     const pane = document.getElementById('dogPane');
     pane.innerHTML = `
+      <button type="button" class="link-btn back-to-list" data-act="back">‹ All dogs</button>
       <div class="dog-head">
         ${info.photoUrl ? `<img src="${esc(info.photoUrl)}" alt="" />` : ''}
         <div>
           <h2>${esc(info.name)}</h2>
-          <p class="muted small">ID ${esc(dogId)}${listed ? ` · 🏠 ${esc(listed.kennelLocation || '?')} · ${esc(listed.breed || '')} · ${esc(listed.sex || '')} · ${esc(listed.age || '')}` : ' · no longer listed at the shelter'}</p>
+          <p class="muted small">ID ${esc(dogId)}${listed ? ` · 🏠 ${esc(listed.kennelLocation || '?')} · ${esc(listed.breed || '')} · ${esc(listed.sex || '')} · ${esc(fmtAge(listed.age))}` : ' · no longer listed at the shelter'}</p>
           ${why ? `<p class="small warn">Not play group eligible right now: ${esc(why)}</p>` : ''}
         </div>
       </div>
@@ -193,11 +228,14 @@
         toast(`Saved for ${info.name} (${fmtDate(v.noteDate)})`);
         await reload();
         const next = document.querySelector('#dogPane .new-note .pg-text');
-        if (next) next.focus();
+        if (next && hasKeyboard) next.focus();
       }
     });
-    if (focus) ta.focus();
+    // On a phone, putting the cursor in the box pops up the keyboard over the
+    // dog's notes, so only focus it where there's a real keyboard.
+    if (focus && hasKeyboard) ta.focus();
 
+    pane.querySelector('[data-act="back"]').addEventListener('click', closeDog);
     pane.querySelectorAll('[data-pg-dog]').forEach((t) => t.addEventListener('click', () => openDog(t.dataset.pgDog)));
     pane.querySelectorAll('.pg-expand').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -270,21 +308,23 @@
     const days = new Set(data.notes.map((n) => n.noteDate)).size;
     const dogCount = new Set(data.notes.map((n) => n.dogId)).size;
     document.getElementById('sessionCount').textContent = `${data.notes.length} note${data.notes.length === 1 ? '' : 's'} · ${dogCount} dog${dogCount === 1 ? '' : 's'} · ${days} day${days === 1 ? '' : 's'}`;
+    // data-label: on a narrow screen each row turns into a card (playgroup.css)
+    // and these become the little headings inside it.
     document.getElementById('sessionRows').innerHTML = data.notes.length ? data.notes.map((n) => `<tr>
-        <td class="nowrap">${fmtDate(n.noteDate, { weekday: true })}</td>
-        <td><button type="button" class="pg-tag" data-open-dog="${n.dogId}">${esc(n.dogName)}</button>${n.kennelLocation ? ` <span class="muted small">🏠 ${esc(n.kennelLocation)}</span>` : ''}</td>
-        <td class="note-cell">${bodyHtml(n.body, data.dogs)}</td>
-        <td>${n.tagged.map((id) => `<button type="button" class="pg-tag" data-open-dog="${id}">${esc(data.dogs[id].name)}</button>`).join(', ')}</td>
-        <td>${n.author ? esc(n.author) : '<span class="muted">—</span>'}</td>
+        <td class="nowrap" data-label="Date">${fmtDate(n.noteDate, { weekday: true })}</td>
+        <td data-label="Dog"><button type="button" class="pg-tag" data-open-dog="${n.dogId}">${esc(n.dogName)}</button>${n.kennelLocation ? ` <span class="muted small">🏠 ${esc(n.kennelLocation)}</span>` : ''}</td>
+        <td class="note-cell" data-label="Note">${bodyHtml(n.body, data.dogs)}</td>
+        <td data-label="Dogs tagged"${n.tagged.length ? '' : ' class="empty-cell"'}>${n.tagged.map((id) => `<button type="button" class="pg-tag" data-open-dog="${id}">${esc(data.dogs[id].name)}</button>`).join(', ')}</td>
+        <td data-label="Signed by">${n.author ? esc(n.author) : '<span class="muted">—</span>'}</td>
       </tr>`).join('') : '<tr><td colspan="5" class="muted">No notes in this range.</td></tr>';
   }
   function setRange(range) {
     const from = document.getElementById('fromDate');
     const to = document.getElementById('toDate');
-    const d = new Date();
+    // Shelter dates (pg-tags.js), not this device's own calendar.
     if (range === 'all') { from.value = ''; to.value = ''; }
-    else if (range === 'year') { from.value = `${d.getFullYear()}-01-01`; to.value = today(); }
-    else { d.setDate(d.getDate() - Number(range) + 1); from.value = d.toLocaleDateString('en-CA'); to.value = today(); }
+    else if (range === 'year') { from.value = `${today().slice(0, 4)}-01-01`; to.value = today(); }
+    else { from.value = daysAgo(Number(range) - 1); to.value = today(); }
     document.querySelectorAll('[data-range]').forEach((c) => c.classList.toggle('active', c.dataset.range === range));
     loadSessions();
   }
@@ -327,7 +367,7 @@
   document.getElementById('sessionSearch').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadSessions, 250); });
   // "/" jumps to the dog search from anywhere but a text box.
   document.addEventListener('keydown', (e) => {
-    if (e.key !== '/' || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    if (e.key !== '/' || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
     e.preventDefault();
     showView('write');
     document.getElementById('dogSearch').focus();
@@ -339,7 +379,7 @@
       const [dogs] = await Promise.all([api('/api/dogs?all=false'), refreshCounts()]);
       state.dogs = dogs.dogs.filter(canPlay);
     } catch (err) {
-      document.getElementById('dogPane').innerHTML = `<p class="muted">Couldn't load the dogs: ${esc(err.message)}</p>`;
+      document.getElementById('dogPane').innerHTML = `<p class="muted">Couldn't load the dogs. ${esc(err.message)}</p>`;
       return;
     }
     renderDogList();

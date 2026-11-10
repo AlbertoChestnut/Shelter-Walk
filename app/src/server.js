@@ -5,7 +5,7 @@ const cron = require('node-cron');
 const QRCode = require('qrcode');
 const db = require('./db');
 const { runScrape, IMAGES_DIR } = require('./scraper');
-const { dogSilhouetteSvg, silhouetteUrl } = require('./silhouette');
+const { dogSilhouetteSvg, catSilhouetteSvg, silhouetteUrl } = require('./silhouette');
 const push = require('./push');
 const wiki = require('./wiki');
 const impact = require('./impact');
@@ -28,7 +28,19 @@ const { hashEmail } = require('./emailHash');
 const walkHours = require('./walkHours');
 
 const PORT = process.env.PORT || 3000;
+// Production needs the shared secret for the auth service's calls (account
+// lookups, permission changes); without it those quietly stop working, so
+// refuse to start instead. EMAIL_HASH_PEPPER gets the same check in emailHash.js.
+if (process.env.NODE_ENV === 'production' && !process.env.INTERNAL_API_TOKEN) {
+  throw new Error('[server] INTERNAL_API_TOKEN is not set. Refusing to start in production without it.');
+}
+// The example .env's placeholder is public, so it's as good as no token.
+if (process.env.NODE_ENV === 'production' && process.env.INTERNAL_API_TOKEN.trim() === 'change-me') {
+  throw new Error("[server] INTERNAL_API_TOKEN is still the example value 'change-me'. Set a real secret before starting in production.");
+}
+const crypto = require('crypto');
 const app = express();
+app.disable('x-powered-by');
 
 // Content-Security-Policy: the browser refuses to run any script that isn't
 // one of our own files (no inline scripts, no eval, no third-party hosts), so
@@ -58,6 +70,32 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '200kb' }));
 
+// Personal answers (your account, your walks, stats and notes, anything that
+// carries a private note or marks what's yours) are never stored: not by the
+// browser, and not by the service worker's offline copy (sw.js skips any
+// no-store response), so a shared shelter phone can't show one volunteer's
+// data to the next. Shared shelter data (the dog list, updates, the Guide)
+// still works offline.
+const PERSONAL_API = [
+  /^\/api\/me(?:\/|$)/,
+  /^\/api\/users\//,
+  /^\/api\/notes(?:\/|$)/,
+  /^\/api\/dogs\/[^/]+\/?$/, // one dog: comes with your private note
+  /^\/api\/dogs\/[^/]+\/(?:notes|walk-history|walk-stats|playgroup-notes)\/?$/,
+  /^\/api\/playgroup-notes(?:\/|$)/,
+  /^\/api\/walks(?:\/|$)/,
+  /^\/api\/stats(?:\/|$)/,
+  /^\/api\/impact(?:\/|$)/,
+  /^\/api\/feedback(?:\/|$)/,
+  /^\/api\/staff\//,
+  /^\/api\/modules\/walker-chat\//
+];
+app.use('/api', (req, res, next) => {
+  const p = req.originalUrl.split('?')[0].replace(/\/{2,}/g, '/');
+  if (PERSONAL_API.some((re) => re.test(p))) res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // Last-resort safety nets. An unhandled rejection is logged and survived (a
 // stray failed background task must not take the app down mid-walk); a true
 // uncaught exception leaves the process in an unknown state, so log it and
@@ -70,10 +108,51 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-// Cache-bust the versioned assets on every container start so a redeploy is
-// always picked up immediately, regardless of any browser/proxy cache sitting
-// in between (their Cache-Control headers can't be trusted to be honored).
-const ASSET_VERSION = String(Date.now());
+// The ?v= on every script and stylesheet: a hash of the files themselves
+// (public/ and every module's public/), so it changes exactly when a deploy
+// changes something, and a plain restart keeps every phone's cache. Assets
+// requested with the current ?v= are cached for a year (see below).
+function contentVersion(dirs) {
+  const hash = require('crypto').createHash('sha256');
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (err) { return; }
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile()) hash.update(path.relative(path.join(__dirname, '..'), full)).update('\0').update(fs.readFileSync(full));
+    }
+  };
+  dirs.forEach(walk);
+  return hash.digest('hex').slice(0, 12);
+}
+const MODULES_DIR = path.join(__dirname, '..', 'modules');
+const ASSET_VERSION = contentVersion([
+  path.join(__dirname, '..', 'public'),
+  ...(fs.existsSync(MODULES_DIR) ? fs.readdirSync(MODULES_DIR).map((m) => path.join(MODULES_DIR, m, 'public')) : [])
+]);
+// Adds ?v= to every local /js/ and /css/ file a page loads, so none can be
+// left one deploy behind (theme-init.js, staff-settings.js, ...).
+const withAssetVersions = (html) => html
+  .replace('__BUILD__', ASSET_VERSION)
+  .replace(/(src|href)="(\/(?:js|css)\/[^"?#]+\.(?:js|css))"/g, `$1="$2?v=${ASSET_VERSION}"`);
+// A file asked for with this build's ?v= can never change under that URL, so
+// browsers keep it for a year without asking again. Any other ?v= (a page
+// from an older build) is served fresh but not cached for long.
+app.use((req, res, next) => {
+  if ((req.method === 'GET' || req.method === 'HEAD') && req.query && req.query.v !== undefined
+      && /^\/(?:js|css|modules)\//.test(req.path)) {
+    res.set('Cache-Control', req.query.v === ASSET_VERSION ? 'public, max-age=31536000, immutable' : 'no-cache');
+  }
+  next();
+});
+// Every /api answer says which build is running, so a page left open from
+// before a deploy notices and reloads (or asks to, mid-walk; app.js
+// noticeServerBuild).
+app.use('/api', (req, res, next) => {
+  res.set('X-App-Build', ASSET_VERSION);
+  next();
+});
 
 // The module system (src/modules.js): optional features that live under
 // app/modules/<id>/ instead of core. Discovered once at startup; which ones
@@ -95,13 +174,8 @@ function withStageBanner(html) {
       + `${STAGE_BANNER} &middot; TEST DATA ONLY</div>`);
 }
 
-const INDEX_BASE = withStageBanner(fs
-  .readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'))
-  .replace('__BUILD__', ASSET_VERSION)
-  .replace('/css/style.css', `/css/style.css?v=${ASSET_VERSION}`)
-  .replace('/js/html5-qrcode.min.js', `/js/html5-qrcode.min.js?v=${ASSET_VERSION}`)
-  .replace('/js/pg-tags.js', `/js/pg-tags.js?v=${ASSET_VERSION}`)
-  .replace('/js/app.js', `/js/app.js?v=${ASSET_VERSION}`);
+const INDEX_BASE = withAssetVersions(withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8')));
 
 function sendIndex(req, res) {
   res.set('Cache-Control', 'no-cache, must-revalidate');
@@ -126,19 +200,17 @@ function sendRoot(req, res) {
 }
 
 // Staff-only desktop dashboard: a separate standalone page from the mobile
-// volunteer app above, not linked from it -- staff reach it by bookmarking
-// /staff, the same way /scan is a bookmarkable shortcut. The X-Auth-Staff
+// volunteer app above, reached from the desk page switcher (desk-nav.js) or
+// a bookmark. Anyone else gets a small branded "staff only" page. The X-Auth-Staff
 // check here is defense-in-depth only; the real gate is Caddy's forward_auth
 // (see the X-Auth-Email/X-Auth-Staff comment above resolveAuthedUser below).
-const STAFF_BASE = withStageBanner(fs
-  .readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8'))
-  .replace('/css/staff.css', `/css/staff.css?v=${ASSET_VERSION}`)
-  .replace('/js/staff.js', `/js/staff.js?v=${ASSET_VERSION}`)
-  .replace('/css/desk-nav.css', `/css/desk-nav.css?v=${ASSET_VERSION}`)
-  .replace('/js/desk-nav.js', `/js/desk-nav.js?v=${ASSET_VERSION}`);
+const STAFF_BASE = withAssetVersions(withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'staff.html'), 'utf8')));
+
+const STAFF_ONLY_HTML = withAssetVersions(fs.readFileSync(path.join(__dirname, '..', 'public', 'staff-only.html'), 'utf8'));
 
 function sendStaff(req, res) {
-  if (req.headers['x-auth-staff'] !== '1') return res.status(403).type('text/plain').send('Staff only.');
+  if (req.headers['x-auth-staff'] !== '1') return res.status(403).type('html').send(STAFF_ONLY_HTML);
   res.set('Cache-Control', 'no-cache, must-revalidate');
   const html = STAFF_BASE
     .replace('<!-- MODULE_STAFF_PANELS -->', modulesCore.staffPanelHtml(discoveredModules, moduleState, ASSET_VERSION))
@@ -146,16 +218,74 @@ function sendStaff(req, res) {
   res.type('html').send(html);
 }
 
+// The raw page files behind /staff and /playgroup are never served as-is
+// (that would skip /staff's staff-only check): their .html names go to the
+// real routes.
+app.use((req, res, next) => {
+  let p = req.path;
+  try { p = decodeURIComponent(p); } catch (err) { /* left as sent */ }
+  const m = /^\/+(staff|playgroup)\.html$/i.exec(p);
+  return m ? res.redirect(301, `/${m[1].toLowerCase()}`) : next();
+});
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
 // Drawn from the ID alone and versioned in its URL, so it can be cached for good.
 app.get('/dog-silhouettes/:file', (req, res) => {
-  const m = /^(\d{1,9})\.svg$/.exec(req.params.file);
+  const m = /^(cat-)?(\d{1,9})\.svg$/.exec(req.params.file);
   if (!m) return res.status(404).end();
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.type('image/svg+xml').send(dogSilhouetteSvg(Number(m[1])));
+  res.type('image/svg+xml').send(m[1] ? catSilhouetteSvg(Number(m[2])) : dogSilhouetteSvg(Number(m[2])));
 });
 // Cached dog photos — survive a dog's listing disappearing after adoption.
-app.use('/cached-images', express.static(IMAGES_DIR, { maxAge: '30d' }));
+// Photos only: the scraper's .lastmod/.tmp sidecars (and anything else that
+// lands in the folder) are never served.
+const CACHED_IMAGE_RE = /^\/(?:thumbs?\/)?\d{1,12}(?:[._-][a-z0-9]{1,16})?\.jpg$/i;
+// Small list thumbnails (cards show photos at 52-76px; the cached originals
+// are ~1024px, ~100 KB each), made from the cached photo the first time
+// they're asked for and kept beside it in IMAGES_DIR/thumbs. Remade when the
+// photo is newer than its thumbnail (the scraper replaced it).
+const THUMB_PX = 160;
+const thumbsDir = path.join(IMAGES_DIR, 'thumbs');
+const thumbsInFlight = new Map();
+let sharp = null;
+try {
+  sharp = require('sharp');
+  // A small server: one image at a time, and no libvips cache held in memory.
+  sharp.concurrency(1);
+  sharp.cache(false);
+} catch (err) {
+  console.warn('[thumbs] sharp unavailable, list photos use the full image:', err.message);
+}
+function ensureThumb(id) {
+  const src = path.join(IMAGES_DIR, `${id}.jpg`);
+  const dest = path.join(thumbsDir, `${id}.jpg`);
+  let srcStat;
+  try { srcStat = fs.statSync(src); } catch (err) { return Promise.resolve(null); }
+  try { if (fs.statSync(dest).mtimeMs >= srcStat.mtimeMs) return Promise.resolve(dest); } catch (err) { /* not made yet */ }
+  if (!sharp) return Promise.resolve(src);
+  if (thumbsInFlight.has(id)) return thumbsInFlight.get(id);
+  const tmp = `${dest}.${process.pid}.tmp`;
+  const job = fs.promises.mkdir(thumbsDir, { recursive: true })
+    .then(() => sharp(src).rotate().resize(THUMB_PX, THUMB_PX, { fit: 'cover', position: 'attention' }).jpeg({ quality: 72, mozjpeg: true }).toFile(tmp))
+    .then(() => fs.promises.rename(tmp, dest))
+    .then(() => dest)
+    .catch((err) => {
+      console.warn(`[thumbs] couldn't make a thumbnail for ${id}:`, err.message);
+      fs.rm(tmp, { force: true }, () => {});
+      return src;
+    })
+    .finally(() => thumbsInFlight.delete(id));
+  thumbsInFlight.set(id, job);
+  return job;
+}
+app.get(/^\/cached-images\/thumbs\/(\d{1,12})\.jpg$/, (req, res, next) => {
+  ensureThumb(req.params[0]).then((file) => {
+    if (!file) return res.status(404).end();
+    res.set('Cache-Control', 'public, max-age=2592000');
+    res.type('image/jpeg').sendFile(file, (err) => { if (err && !res.headersSent) next(err); });
+  });
+});
+app.use('/cached-images', (req, res, next) => (CACHED_IMAGE_RE.test(req.path) ? next() : res.status(404).end()),
+  express.static(IMAGES_DIR, { maxAge: '30d', dotfiles: 'deny' }));
 app.get('/', sendRoot);
 // Bookmarkable shortcut straight into the QR scanner -- deliberately not
 // routed through sendRoot, so it always opens the scanner even for staff.
@@ -164,13 +294,8 @@ app.get('/app', sendIndex);
 app.get('/staff', sendStaff);
 // The play group desk: a computer-sized page for typing up and exporting play
 // group notes. Open to every walker, like the notes themselves.
-const PLAYGROUP_BASE = withStageBanner(fs
-  .readFileSync(path.join(__dirname, '..', 'public', 'playgroup.html'), 'utf8'))
-  .replace('/css/playgroup.css', `/css/playgroup.css?v=${ASSET_VERSION}`)
-  .replace('/js/pg-tags.js', `/js/pg-tags.js?v=${ASSET_VERSION}`)
-  .replace('/js/playgroup.js', `/js/playgroup.js?v=${ASSET_VERSION}`)
-  .replace('/css/desk-nav.css', `/css/desk-nav.css?v=${ASSET_VERSION}`)
-  .replace('/js/desk-nav.js', `/js/desk-nav.js?v=${ASSET_VERSION}`);
+const PLAYGROUP_BASE = withAssetVersions(withStageBanner(fs
+  .readFileSync(path.join(__dirname, '..', 'public', 'playgroup.html'), 'utf8')));
 app.get('/playgroup', (req, res) => {
   res.set('Cache-Control', 'no-cache, must-revalidate');
   res.type('html').send(PLAYGROUP_BASE.replace('<!-- MODULE_SCRIPTS -->', modulesCore.assetTagsHtml(discoveredModules, moduleState, ASSET_VERSION, 'playgroup')));
@@ -244,6 +369,8 @@ const EXPERIENCE_LEVELS = {
 const PENDING_ADOPTION_TAG = "I'm getting adopted!";
 // Dogs on stray hold can't be walked unless they're marked PB.
 const STRAY_HOLD_TAG = 'On Stray Hold';
+// The shelter's listing says where a foster dog is: not here.
+const { FOSTER_LOCATION } = shelterTrends;
 const DEFAULT_EXPERIENCE_LEVEL = 'beginner';
 
 // A Beginner whose finished walks add up to 20 hours (the line between
@@ -256,10 +383,14 @@ function levelUpOffer(userId) {
   if (!user || user.experience_level !== 'beginner' || user.level_up_offered_at) return false;
   // Only time with animals that have levels (dogs) counts: cat visits have
   // no skill levels or hour requirements.
+  // Daycations don't count either: a dog out for the day is mostly time
+  // away, not handling, and two of them would otherwise make 20 hours.
+  // 20 hours exactly is enough ("20 hours or more", see EXPERIENCE_LEVELS).
   const levelKinds = species.SPECIES_KEYS.filter((k) => species.SPECIES[k].levelRules);
   const { seconds } = db.prepare(`
     SELECT COALESCE(SUM(w.duration_seconds), 0) AS seconds FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
-    WHERE w.user_id = ? AND w.ended_at IS NOT NULL AND d.species IN (${levelKinds.map(() => '?').join(', ')})
+    WHERE w.user_id = ? AND w.ended_at IS NOT NULL AND w.activity != 'daycation'
+      AND d.species IN (${levelKinds.map(() => '?').join(', ')})
   `).get(userId, ...levelKinds);
   return seconds >= LEVEL_UP_HOURS * 3600;
 }
@@ -270,10 +401,6 @@ function resolveExperienceLevel(userId) {
   const user = db.prepare('SELECT experience_level FROM users WHERE id = ?').get(id);
   return (user && user.experience_level) || null;
 }
-
-const getCheckoff = db.prepare(`
-  SELECT 1 FROM session_checkoffs WHERE dog_id = ? AND date_key = ?
-`);
 
 // Kennel locations are just the wing letter (dogs A-E, cats A-D, see
 // species.js) -- many animals share one, so there's no "one dog per spot"
@@ -306,13 +433,17 @@ function setKennelLocation(dogId, letter) {
 // would keep showing it long after the shelter's new one replaced it on disk
 // -- same URL, so no revalidation. Changing the file changes the mtime,
 // which changes this URL, which busts that cache immediately.
+// Cats without a photo get a cat silhouette.
+const speciesOfStmt = db.prepare('SELECT species FROM dogs WHERE shelter_buddy_id = ?');
 function cachedPhotoUrl(dogId, rawUrl) {
   const cachedPath = path.join(IMAGES_DIR, `${dogId}.jpg`);
   try {
     const v = Math.floor(fs.statSync(cachedPath).mtimeMs);
     return `/cached-images/${dogId}.jpg?v=${v}`;
   } catch (err) { /* not cached (yet) -- fall through */ }
-  return rawUrl || silhouetteUrl(dogId);
+  if (rawUrl) return rawUrl;
+  const row = speciesOfStmt.get(dogId);
+  return silhouetteUrl(dogId, row && row.species);
 }
 
 function resolvePhotoUrl(row) {
@@ -347,25 +478,65 @@ const activityError = (row) => {
   return `A ${info.noun} can only have: ${info.activities.join(', ')}.`;
 };
 
-const getActiveWalk = db.prepare(`
-  SELECT w.user_id AS userId, w.started_at AS startedAt, w.activity,
-         CASE WHEN u.hide_name_while_walking = 1 THEN 'a Volunteer' ELSE u.name END AS userName
-  FROM walks w JOIN users u ON u.id = w.user_id
-  WHERE w.dog_id = ? AND w.ended_at IS NULL
-  LIMIT 1
-`);
-
-const getWalkedByUserStats = db.prepare(`
-  SELECT COUNT(*) AS count, MAX(started_at) AS last_started_at
-  FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL
-`);
-
-const getFavorite = db.prepare('SELECT 1 FROM favorite_dogs WHERE dog_id = ? AND user_id = ?');
-
-const getRecentWalkCount = db.prepare(`
-  SELECT COUNT(*) AS count FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL AND started_at >= ?
-`);
+// Everything serializeDog needs from other tables, fetched with a handful of
+// grouped queries for the whole list (or just one dog when dogId is given)
+// instead of several queries per dog. The walker on a dog's current walk is
+// never sent as an id, only `mine` (whether it's the asker's own walk), so
+// "hide my name while walking" can't be undone by mapping an id to a name.
 const RECENT_WALK_WINDOW_DAYS = 7;
+const dogLookupStatements = new Map();
+function dogLookupStatement(sql) {
+  if (!dogLookupStatements.has(sql)) dogLookupStatements.set(sql, db.prepare(sql));
+  return dogLookupStatements.get(sql);
+}
+function dogLookups(userId, todayKey, dogId = null) {
+  const one = dogId != null ? ' AND w.dog_id = ?' : '';
+  const oneParam = dogId != null ? [dogId] : [];
+  const byDog = (rows) => new Map(rows.map((r) => [r.dog_id, r]));
+  const recentSince = new Date(Date.now() - RECENT_WALK_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const walkStats = byDog(dogLookupStatement(`
+    SELECT w.dog_id, COUNT(*) AS count, MAX(w.started_at) AS last_started_at,
+           SUM(CASE WHEN w.started_at >= ? THEN 1 ELSE 0 END) AS recent
+    FROM walks w WHERE w.ended_at IS NOT NULL${one} GROUP BY w.dog_id
+  `).all(recentSince, ...oneParam));
+  const active = byDog(dogLookupStatement(`
+    SELECT w.dog_id, w.user_id, w.started_at AS startedAt, w.activity,
+           CASE WHEN u.hide_name_while_walking = 1 THEN 'a volunteer' ELSE u.name END AS userName
+    FROM walks w JOIN users u ON u.id = w.user_id
+    WHERE w.ended_at IS NULL${one} ORDER BY w.started_at DESC
+  `).all(...oneParam).reverse());
+  const mine = userId ? byDog(dogLookupStatement(`
+    SELECT w.dog_id, COUNT(*) AS count, MAX(w.started_at) AS last_started_at
+    FROM walks w WHERE w.user_id = ? AND w.ended_at IS NOT NULL${one} GROUP BY w.dog_id
+  `).all(userId, ...oneParam)) : new Map();
+  const favorites = userId
+    ? new Set(dogLookupStatement('SELECT dog_id FROM favorite_dogs WHERE user_id = ?').all(userId).map((r) => r.dog_id))
+    : new Set();
+  const checkedOff = todayKey
+    ? new Set(dogLookupStatement('SELECT dog_id FROM session_checkoffs WHERE date_key = ?').all(todayKey).map((r) => r.dog_id))
+    : new Set();
+  const warnings = new Map(); // species -> latest adult engagement today (kittens only)
+  return {
+    walkStats: (id) => walkStats.get(id) || { count: 0, last_started_at: null, recent: 0 },
+    currentWalk: (id) => {
+      const w = active.get(id);
+      if (!w) return null;
+      // The start time only on your own: polling someone else's with their
+      // name would time their walks (and so their notes). No page shows how
+      // long anyone else has been out.
+      const mine = !!userId && w.user_id === userId;
+      return mine ? { startedAt: w.startedAt, activity: w.activity, userName: w.userName, mine } : { activity: w.activity, userName: w.userName, mine };
+    },
+    myStats: (id) => mine.get(id) || { count: 0, last_started_at: null },
+    isFavorite: (id) => favorites.has(id),
+    checkedOffToday: (id) => checkedOff.has(id),
+    handlingWarning: (row) => {
+      if (!warnings.has(row.species)) warnings.set(row.species, { value: undefined });
+      const memo = warnings.get(row.species);
+      return handlingWarningFor(row, userId, memo);
+    }
+  };
+}
 
 // Disease control (species.js youngFirst): kittens may be handled before
 // adult cats, never after. If this volunteer was with an adult cat during the
@@ -375,11 +546,17 @@ const getLatestAdultToday = db.prepare(`
   SELECT d.name, d.tags, d.species, w.started_at AS at FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
   WHERE w.user_id = ? AND d.species = ? AND w.started_at >= ? ORDER BY w.started_at DESC
 `);
-function handlingWarningFor(row, userId) {
+// memo (optional, per request and species): the lookup is the same for every
+// kitten in a list, so it runs once.
+function handlingWarningFor(row, userId, memo) {
   const rule = species.speciesInfo(row.species).youngFirst;
   if (!rule || !userId || !species.isYoung(row)) return null;
-  const since = new Date(Date.now() - 16 * 3600000).toISOString(); // today's shift, roughly
-  const adult = getLatestAdultToday.all(userId, row.species, since).find((w) => !species.isYoung(w));
+  let adult = memo ? memo.value : undefined;
+  if (adult === undefined) {
+    const since = new Date(Date.now() - 16 * 3600000).toISOString(); // today's shift, roughly
+    adult = getLatestAdultToday.all(userId, row.species, since).find((w) => !species.isYoung(w)) || null;
+    if (memo) memo.value = adult;
+  }
   return adult ? { name: adult.name, at: adult.at, young: rule.young, adult: rule.adult } : null;
 }
 
@@ -446,6 +623,15 @@ function dogEligibility(row, experienceLevel) {
     eligible = effectiveDays != null ? effectiveDays >= level.minDays : null;
     notEligibleReason = eligible ? null : 'days';
   }
+  // Listed as in foster care: not at the shelter, so not one to pick from
+  // the list. Checked last, so any level rule that also applies is the one
+  // shown (and still enforced). Starting one isn't refused (see
+  // /api/walks/start): a scanned kennel card means the animal is here and
+  // the listing is behind; the app asks the walker to check the card.
+  if (row.location === FOSTER_LOCATION && eligible !== false) {
+    eligible = false;
+    notEligibleReason = 'in_foster';
+  }
 
   return {
     eligible, notEligibleReason, level, kind, ageMonthsHard, blueMarkers, hasEvo, hasAnyBlue,
@@ -453,24 +639,24 @@ function dogEligibility(row, experienceLevel) {
   };
 }
 
-function serializeDog(row, experienceLevel, todayKey, userId) {
+// lookups: dogLookups() for the request (a list passes one for all its dogs);
+// left out, it's built for this one dog. withSummary: the shelter's long
+// description HTML, only sent for a single dog (the list never shows it).
+function serializeDog(row, experienceLevel, todayKey, userId, { lookups, withSummary = true } = {}) {
   const ageMonths = parseAgeMonths(row.age);
-  const walkStats = db.prepare(`
-    SELECT COUNT(*) AS count, MAX(started_at) AS last_started_at
-    FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL
-  `).get(row.shelter_buddy_id);
+  const userIdInt = parseInt(userId, 10) || null;
+  const look = lookups || dogLookups(userIdInt, todayKey, row.shelter_buddy_id);
+  const walkStats = look.walkStats(row.shelter_buddy_id);
   // How much attention a dog has gotten lately (not lifetime) — surfaces
   // dogs that have quietly gone unwalked for a while even if their
   // lifetime walkCount looks fine.
-  const recentSince = new Date(Date.now() - RECENT_WALK_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const recentWalkCount = getRecentWalkCount.get(row.shelter_buddy_id, recentSince).count;
+  const recentWalkCount = walkStats.recent || 0;
   // A dog currently out on a walk counts as "walked" for filtering/sorting
   // purposes right away — no need to wait for the walk to end.
-  const currentWalk = getActiveWalk.get(row.shelter_buddy_id) || null;
-  const userIdInt = parseInt(userId, 10);
-  const myStats = userIdInt ? getWalkedByUserStats.get(row.shelter_buddy_id, userIdInt) : { count: 0, last_started_at: null };
+  const currentWalk = look.currentWalk(row.shelter_buddy_id);
+  const myStats = look.myStats(row.shelter_buddy_id);
   const walkedByMe = myStats.count > 0;
-  const isFavorite = userIdInt ? !!getFavorite.get(row.shelter_buddy_id, userIdInt) : false;
+  const isFavorite = look.isFavorite(row.shelter_buddy_id);
 
   const {
     eligible, notEligibleReason, level, kind, ageMonthsHard, blueMarkers,
@@ -491,7 +677,7 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     location: row.location,
     dateInShelter: row.date_in_shelter,
     daysInShelter: days,
-    summary: row.summary,
+    summary: withSummary ? row.summary : undefined,
     tags,
     photoUrl: resolvePhotoUrl(row),
     // A YouTube video from the dog's page on the shelter's own site, if they
@@ -532,11 +718,13 @@ function serializeDog(row, experienceLevel, todayKey, userId) {
     // A kitten (species.js youngFirst): shown on cards, and the handling-order
     // warning below is about it.
     isYoung: species.isYoung(row),
-    handlingWarning: handlingWarningFor(row, userIdInt),
+    handlingWarning: look.handlingWarning(row),
     kennelLocation: row.kennel_location || null,
-    checkedOffToday: todayKey ? !!getCheckoff.get(row.shelter_buddy_id, todayKey) : false,
+    checkedOffToday: todayKey ? look.checkedOffToday(row.shelter_buddy_id) : false,
     walkCount: walkStats.count,
-    lastWalkedAt: walkStats.last_started_at,
+    // Shelter-wide, so only the day and walk window (see coarseWalkTime):
+    // the exact time would time whoever walked them last.
+    lastWalkedAt: coarseWalkTime(walkStats.last_started_at),
     recentWalkCount,
     currentWalk,
     walkedByMe,
@@ -582,11 +770,16 @@ function resolveAuthedUser(req) {
   let row = db.prepare(`SELECT ${ME_COLUMNS} FROM users WHERE auth_email_hash = ?`).get(emailHash);
   if (!row) {
     // Someone who already had a walker profile from before logins existed
-    // (matched by name, case-insensitively) gets THAT profile linked to
-    // their account, rather than a duplicate.
+    // (matched by name, case-insensitively) can get THAT profile linked to
+    // their account, rather than a duplicate. Only when LINK_ACCOUNTS_BY_NAME=1
+    // is set (a one-time migration switch): otherwise anyone whose email
+    // happens to start with an old profile's name could claim it, along with
+    // any permissions it has.
     const localPart = email.split('@')[0].replace(/[._-]+/g, ' ').trim();
     const derivedName = localPart.replace(/\b\w/g, (c) => c.toUpperCase()) || email;
-    const unlinked = db.prepare('SELECT id FROM users WHERE auth_email_hash IS NULL AND name = ? COLLATE NOCASE').get(derivedName);
+    const unlinked = process.env.LINK_ACCOUNTS_BY_NAME === '1'
+      ? db.prepare('SELECT id FROM users WHERE auth_email_hash IS NULL AND name = ? COLLATE NOCASE').get(derivedName)
+      : null;
     if (unlinked) {
       db.prepare('UPDATE users SET auth_email_hash = ? WHERE id = ?').run(emailHash, unlinked.id);
       row = db.prepare(`SELECT ${ME_COLUMNS} FROM users WHERE id = ?`).get(unlinked.id);
@@ -619,7 +812,7 @@ function resolveAuthedUser(req) {
   }
   return {
     ...row, isPrivileged: !!row.isPrivileged, canAudit: !!row.canAudit,
-    onboardingCompleted: !!row.onboardingCompleted
+    onboardingCompleted: !!row.onboardingCompleted, hideNameWhileWalking: !!row.hideNameWhileWalking
   };
 }
 
@@ -637,10 +830,13 @@ function notifyAdmins(payload) {
 // ---- Who is asking: always the signed-in account, never a request field ----
 // Every /api call is tied to the identity Caddy vouches for (X-Auth-Email).
 // Any `userId` a page sends (query string or body) is overwritten with that
-// identity, and /api/users/:id/... paths only work for your own id (staff and
-// privileged walkers excepted). Without this, anyone signed in could read
-// another volunteer's walks/stats/history just by changing a number in a
-// request -- which is exactly the kind of individual-level visibility this
+// identity, and /api/users/:id/... paths only work for your own id -- staff
+// and privileged walkers included: no page anywhere (the app, the staff
+// dashboard, the Feedback inbox, the play group desk) reads or changes
+// another member's settings, prefs, filters or alerts, so nobody can. The
+// one exception is /permissions, below. Without this, anyone signed in could
+// read another volunteer's walks/stats/history just by changing a number in
+// a request -- which is exactly the kind of individual-level visibility this
 // app is designed never to allow.
 const SELF_EXEMPT = new Set(['/api/client-error']);
 function isStaffOrPrivileged(req, user) {
@@ -657,15 +853,64 @@ app.use('/api', (req, res, next) => {
   // volunteer the full record of everyone's walks.
   if (req.query) req.query.userId = String(me.id);
   if (req.body && typeof req.body === 'object' && !Array.isArray(req.body) && req.body.userId !== undefined) req.body.userId = me.id;
-  const m = /^\/users\/(\d+)(\/|$)/.exec(req.path);
-  if (m && Number(m[1]) !== me.id && !isStaffOrPrivileged(req, me) && !/^\/users\/\d+\/permissions$/.test(req.path)) {
+  // Matched loosely on purpose (any case, repeated slashes, any id text), the
+  // way Express's own routing matches, and then the id must be exactly this
+  // account's id in plain digits: "4x", "4.0", "%204" or "/Users/4" can't
+  // slip past. The per-route check in app.param('id') below repeats this.
+  const m = /^\/+users\/+([^/]*)/i.exec(req.path);
+  if (m && !isOwnUserId(m[1], me) && !isPermissionsPath(req.path)) {
     return res.status(403).json({ error: "That isn't your account." });
   }
   next();
 });
-// A walk can be changed only by the person who did it (or staff, to fix mistakes).
+// Cross-site request forgery: a page on another site can make a signed-in
+// browser send a plain form (urlencoded, multipart, text/plain) or a
+// body-less no-cors POST, but never a JSON one without the browser asking
+// first. So every state-changing /api request must say it's JSON; only a
+// DELETE with no body at all is let through bare. The Guide's image upload
+// is checked for an image type by its own route instead (wiki.js), after
+// its editor check. Any browser that says the request came from another
+// site (Sec-Fetch-Site: cross-site) is refused outright. The trusted auth
+// service (bearer token, no cookies) is exempt. Runs after the sign-in
+// check, so a signed-out request still gets its 401.
+const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use('/api', (req, res, next) => {
+  if (!STATE_CHANGING.has(req.method)) return next();
+  if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') {
+    return res.status(403).json({ error: 'Requests from other sites are not accepted.' });
+  }
+  if (isInternalRequest(req)) return next();
+  const p = req.originalUrl.split('?')[0].replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  if (req.method === 'POST' && /^\/api\/wiki\/images$/i.test(p)) return next();
+  const hasBody = Number(req.headers['content-length'] || 0) > 0 || req.headers['transfer-encoding'] !== undefined;
+  if (req.method === 'DELETE' && !hasBody) return next();
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (type !== 'application/json') return res.status(415).json({ error: 'Send this request as JSON (Content-Type: application/json).' });
+  next();
+});
+const isOwnUserId = (raw, me) => /^\d+$/.test(String(raw)) && Number(raw) === me.id;
+// Changing permissions has its own privileged-only check (and is how a
+// privileged walker manages someone else), so it's the one exception. Kept
+// for the login app's walker-permissions page and privileged admins working
+// by hand; the route itself refuses anyone who isn't privileged.
+const isPermissionsPath = (p) => /^\/+(?:api\/+)?users\/+[^/]+\/+permissions\/*$/i.test(p);
+// Every /api/users/:id/... route: the id has to be plain digits, and your own
+// unless you're the trusted auth service (or it's /permissions, above).
+app.param('id', (req, res, next, raw) => {
+  if (!req.route || !/^\/api\/users\/:id(?:\/|$)/.test(req.route.path)) return next();
+  if (!/^\d+$/.test(String(raw))) return res.status(404).json({ error: 'User not found' });
+  if (isInternalRequest(req) || isPermissionsPath(req.originalUrl.split('?')[0])) return next();
+  if (!req.me || Number(raw) !== req.me.id) {
+    return res.status(403).json({ error: "That isn't your account." });
+  }
+  next();
+});
+// A walk can be changed or deleted only by the person who did it: no page
+// lets staff edit someone else's walks (Stats only ever lists your own), so
+// there's no staff override. Moving a walk to the right person is its own
+// staff-only route (PUT /api/walks/:id/user).
 function walkAccessDenied(req, res, walk) {
-  if (req.me && (walk.user_id === req.me.id || isStaffOrPrivileged(req, req.me))) return false;
+  if (req.me && walk.user_id === req.me.id) return false;
   if (isInternalRequest(req)) return false;
   res.status(403).json({ error: 'You can only change your own walks.' });
   return true;
@@ -708,15 +953,39 @@ app.get('/api/me', (req, res) => {
   res.json({ ...user, isStaff, desktop, levelUpOffer: levelUpOffer(user.id), species: species.SPECIES });
 });
 
+// Display names can't be used to pass as someone else. Saved as NFKC
+// (full-width and other compatibility forms folded to plain letters), with
+// invisible characters dropped: controls, zero-width and joiners, bidi
+// overrides/isolates, soft hyphens, and the "blank" fillers.
+const INVISIBLE_NAME_CHARS = /[\u0000-\u001F\u007F-\u009F­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ￰-￻]/g;
+function cleanDisplayName(raw) {
+  return String(raw == null ? '' : raw).normalize('NFKC').replace(INVISIBLE_NAME_CHARS, '').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+// Letters from other scripts that look just like Latin ones, for the clash
+// check only (the name is saved as typed).
+const CONFUSABLES = {
+  а: 'a', в: 'b', е: 'e', ё: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
+  ѕ: 's', і: 'i', ї: 'i', ј: 'j', ԁ: 'd', ԛ: 'q', ԝ: 'w', һ: 'h', ү: 'y',
+  α: 'a', β: 'b', ε: 'e', η: 'n', ι: 'i', κ: 'k', ν: 'v', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x', ϲ: 'c',
+  ɑ: 'a', ɡ: 'g', ı: 'i', ȷ: 'j', ℓ: 'l', '0': 'o'
+};
+// Two names that read the same: lowercased, spaces collapsed, accents and
+// look-alike letters folded.
+function nameSkeleton(name) {
+  return cleanDisplayName(name).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .replace(/./gu, (c) => CONFUSABLES[c] || c).replace(/\s+/g, ' ').trim();
+}
+
 // The Profile section's two fields save together as one first/last pair.
 app.put('/api/me', (req, res) => {
   const user = resolveAuthedUser(req);
   if (!user) {
     return res.status(401).json({ error: 'Not signed in.' });
   }
-  const name = String(req.body.name || '').trim().slice(0, 120);
+  const name = cleanDisplayName(req.body.name);
   if (!name) return res.status(400).json({ error: 'name is required' });
-  const clash = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE AND id != ?').get(name, user.id);
+  const skeleton = nameSkeleton(name);
+  const clash = db.prepare('SELECT id, name FROM users WHERE id != ?').all(user.id).some((u) => nameSkeleton(u.name) === skeleton);
   if (clash) return res.status(409).json({ error: 'A user with that name already exists' });
   db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, user.id);
   // Best effort: the staff account list in the login app shows this same
@@ -732,7 +1001,7 @@ app.put('/api/me', (req, res) => {
 
 // The Privacy & Data section's toggles. hideNameWhileWalking: whether this
 // volunteer's name shows on the live "currently being walked by" badge --
-// see getActiveWalk() and the walk-start "already out" check, both of
+// see dogLookups() and the walk-start "already out" check, both of
 // which substitute a generic label instead of the real name.
 app.put('/api/me/privacy', (req, res) => {
   const user = resolveAuthedUser(req);
@@ -930,22 +1199,67 @@ app.get('/api/push/vapid-public-key', (req, res) => {
   res.json({ publicKey: push.VAPID_PUBLIC_KEY });
 });
 
+// The server POSTs to whatever endpoint is stored here, so only the browsers'
+// own push services are accepted (no internal or arbitrary hosts), over https
+// on the default port.
+const PUSH_HOSTS = [
+  /^fcm\.googleapis\.com$/, /^android\.googleapis\.com$/,
+  /^([a-z0-9-]+\.)*push\.services\.mozilla\.com$/,
+  /^([a-z0-9-]+\.)*push\.apple\.com$/,
+  /^([a-z0-9-]+\.)*notify\.windows\.com$/
+];
+function validPushEndpoint(raw) {
+  if (typeof raw !== 'string' || raw.length > 2000) return false;
+  let url;
+  try { url = new URL(raw); } catch (err) { return false; }
+  return url.protocol === 'https:' && !url.port && !url.username && !url.password
+    && PUSH_HOSTS.some((re) => re.test(url.hostname.toLowerCase()));
+}
+// Web Push keys: p256dh is an uncompressed P-256 point (65 bytes, 0x04
+// first), auth a 16-byte secret, both base64url.
+function base64urlBytes(v) {
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-]+={0,2}$/.test(v)) return null;
+  return Buffer.from(v.replace(/=+$/, ''), 'base64url');
+}
+function validPushKeys(keys) {
+  const p256dh = keys && base64urlBytes(keys.p256dh);
+  const auth = keys && base64urlBytes(keys.auth);
+  return !!(p256dh && p256dh.length === 65 && p256dh[0] === 4 && auth && auth.length === 16);
+}
+
+const MAX_PUSH_SUBSCRIPTIONS = 10;
 app.post('/api/push/subscribe', (req, res) => {
-  const { userId, subscription } = req.body;
-  if (!userId || !subscription || !subscription.endpoint || !subscription.keys) {
-    return res.status(400).json({ error: 'userId and a valid subscription are required' });
+  const { subscription } = req.body;
+  if (!subscription || !validPushEndpoint(subscription.endpoint) || !validPushKeys(subscription.keys)) {
+    return res.status(400).json({ error: 'A valid push subscription is required.' });
+  }
+  const { endpoint, keys } = subscription;
+  const existing = db.prepare('SELECT user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
+  if (existing && existing.user_id !== req.me.id) {
+    // Someone else's subscription: only the same browser (which holds the
+    // same secret keys, e.g. a shared shelter phone after switching
+    // accounts) can move it over. Knowing an endpoint URL alone isn't enough.
+    if (existing.p256dh !== keys.p256dh || existing.auth !== keys.auth) {
+      return res.status(409).json({ error: 'That push subscription belongs to another account.' });
+    }
   }
   db.prepare(`
     INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth
-  `).run(userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, new Date().toISOString());
+    ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at
+  `).run(req.me.id, endpoint, keys.p256dh, keys.auth, new Date().toISOString());
+  // Up to MAX_PUSH_SUBSCRIPTIONS devices per account; the oldest go first.
+  db.prepare(`
+    DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN (
+      SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?)
+  `).run(req.me.id, req.me.id, MAX_PUSH_SUBSCRIPTIONS);
   res.json({ ok: true });
 });
 
+// Only your own subscriptions can be removed.
 app.post('/api/push/unsubscribe', (req, res) => {
   const { endpoint } = req.body;
   if (!endpoint) return res.status(400).json({ error: 'endpoint is required' });
-  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
+  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').run(String(endpoint), req.me.id);
   res.json({ ok: true });
 });
 
@@ -1011,11 +1325,14 @@ app.get('/api/experience-levels', (req, res) => {
 // this shared secret instead of a requestingUserId -- there's no dogwalk
 // account to attribute the call to when the caller is another service, not
 // a browser session.
+// Compared in constant time (hashed first, so the lengths always match), so
+// response timing gives nothing away about the token.
 function isInternalRequest(req) {
   const token = process.env.INTERNAL_API_TOKEN;
   if (!token) return false;
-  const header = req.headers['authorization'] || '';
-  return header === `Bearer ${token}`;
+  const header = String(req.headers['authorization'] || '');
+  const digest = (s) => crypto.createHash('sha256').update(s).digest();
+  return crypto.timingSafeEqual(digest(header), digest(`Bearer ${token}`));
 }
 
 // Lets a privileged user (or a trusted internal caller) grant/revoke
@@ -1047,16 +1364,10 @@ app.put('/api/users/:id/settings', (req, res) => {
   if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined && desktopView === undefined) {
     return res.status(400).json({ error: 'Nothing to save: send experienceLevel, defaultActivity, speciesPref and/or desktopView.' });
   }
-  if (desktopView !== undefined) {
-    if (desktopView !== null && !desktopViews.isValid(desktopView, req.headers['x-auth-staff'] === '1')) {
-      return res.status(400).json({ error: `desktopView must be one of: ${desktopViews.available(req.headers['x-auth-staff'] === '1').map((v) => v.key).join(', ')}` });
-    }
-    if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined) {
-      const info = db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
-      if (!info.changes) return res.status(404).json({ error: 'User not found' });
-      return res.json({ id, desktopView });
-    }
-    db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
+  // Everything is checked first, then saved in one UPDATE, so a bad field
+  // never leaves the good ones half-saved.
+  if (desktopView !== undefined && desktopView !== null && !desktopViews.isValid(desktopView, req.headers['x-auth-staff'] === '1')) {
+    return res.status(400).json({ error: `desktopView must be one of: ${desktopViews.available(req.headers['x-auth-staff'] === '1').map((v) => v.key).join(', ')}` });
   }
   if (speciesPref !== undefined && !species.SPECIES_PREFS.includes(speciesPref)) {
     return res.status(400).json({ error: `speciesPref must be one of: ${species.SPECIES_PREFS.join(', ')}` });
@@ -1067,15 +1378,20 @@ app.put('/api/users/:id/settings', (req, res) => {
   if (defaultActivity !== undefined && !ACTIVITIES.includes(defaultActivity)) {
     return res.status(400).json({ error: `defaultActivity must be one of: ${ACTIVITIES.join(', ')}` });
   }
-  const user = db.prepare('SELECT experience_level, default_activity, species_pref FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT experience_level, default_activity, species_pref, desktop_view FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  // desktopView alone answers with just that (what the desktop switcher expects).
+  if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined) {
+    db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
+    return res.json({ id, desktopView });
+  }
   const next = {
     experienceLevel: experienceLevel !== undefined ? experienceLevel : user.experience_level,
     defaultActivity: defaultActivity !== undefined ? defaultActivity : user.default_activity,
     speciesPref: speciesPref !== undefined ? speciesPref : user.species_pref
   };
-  db.prepare('UPDATE users SET experience_level = ?, default_activity = ?, species_pref = ? WHERE id = ?')
-    .run(next.experienceLevel, next.defaultActivity, next.speciesPref, id);
+  db.prepare('UPDATE users SET experience_level = ?, default_activity = ?, species_pref = ?, desktop_view = ? WHERE id = ?')
+    .run(next.experienceLevel, next.defaultActivity, next.speciesPref, desktopView !== undefined ? desktopView : user.desktop_view, id);
   res.json({ id, ...next });
 });
 
@@ -1087,8 +1403,11 @@ function clampLimit(raw, fallback, max = 5000) {
 }
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// A real calendar date ("2026-13-40" isn't one).
 function validDateKey(v) {
-  return typeof v === 'string' && DATE_KEY_RE.test(v) ? v : null;
+  if (typeof v !== 'string' || !DATE_KEY_RE.test(v)) return null;
+  const d = new Date(`${v}T12:00:00Z`);
+  return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : null;
 }
 
 // ---- Dogs ----
@@ -1110,7 +1429,8 @@ app.get('/api/dogs', (req, res) => {
   const kinds = speciesWhere(req);
   // Stand-ins for not-yet-listed kennel cards aren't real dogs yet: no list shows them.
   let rows = db.prepare(`SELECT * FROM dogs WHERE awaiting_listing = 0 AND ${kinds.sql}` + (onlyListed ? ' AND still_listed = 1' : '')).all(...kinds.params);
-  let dogs = rows.map((r) => serializeDog(r, experienceLevel, todayKey, req.query.userId));
+  const lookups = dogLookups(req.me.id, todayKey);
+  let dogs = rows.map((r) => serializeDog(r, experienceLevel, todayKey, req.me.id, { lookups, withSummary: false }));
   if (onlyEligible) {
     dogs = dogs.filter((d) => d.eligible);
   }
@@ -1143,11 +1463,23 @@ app.get('/api/dogs/:id', (req, res) => {
   }
   const experienceLevel = resolveExperienceLevel(req.query.userId);
   const todayKey = validDateKey(req.query.dateKey);
-  const dog = serializeDog(row, experienceLevel, todayKey, req.query.userId);
-  const walks = db.prepare(`
-    SELECT id, location, started_at, ended_at, duration_seconds, notes
-    FROM walks WHERE dog_id = ? ORDER BY started_at DESC
-  `).all(id);
+  const dog = serializeDog(row, experienceLevel, todayKey, req.me.id);
+  // The dog's walks, for the "walked today" hints. No notes and no walk ids
+  // here at all: the dog's notes are their own list (notes.walkNotes, from
+  // notes.js), never joined to a walk. Someone else's walk carries only its
+  // shelter date (as noteDay's timestamp) and activity; only your own keep
+  // their times. Ordered by date, then yours first, then by activity.
+  const walks = db.prepare('SELECT user_id, started_at, ended_at, activity FROM walks WHERE dog_id = ?').all(id)
+    .map((w) => (w.user_id === req.me.id
+      ? { mine: true, activity: w.activity, started_at: w.started_at, ended_at: w.ended_at }
+      : { mine: false, activity: w.activity, started_at: noteTags.noteDay(w.started_at), ended_at: w.ended_at ? noteTags.noteDay(w.started_at) : null }))
+    .sort((a, b) => {
+      const da = statsBreakdown.shelterDateKey(a.started_at);
+      const dbk = statsBreakdown.shelterDateKey(b.started_at);
+      if (da !== dbk) return da < dbk ? 1 : -1;
+      if (a.mine !== b.mine) return a.mine ? -1 : 1;
+      return a.mine ? (a.started_at < b.started_at ? 1 : -1) : a.activity.localeCompare(b.activity);
+    });
   dog.playgroupCounts = playgroupApi.counts(id);
   dog.stickerDates = stickerDatesFor(id);
   Object.assign(dog, modulesCore.runDogEnrichers(id, moduleState));
@@ -1242,26 +1574,74 @@ app.get('/api/dogs/:id/walk-stats', (req, res) => {
            COALESCE(MAX(duration_seconds), 0) AS longestSeconds
     FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL
   `).get(id, userId);
-  const everyone = db.prepare(`
-    SELECT COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds
-    FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL
-  `).get(id);
+  // Other volunteers' share to the nearest 5 minutes (dogTotalsFor).
+  const everyone = dogTotalsFor(id, userId);
   res.json({ mine, everyone });
 });
 
+// The app's four daily walk windows (WALK_SLOTS in app.js), in shelter
+// hours: 7-10, 10-1, 1-4 and 4-7 (to 8, for a walk that runs long). The
+// index of the one a time falls in, or -1 outside them.
+const SHELTER_SLOTS = [[7, 10], [10, 13], [13, 16], [16, 20]];
+const shelterHourFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' });
+function shelterSlotIndex(iso) {
+  const hour = Number(shelterHourFmt.format(new Date(iso)));
+  return SHELTER_SLOTS.findIndex(([from, to]) => hour >= from && hour < to);
+}
+// A walk time anyone may see, at walk-window precision: the start of its
+// window (SHELTER_SLOTS) on its shelter day, as an ISO time so dates, sorts
+// and "today" checks keep working. Before the first window counts as the
+// first, after the last as the last, so the order of days and windows holds.
+function coarseWalkTime(iso) {
+  if (!iso) return iso;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const c = walkHours.shelterClock(ms);
+  const hour = Math.floor(c.minutes / 60);
+  const slot = SHELTER_SLOTS.findIndex(([from, to]) => hour >= from && hour < to);
+  const fromHour = slot >= 0 ? SHELTER_SLOTS[slot][0]
+    : hour < SHELTER_SLOTS[0][0] ? SHELTER_SLOTS[0][0] : SHELTER_SLOTS[SHELTER_SLOTS.length - 1][0];
+  return walkHours.shelterTimeToDate(c.y, c.m, c.d, fromHour * 60).toISOString();
+}
+// Other volunteers' combined time with a dog, to the nearest 5 minutes (the
+// same precision as their rows in walk-history): an exact shelter-wide total
+// minus your own would give someone else's exact walk length, and two looks
+// a walk apart would give that walk's. Your own part stays exact.
+const roundToFive = (seconds) => Math.round((seconds || 0) / 300) * 300;
+function dogTotalsFor(dogId, userId) {
+  const all = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL').get(dogId);
+  const mine = db.prepare('SELECT COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL').get(dogId, userId);
+  return { count: all.count, totalSeconds: mine.totalSeconds + roundToFive(all.totalSeconds - mine.totalSeconds) };
+}
+
 // Every finished walk this dog has had, newest first. Each one says only
-// whether it was yours: never who else walked, and no notes, since a note
-// with a time next to it could give away who wrote it.
+// whether it was yours: never who else walked, and no notes. Someone else's
+// walk has no exact times either, just its shelter date, walk window (slot,
+// see SHELTER_SLOTS) and length to the nearest 5 minutes: exact rows would
+// undo Together's "fewer than 3" rule and line notes up against walkers.
+// Your own keep their times. Ordered by date and window, never by the real
+// times of anyone else's.
 app.get('/api/dogs/:id/walk-history', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const dog = db.prepare('SELECT name, species FROM dogs WHERE shelter_buddy_id = ?').get(id);
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const walks = db.prepare(`
-    SELECT started_at AS startedAt, ended_at AS endedAt, duration_seconds AS durationSeconds, activity,
-           CASE WHEN user_id = ? THEN 1 ELSE 0 END AS mine
-    FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL ORDER BY started_at DESC
-  `).all(req.me.id, id).map((w) => ({ ...w, mine: w.mine === 1 }));
-  res.json({ name: dog.name, species: dog.species, walks });
+    SELECT user_id, started_at, ended_at, duration_seconds, activity
+    FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL
+  `).all(id).map((w) => {
+    const base = { date: statsBreakdown.shelterDateKey(w.started_at), slot: shelterSlotIndex(w.started_at), activity: w.activity };
+    return w.user_id === req.me.id
+      ? { ...base, mine: true, startedAt: w.started_at, endedAt: w.ended_at, durationSeconds: w.duration_seconds }
+      : { ...base, mine: false, durationSeconds: Math.round((w.duration_seconds || 0) / 300) * 300 };
+  }).sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1)
+    : a.slot !== b.slot ? b.slot - a.slot
+      : a.mine !== b.mine ? (a.mine ? -1 : 1)
+        : a.mine ? (a.startedAt < b.startedAt ? 1 : -1)
+          : a.activity.localeCompare(b.activity) || a.durationSeconds - b.durationSeconds));
+  // The same totals as walk-stats' "everyone": exact for your own walks,
+  // other volunteers' share to the nearest 5 minutes.
+  const totals = dogTotalsFor(id, req.me.id);
+  res.json({ name: dog.name, species: dog.species, walks, totals });
 });
 
 // blank + alphabetical letter codes, with the EVO rectangle last.
@@ -1277,7 +1657,7 @@ const VALID_POO_STATUSES = ['none', 'poo', 'priority'];
 // itself (see BLUE_MARKER_NAMES in app.js).
 const STICKER_LABELS = {
   star: 'Good for beginners (star)',
-  pb: 'PB: Potty break OK',
+  pb: 'PB: Potty break only',
   poo: 'POO: Potty Outside Only',
   poo_priority: 'POO: priority (first out, last in)',
   blue_c: 'Blue: Difficult to collar',
@@ -1455,9 +1835,12 @@ app.delete('/api/users/:id/saved-filters/:filterId', (req, res) => {
 });
 
 // ---- Same-day checkoffs (someone else already walked this dog today) ----
+// Ids from a request body: a positive whole number, or null.
+const positiveInt = (v) => (/^\d+$/.test(String(v)) && Number(v) > 0 && Number.isSafeInteger(Number(v)) ? Number(v) : null);
+
 app.post('/api/checkoff', (req, res) => {
-  const { dogId, dateKey } = req.body;
-  const key = validDateKey(dateKey);
+  const dogId = positiveInt(req.body.dogId);
+  const key = validDateKey(req.body.dateKey);
   if (!dogId || !key) return res.status(400).json({ error: 'dogId and a valid dateKey (YYYY-MM-DD) are required' });
   db.prepare(`
     INSERT INTO session_checkoffs (dog_id, date_key, checked_at) VALUES (?, ?, ?)
@@ -1489,7 +1872,9 @@ app.get('/api/manual-checkoffs', (req, res) => {
 });
 
 app.put('/api/manual-checkoffs', (req, res) => {
-  const { dogId, dateKey, slotIndex, checked, userId } = req.body;
+  const { dateKey, checked, userId } = req.body;
+  const dogId = positiveInt(req.body.dogId);
+  const slotIndex = /^\d{1,2}$/.test(String(req.body.slotIndex)) ? Number(req.body.slotIndex) : null;
   const key = validDateKey(dateKey);
   if (!dogId || !key || slotIndex == null) {
     return res.status(400).json({ error: 'dogId, a valid dateKey (YYYY-MM-DD), and slotIndex are required' });
@@ -1626,17 +2011,31 @@ app.get('/api/walks/active', (req, res) => {
     row.stopsAt = walkStopsAt(row);
     row.closesAt = closesAtFor(row);
   }
-  // No walk going, but the time limit stopped one recently and the walker
-  // hasn't said when it really ended: the app shows its end screen again.
+  // No walk going, but one ended recently and its end screen was never
+  // finished: the app shows that screen again. Either the time limit
+  // stopped it (auto_stopped: the walker says when it really ended), or End
+  // was tapped (it ended then; only the notes are left).
   const wrapUp = row ? null : db.prepare(`
-    SELECT id, dog_id, location, started_at, ended_at, activity FROM walks
-    WHERE user_id = ? AND wrap_up_pending = 1 AND auto_stopped = 1 AND ended_at > ?
+    SELECT id, dog_id, location, started_at, ended_at, activity, auto_stopped FROM walks
+    WHERE user_id = ? AND wrap_up_pending = 1 AND ended_at > ?
     ORDER BY started_at DESC LIMIT 1
   `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
-  if (wrapUp) wrapUp.closesAt = closesAtFor(wrapUp);
-  res.json({ walk: row || null, wrapUp: wrapUp || null });
+  if (wrapUp) {
+    wrapUp.closesAt = closesAtFor(wrapUp);
+    wrapUp.autoStopped = !!wrapUp.auto_stopped;
+    delete wrapUp.auto_stopped;
+  }
+  // ?walkId=: the walk this device is showing. walkMissing says it's gone
+  // (deleted or cancelled on another device), so the app can stop showing
+  // it rather than guess it was ended. Only this user's own walks count.
+  const askedId = parseInt(req.query.walkId, 10);
+  const walkMissing = askedId > 0
+    ? !db.prepare('SELECT 1 FROM walks WHERE id = ? AND user_id = ?').get(askedId, userId)
+    : undefined;
+  res.json({ walk: row || null, wrapUp: wrapUp || null, ...(walkMissing !== undefined ? { walkMissing } : {}) });
 });
 
+const MAX_STAND_INS_PER_DAY = 3;
 app.post('/api/walks/start', (req, res) => {
   const { dogId, location, userId } = req.body;
   if (!dogId || !userId) {
@@ -1653,6 +2052,25 @@ app.post('/api/walks/start', (req, res) => {
   // The walker says which species the card is for; the listing corrects it.
   if (!dog && req.body.unlisted === true && looksLikeAnimalId(Number(dogId))) {
     const kind = species.validSpecies(req.body.species) ? req.body.species : species.DEFAULT_SPECIES;
+    // Checked before the stand-in is made, so a start that's refused anyway
+    // doesn't leave one behind.
+    if (db.prepare('SELECT 1 FROM walks WHERE ended_at IS NULL AND user_id = ?').get(userId)) {
+      return res.status(409).json({ error: 'You already have a walk in progress' });
+    }
+    if (location != null && String(location).trim() !== '' && !kennelLetter(location, kind)) {
+      return res.status(400).json({ error: kennelLetterError(kind) });
+    }
+    // At most MAX_STAND_INS_PER_DAY new stand-ins per walker per shelter day:
+    // each is a "Dog #N" row anyone can see, so it can't be made in bulk.
+    const todayKey = statsBreakdown.shelterDateKey(new Date().toISOString());
+    const recentStandIns = db.prepare(`
+      SELECT DISTINCT d.shelter_buddy_id, d.first_seen_at FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+      WHERE w.user_id = ? AND d.awaiting_listing = 1 AND d.first_seen_at >= ?
+    `).all(userId, new Date(Date.now() - 36 * 3600000).toISOString())
+      .filter((d) => statsBreakdown.shelterDateKey(d.first_seen_at) === todayKey);
+    if (recentStandIns.length >= MAX_STAND_INS_PER_DAY) {
+      return res.status(429).json({ error: `You can walk up to ${MAX_STAND_INS_PER_DAY} animals that aren't listed yet in a day. Ask staff if more kennel cards are missing from the listing.` });
+    }
     const nowIso = new Date().toISOString();
     db.prepare(`INSERT INTO dogs (shelter_buddy_id, name, species, still_listed, awaiting_listing, first_seen_at, last_seen_at)
       VALUES (?, ?, ?, 0, 1, ?, ?)`).run(Number(dogId), `${species.speciesInfo(kind).label} #${Number(dogId)}`, kind, nowIso, nowIso);
@@ -1676,8 +2094,10 @@ app.post('/api/walks/start', (req, res) => {
   // marker change (PB, blue stickers, ...) the walker just saved, so a
   // change that allows or blocks this walk is always checked with its own
   // effect already in place.
+  // Listed as in foster is the exception: the walker has the kennel card in
+  // hand, so the listing is what's out of date (the app has them check).
   const { eligible, notEligibleReason } = dogEligibility(dog, resolveExperienceLevel(userId));
-  if (eligible === false) {
+  if (eligible === false && notEligibleReason !== 'in_foster') {
     return res.status(403).json({
       error: `${dog.name} isn't cleared to walk at your experience level right now.`,
       notEligibleReason
@@ -1692,7 +2112,7 @@ app.post('/api/walks/start', (req, res) => {
     return res.status(409).json({ error: 'You already have a walk in progress', walkId: existingActive.id });
   }
   const dogAlreadyOut = db.prepare(`
-    SELECT w.id, CASE WHEN u.hide_name_while_walking = 1 THEN 'a Volunteer' ELSE u.name END AS user_name
+    SELECT w.id, CASE WHEN u.hide_name_while_walking = 1 THEN 'a volunteer' ELSE u.name END AS user_name
     FROM walks w JOIN users u ON u.id = w.user_id
     WHERE w.ended_at IS NULL AND w.dog_id = ?
   `).get(dogId);
@@ -1713,9 +2133,16 @@ app.post('/api/walks/start', (req, res) => {
   // time keeps the time-limit end (it can still be fixed in Stats).
   db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ? AND wrap_up_pending = 1').run(userId);
   const startedAt = new Date().toISOString();
-  const info = db.prepare(`
-    INSERT INTO walks (dog_id, location, started_at, user_id, activity) VALUES (?, ?, ?, ?, ?)
-  `).run(dogId, trimmedLocation || null, startedAt, userId, activity);
+  let info;
+  try {
+    info = db.prepare(`
+      INSERT INTO walks (dog_id, location, started_at, user_id, activity) VALUES (?, ?, ?, ?, ?)
+    `).run(dogId, trimmedLocation || null, startedAt, userId, activity);
+  } catch (err) {
+    // Two taps racing past the checks above: the one-open-walk indexes (db.js) catch it.
+    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'A walk is already in progress for you or this dog.' });
+    throw err;
+  }
 
   const finalLocation = trimmedLocation || dog.kennel_location || null;
   // A standing reminder that survives the phone locking/the app being
@@ -1735,7 +2162,7 @@ app.post('/api/walks/start', (req, res) => {
       body: `Started ${startTimeLabel}${finalLocation ? ` · Return to: ${finalLocation}` : ''}`,
       url: '/',
       tag: WALK_PUSH_TAG
-    }).catch(() => {});
+    }, { TTL: 30 * 60, urgency: 'high' }).catch(() => {});
   }
 
   res.json({
@@ -1785,19 +2212,41 @@ app.post('/api/walks/:id/extend', (req, res) => {
 app.put('/api/walks/:id/end', (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { notes } = req.body;
+  const noteError = walkNoteError(notes);
+  if (noteError) return res.status(400).json({ error: noteError });
   const walk = db.prepare('SELECT * FROM walks WHERE id = ?').get(id);
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
   if (walkAccessDenied(req, res, walk)) return;
   const now = Date.now();
   const handEndLimit = Math.min(now, new Date(walkStopsAt(walk)).getTime());
-  const tapped = req.body.endTappedAt ? walkEndTime(req.body.endTappedAt, walk.started_at, handEndLimit) : null;
-  if (tapped && tapped.error) return res.status(400).json({ error: tapped.error });
+  // finishLater: the app's End button. The walk ends now, and its end
+  // screen (notes) is saved afterwards through PUT /api/walks/:id with
+  // wrapUpDone -- until then wrap_up_pending brings that screen back when
+  // the app is reopened. A tap after the time limit already stopped it (or
+  // after it ended some other way) is not a hand end: the 409 below sends
+  // the app to that walk's own end screen.
+  const finishLater = req.body.finishLater === true;
+  // A tap "in the future" on a walk that's still going is a phone clock
+  // running fast: it meant now, so the server's now it is (never refused --
+  // End must always work). Hand-picked times in edits are still checked.
+  let sentEnd = req.body.endTappedAt;
+  if (sentEnd && !walk.ended_at) {
+    const sentMs = new Date(sentEnd).getTime();
+    if (Number.isFinite(sentMs) && sentMs > now) sentEnd = new Date(handEndLimit).toISOString();
+  }
+  let tapped = sentEnd ? walkEndTime(sentEnd, walk.started_at, handEndLimit) : null;
+  if (tapped && tapped.error) {
+    if (!(finishLater && walk.ended_at)) return res.status(400).json({ error: tapped.error });
+    tapped = null;
+  }
   const endedByHand = !walk.ended_at || (walk.auto_stopped && tapped && new Date(tapped.iso) < new Date(walk.ended_at));
-  const wrappingUp = !endedByHand && walk.auto_stopped && walk.wrap_up_pending;
+  const wrappingUp = !endedByHand && !finishLater && walk.auto_stopped && walk.wrap_up_pending;
   if (!endedByHand && !wrappingUp) {
     return res.status(409).json({
       error: walk.auto_stopped ? `This walk was stopped automatically after ${Math.round(walk.duration_seconds / 60)} minutes.` : 'Walk already ended',
       autoStopped: !!walk.auto_stopped,
+      alreadyEnded: true,
+      wrapUpPending: !!walk.wrap_up_pending,
       endedAt: walk.ended_at,
       durationSeconds: walk.duration_seconds
     });
@@ -1827,14 +2276,17 @@ app.put('/api/walks/:id/end', (req, res) => {
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(walk.started_at)) / 1000));
   const edited = endedAt !== recordedEnd;
   const autoStopped = wrappingUp ? 1 : 0;
+  // A note sent along is kept; ending without one (finishLater) keeps any
+  // already there rather than blanking it.
+  const cleanNotes = notes ? tags.clean(String(notes).trim(), walk.dog_id) : (finishLater ? walk.notes : null);
 
   db.prepare(`
-    UPDATE walks SET ended_at = ?, duration_seconds = ?, notes = ?, auto_stopped = ?, wrap_up_pending = 0,
+    UPDATE walks SET ended_at = ?, duration_seconds = ?, notes = ?, auto_stopped = ?, wrap_up_pending = ?,
            edited = CASE WHEN ? THEN 1 ELSE edited END,
            original_started_at = CASE WHEN ? THEN COALESCE(original_started_at, started_at) ELSE original_started_at END,
            original_ended_at = CASE WHEN ? THEN COALESCE(original_ended_at, ?) ELSE original_ended_at END
     WHERE id = ?
-  `).run(endedAt, durationSeconds, notes ? tags.clean(String(notes).trim(), walk.dog_id) : null, autoStopped, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
+  `).run(endedAt, durationSeconds, cleanNotes, autoStopped, finishLater ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
 
   const levelUp = !!req.me && walk.user_id === req.me.id && levelUpOffer(req.me.id);
   res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped, levelUpOffer: levelUp });
@@ -1847,33 +2299,74 @@ app.put('/api/walks/:id', (req, res) => {
   const walk = db.prepare('SELECT * FROM walks WHERE id = ?').get(id);
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
   if (walkAccessDenied(req, res, walk)) return;
-  const startedAt = req.body.startedAt || walk.started_at;
-  const endedAt = req.body.endedAt !== undefined ? req.body.endedAt : walk.ended_at;
-  const location = req.body.location !== undefined ? String(req.body.location).trim() : walk.location;
-  const notes = req.body.notes !== undefined ? (req.body.notes ? tags.clean(String(req.body.notes).trim(), walk.dog_id) : null) : walk.notes;
+  // Times are stored only as toISOString() (UTC, milliseconds, Z), so every
+  // range and order query that compares them as text stays right.
+  let startedAt = walk.started_at;
+  if (req.body.startedAt !== undefined && req.body.startedAt !== null && req.body.startedAt !== '') {
+    startedAt = isoTime(req.body.startedAt);
+    if (!startedAt) return res.status(400).json({ error: 'That start time is not a valid time.' });
+  }
+  let endedAt = walk.ended_at;
+  if (req.body.endedAt !== undefined) {
+    if (req.body.endedAt === null || req.body.endedAt === '') {
+      // A finished walk can't be turned back into one that's still going.
+      if (walk.ended_at) return res.status(400).json({ error: "A finished walk can't be reopened. Pick its end time instead." });
+      endedAt = null;
+    } else {
+      endedAt = isoTime(req.body.endedAt);
+      if (!endedAt) return res.status(400).json({ error: 'That end time is not a valid time.' });
+    }
+  }
   const animal = db.prepare('SELECT species FROM dogs WHERE shelter_buddy_id = ?').get(walk.dog_id);
+  // A kennel letter, the same as everywhere else (or blank for none).
+  let location = walk.location;
+  if (req.body.location !== undefined) {
+    const raw = req.body.location == null ? '' : String(req.body.location).trim();
+    location = raw ? kennelLetter(raw, animal && animal.species) : null;
+    if (raw && !location) return res.status(400).json({ error: kennelLetterError(animal && animal.species) });
+  }
+  const noteError = walkNoteError(req.body.notes);
+  if (noteError) return res.status(400).json({ error: noteError });
+  const notes = req.body.notes !== undefined ? (req.body.notes ? tags.clean(String(req.body.notes).trim(), walk.dog_id) : null) : walk.notes;
   const activity = req.body.activity !== undefined ? activityForAnimal(req.body.activity, animal) : walk.activity;
   if (!activity) return res.status(400).json({ error: activityError(animal) });
-  if (endedAt && (endedAt !== walk.ended_at || startedAt !== walk.started_at)) {
+  // Only a real change to the times counts as an edit — re-saving the same
+  // values (e.g. opening the editor and tapping Save without changing
+  // anything) must not flip the "Edited" badge on. Compared as instants, so
+  // the same time written another way isn't a change either.
+  const timesChanged = !sameInstant(startedAt, walk.started_at) || !sameInstant(endedAt, walk.ended_at);
+  if (!timesChanged) { startedAt = walk.started_at; endedAt = walk.ended_at; }
+  if (endedAt && timesChanged) {
     const checked = walkEndTime(endedAt, startedAt, Date.now());
     if (checked.error) return res.status(400).json({ error: checked.error });
+  }
+  // One still going can only have its start moved earlier (a late scan), and
+  // never into the future: a future start would never stop on its own.
+  if (!endedAt && timesChanged) {
+    const startMs = new Date(startedAt).getTime();
+    if (startMs > Date.now() + CLOCK_SKEW_MS) return res.status(400).json({ error: "The start time can't be in the future." });
+    if (startMs > new Date(walk.started_at).getTime()) return res.status(400).json({ error: 'A walk that is still going can only have its start moved earlier.' });
+  }
+  if (endedAt && (timesChanged || activity !== walk.activity)) {
+    const lengthError = walkLengthError(activity, startedAt, endedAt);
+    if (lengthError) return res.status(400).json({ error: lengthError });
   }
   // Switching what an open walk is mid-way: a daycation's 12 hours can't
   // turn into a walk that's already past a walk's limit.
   if (!walk.ended_at && activity !== walk.activity && Date.now() >= new Date(walkStopsAt({ ...walk, activity })).getTime()) {
     return res.status(409).json({ error: `This has already gone past the time limit for a ${activity}. End it instead, then fix it in Stats if needed.` });
   }
-  if (startedAt !== walk.started_at || endedAt !== walk.ended_at || activity !== walk.activity) {
+  if (timesChanged || activity !== walk.activity) {
     const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
     if (hoursError) return res.status(400).json({ error: hoursError });
+  }
+  if (timesChanged || activity !== walk.activity) {
+    const overlap = walkOverlapError({ userId: walk.user_id, dogId: walk.dog_id, activity, startedAt, endedAt, exceptId: id });
+    if (overlap) return res.status(409).json({ error: overlap });
   }
   const durationSeconds = endedAt
     ? Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000))
     : null;
-  // Only a real change to the times counts as an edit — re-saving the same
-  // values (e.g. opening the editor and tapping Save without changing
-  // anything) must not flip the "Edited" badge on.
-  const timesChanged = startedAt !== walk.started_at || endedAt !== walk.ended_at;
   // Preserve the true original the first time it's ever edited; later edits
   // don't overwrite it, so it always reflects what was originally scanned.
   const originalStartedAt = timesChanged && walk.original_started_at == null ? walk.started_at : walk.original_started_at;
@@ -1884,24 +2377,38 @@ app.put('/api/walks/:id', (req, res) => {
            original_started_at = ?, original_ended_at = ?
     WHERE id = ?
   `).run(startedAt, endedAt, location, notes, durationSeconds, activity, timesChanged ? 1 : 0, originalStartedAt, originalEndedAt, id);
+  // wrapUpDone: the end screen of a walk ended with End (finishLater on
+  // /end) was saved or skipped, so reopening the app no longer brings it back.
+  const wrapUpDone = req.body.wrapUpDone === true && !!endedAt;
+  if (wrapUpDone) db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE id = ?').run(id);
   // Still going: the time limit depends on the activity, so send it back.
   const running = endedAt ? null : { ...walk, started_at: startedAt, activity };
   res.json({
     id, startedAt, endedAt, location, notes, durationSeconds, activity, edited: timesChanged || !!walk.edited,
     stopsAt: running ? walkStopsAt(running) : undefined,
-    closesAt: running ? closesAtFor(running) : undefined
+    closesAt: running ? closesAtFor(running) : undefined,
+    levelUpOffer: wrapUpDone && !!req.me && walk.user_id === req.me.id ? levelUpOffer(req.me.id) : undefined
   });
 });
 
 // Log a walk that already happened but was never entered live (forgot to
 // scan someone in, catching up on a paper log, etc). Requires both times —
 // this always represents a completed walk, never an in-progress one, so it
-// can't collide with the single-active-walk-per-user rule.
+// can't collide with the single-active-walk-per-user rule. It can't be longer
+// than a live one could run, or overlap another of this walker's walks or
+// another walk with the same dog.
 app.post('/api/walks/manual', (req, res) => {
-  const { dogId, userId, location, startedAt, endedAt, notes } = req.body;
-  if (!dogId || !userId || !startedAt || !endedAt) {
+  const { userId, location, notes } = req.body;
+  const noteError = walkNoteError(notes);
+  if (noteError) return res.status(400).json({ error: noteError });
+  const dogId = positiveInt(req.body.dogId);
+  if (!dogId || !userId || !req.body.startedAt || !req.body.endedAt) {
     return res.status(400).json({ error: 'dogId, userId, startedAt, and endedAt are all required' });
   }
+  const startedAt = isoTime(req.body.startedAt);
+  const endedAt = isoTime(req.body.endedAt);
+  if (!startedAt) return res.status(400).json({ error: 'That start time is not a valid time.' });
+  if (!endedAt) return res.status(400).json({ error: 'That end time is not a valid time.' });
   const dog = db.prepare('SELECT shelter_buddy_id, species FROM dogs WHERE shelter_buddy_id = ?').get(dogId);
   if (!dog) return res.status(404).json({ error: 'Dog not found' });
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
@@ -1910,14 +2417,20 @@ app.post('/api/walks/manual', (req, res) => {
   if (checked.error) return res.status(400).json({ error: checked.error });
   const activity = activityForAnimal(req.body.activity, dog);
   if (!activity) return res.status(400).json({ error: activityError(dog) });
+  const lengthError = walkLengthError(activity, startedAt, endedAt);
+  if (lengthError) return res.status(400).json({ error: lengthError });
   const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
   if (hoursError) return res.status(400).json({ error: hoursError });
+  const rawLocation = location == null ? '' : String(location).trim();
+  const cleanLocation = rawLocation ? kennelLetter(rawLocation, dog.species) : null;
+  if (rawLocation && !cleanLocation) return res.status(400).json({ error: kennelLetterError(dog.species) });
+  const overlap = walkOverlapError({ userId: user.id, dogId, activity, startedAt, endedAt });
+  if (overlap) return res.status(409).json({ error: overlap });
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
-  const cleanLocation = location && String(location).trim() ? String(location).trim() : null;
   const info = db.prepare(`
     INSERT INTO walks (dog_id, user_id, location, started_at, ended_at, duration_seconds, notes, manual_entry, activity)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-  `).run(dogId, userId, cleanLocation, startedAt, endedAt, durationSeconds, notes ? tags.clean(String(notes).trim(), dogId) : null, activity);
+  `).run(dogId, user.id, cleanLocation, startedAt, endedAt, durationSeconds, notes ? tags.clean(String(notes).trim(), dogId) : null, activity);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1931,6 +2444,14 @@ app.delete('/api/walks/:id', (req, res) => {
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
   if (walkAccessDenied(req, res, walk)) return;
   db.prepare('DELETE FROM walks WHERE id = ?').run(id);
+  // A kennel-card stand-in ("Dog #N", awaiting_listing) whose only walk this
+  // was goes too, unless someone has left a note on it since.
+  db.prepare(`
+    DELETE FROM dogs WHERE shelter_buddy_id = ? AND awaiting_listing = 1
+      AND NOT EXISTS (SELECT 1 FROM walks WHERE dog_id = ?)
+      AND NOT EXISTS (SELECT 1 FROM dog_notes WHERE dog_id = ?)
+      AND NOT EXISTS (SELECT 1 FROM playgroup_notes WHERE dog_id = ?)
+  `).run(walk.dog_id, walk.dog_id, walk.dog_id, walk.dog_id);
   res.json({ id, deleted: true });
 });
 
@@ -1942,14 +2463,20 @@ app.get('/api/walks', (req, res) => {
   const params = [];
   if (dogId) { conditions.push('w.dog_id = ?'); params.push(dogId); }
   if (userId) { conditions.push('w.user_id = ?'); params.push(userId); }
+  // ?ended=1: finished walks only (charts and averages leave out the one
+  // still going).
+  if (req.query.ended === '1') conditions.push('w.ended_at IS NOT NULL');
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  // The walk-limit bookkeeping columns (warned, alerted_minutes, ...) stay out.
   const rows = db.prepare(`
-    SELECT w.*, d.name AS dog_name, d.photo_url, d.breed, d.species, d.tags,
+    SELECT w.id, w.dog_id, w.user_id, w.location, w.started_at, w.ended_at, w.duration_seconds, w.notes,
+           w.activity, w.manual_entry, w.edited, w.auto_stopped, w.original_started_at, w.original_ended_at,
+           d.name AS dog_name, d.photo_url, d.breed, d.species, d.tags,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     ${where} ORDER BY w.started_at DESC LIMIT ?
   `).all(...params, limit);
-  const pooAt = statsBreakdown.pooResolver(db);
+  const pooAt = statsBreakdown.pooResolver(db, rows.map((r) => r.dog_id));
   rows.forEach((r) => {
     r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
     // For the Stats tab's breakdowns: POO as it was when the walk started
@@ -1968,12 +2495,29 @@ app.get('/api/walks', (req, res) => {
 // grid. The client computes the range from ITS OWN local midnight-to-midnight
 // so day boundaries land correctly regardless of server timezone.
 app.get('/api/walks/for-day', (req, res) => {
-  const { fromUtc, toUtc, dateKey } = req.query;
+  const { dateKey } = req.query;
+  // Real times, in order, at most 48 hours apart (a day, with room for any
+  // time zone); anything else could ask for every walk ever.
+  const fromUtc = isoTime(req.query.fromUtc);
+  const toUtc = isoTime(req.query.toUtc);
   if (!fromUtc || !toUtc) return res.status(400).json({ error: 'fromUtc and toUtc are required' });
-  const rows = db.prepare(`
-    SELECT dog_id, started_at, duration_seconds
-    FROM walks WHERE ended_at IS NOT NULL AND started_at >= ? AND started_at < ?
-  `).all(fromUtc, toUtc);
+  const spanMs = new Date(toUtc) - new Date(fromUtc);
+  if (spanMs <= 0 || spanMs > 48 * 3600000) return res.status(400).json({ error: 'fromUtc to toUtc must be a range of up to 48 hours.' });
+  // Only what the grid draws: which walk window (SHELTER_SLOTS) each dog was
+  // out in, once per dog and window. No times, lengths or counts, which
+  // would be everyone's walks one by one and undo Together's "fewer than 3".
+  const seen = new Set();
+  const rows = [];
+  for (const w of db.prepare(`
+    SELECT dog_id, started_at FROM walks WHERE ended_at IS NOT NULL AND started_at >= ? AND started_at < ?
+  `).all(fromUtc, toUtc)) {
+    const slotIndex = shelterSlotIndex(w.started_at);
+    const key = `${w.dog_id}|${slotIndex}`;
+    if (slotIndex < 0 || seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ dog_id: w.dog_id, slotIndex });
+  }
+  rows.sort((a, b) => a.dog_id - b.dog_id || a.slotIndex - b.slotIndex);
   // Manual checkoffs (a walk that happened but wasn't scanned in) fill a
   // slot too, so the grid/"needs a walk this shift" filter don't treat an
   // attended dog as neglected just because it wasn't scanned.
@@ -1986,15 +2530,28 @@ app.get('/api/walks/for-day', (req, res) => {
 
 // Reassign which user a past walk should be attributed to — useful for
 // backfilling walks that were recorded under the wrong person (e.g. before
-// multi-user support existed, everything defaulted to one account).
+// multi-user support existed, everything defaulted to one account). Staff and
+// privileged admins only, by hand (no page calls it); it moves a walk and
+// never reads anyone's data back, so it stays.
 app.put('/api/walks/:id/user', (req, res) => {
   if (!isStaffOrPrivileged(req, req.me)) return res.status(403).json({ error: 'Only staff can reassign a walk.' });
   const id = parseInt(req.params.id, 10);
   const userId = Number(req.body.targetUserId);
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(400).json({ error: 'Unknown user' });
-  const info = db.prepare('UPDATE walks SET user_id = ? WHERE id = ?').run(userId, id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Walk not found' });
+  const walk = db.prepare('SELECT id, dog_id, activity, started_at, ended_at FROM walks WHERE id = ?').get(id);
+  if (!walk) return res.status(404).json({ error: 'Walk not found' });
+  // Same rules as any other walk of theirs: one in progress at a time, and
+  // no two entries of theirs at the same time.
+  if (!walk.ended_at && db.prepare('SELECT 1 FROM walks WHERE user_id = ? AND ended_at IS NULL AND id != ?').get(userId, id)) {
+    return res.status(409).json({ error: 'That volunteer already has a walk in progress.' });
+  }
+  // (dogId -1: only their own entries count here; the dog's other walkers
+  // are whoever they already were.)
+  if (walkOverlapError({ userId, dogId: -1, activity: walk.activity, startedAt: walk.started_at, endedAt: walk.ended_at, exceptId: id })) {
+    return res.status(409).json({ error: 'That volunteer already has another entry at the same time.' });
+  }
+  db.prepare('UPDATE walks SET user_id = ? WHERE id = ?').run(userId, id);
   res.json({ id, userId });
 });
 
@@ -2025,9 +2582,11 @@ app.get('/api/stats', (req, res) => {
   const totals = db.prepare(`
     SELECT COUNT(*) AS totalWalks, COUNT(DISTINCT w.dog_id) AS uniqueDogs,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds,
-           COALESCE(AVG(w.duration_seconds), 0) AS avgAllSeconds
+           COALESCE(AVG(CASE WHEN w.duration_seconds >= ${statsBreakdown.MIN_AVG_SECONDS} THEN w.duration_seconds END), 0) AS avgAllSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE ${where}
   `).get(...params);
+  // Averages (here and below) leave out anything under a minute: an
+  // accidental scan ended right away isn't a short walk.
 
   // Already scoped to one activity (the "by activity" drill-down): its own
   // average is exactly what the label says, no walk-only substitution needed.
@@ -2038,6 +2597,7 @@ app.get('/api/stats', (req, res) => {
       SELECT COUNT(*) AS walkCount, COALESCE(AVG(w.duration_seconds), 0) AS avgSeconds
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE w.ended_at IS NOT NULL AND w.user_id = ? AND ${kindSql} AND w.activity = 'walk'
+        AND w.duration_seconds >= ${statsBreakdown.MIN_AVG_SECONDS}
     `).get(userId, ...kinds);
     totals.avgSeconds = walkOnly.walkCount > 0 ? walkOnly.avgSeconds : totals.avgAllSeconds;
   }
@@ -2066,7 +2626,7 @@ app.get('/api/stats', (req, res) => {
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     WHERE w.ended_at IS NOT NULL AND w.user_id = ?
   `).all(userId);
-  const pooAt = statsBreakdown.pooResolver(db);
+  const pooAt = statsBreakdown.pooResolver(db, rows.map((r) => r.dog_id));
   const inFilter = rows.filter((r) => kinds.includes(r.species) && (!activity || r.activity === activity));
   const { byActivity, byPoo, byAge } = statsBreakdown.breakdown(inFilter, pooAt);
   const { bySpecies } = statsBreakdown.breakdown(rows, pooAt);
@@ -2129,10 +2689,24 @@ app.get('/healthz', (req, res) => {
   try {
     db.prepare('SELECT 1').get();
     const lastRun = db.prepare('SELECT started_at AS startedAt, finished_at AS finishedAt, ok, dog_count AS dogCount, note FROM scrape_runs ORDER BY id DESC LIMIT 1').get() || null;
-    const lastOk = db.prepare('SELECT finished_at AS finishedAt FROM scrape_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1').get() || null;
+    const lastOk = db.prepare('SELECT finished_at AS finishedAt, dog_count AS dogCount FROM scrape_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1').get() || null;
     const openWalks = db.prepare('SELECT COUNT(*) AS c FROM walks WHERE ended_at IS NULL').get().c;
-    res.json({
-      ok: true,
+    // A scrape that "succeeds" with no animals, or far fewer than usual, is
+    // a problem too (the shelter's API changing shape looked exactly like
+    // that): 503 so the health check emails, with the reason in `problems`.
+    const problems = [];
+    if (lastOk && lastOk.dogCount === 0) problems.push('the last successful scrape listed no animals');
+    else if (lastOk && lastOk.dogCount != null) {
+      const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+      const counts = db.prepare('SELECT dog_count AS c FROM scrape_runs WHERE ok = 1 AND dog_count IS NOT NULL AND finished_at >= ? ORDER BY id DESC LIMIT 300').all(weekAgo).map((r) => r.c).sort((a, b) => a - b);
+      const median = counts.length ? counts[Math.floor(counts.length / 2)] : 0;
+      if (counts.length >= 5 && lastOk.dogCount < median * 0.5) {
+        problems.push(`the last successful scrape listed ${lastOk.dogCount} animals, under half the usual ${median}`);
+      }
+    }
+    res.status(problems.length ? 503 : 200).json({
+      ok: problems.length === 0,
+      ...(problems.length ? { problems } : {}),
       uptimeSeconds: Math.round(process.uptime()),
       lastScrape: lastRun,
       lastSuccessfulScrapeAt: lastOk ? lastOk.finishedAt : null,
@@ -2164,15 +2738,6 @@ app.get('/uptime', (req, res) => {
   }
 });
 
-// Any error that escapes a route becomes a clean JSON response instead of
-// Express's default HTML stack page (which the frontend can't parse).
-app.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  const status = err.status || err.statusCode || 500;
-  if (status >= 500) console.error(`[server] ${req.method} ${req.originalUrl} failed:`, err);
-  res.status(status).json({ error: status >= 500 ? 'Something went wrong on the server. Please try again.' : (err.message || 'Bad request') });
-});
-
 // ---- Walk time limit ----
 // A walk stops by itself after AUTO_STOP_MINUTES so a forgotten "End Walk"
 // never ties up a dog or blocks that volunteer from starting the next one.
@@ -2194,9 +2759,12 @@ const WRAP_UP_HOURS = 12;
 // it runs up to DAYCATION_MINUTES with no extending, no length alerts, and
 // isn't stopped at closing time (it still has to start during walking hours).
 const DAYCATION_MINUTES = 12 * 60;
+// Never past MAX_TOTAL_MINUTES: time added as one activity can't carry a
+// walk past the cap after switching to one with a longer default (a walk
+// extended to 3 hours, switched to matchmaking).
 const walkLimitMinutes = (w) => (w.activity === 'daycation'
   ? DAYCATION_MINUTES
-  : (ACTIVITY_LIMIT_MINUTES[w.activity] || AUTO_STOP_MINUTES) + (w.extend_minutes || 0));
+  : Math.min(MAX_TOTAL_MINUTES, (ACTIVITY_LIMIT_MINUTES[w.activity] || AUTO_STOP_MINUTES) + (w.extend_minutes || 0)));
 // Closing time for the walk's day, in ms. Staff can move a day's closing
 // time while walks are out; one that started after the new closing time
 // isn't held to it (it would otherwise stop before it began).
@@ -2228,13 +2796,68 @@ const CLOCK_SKEW_MS = 2 * 60000;
 // latestMs (now, or an earlier cap such as the walk's limit, which gets
 // tooLateError). Returns { iso } or { error }.
 function walkEndTime(value, startedAt, latestMs, tooLateError = "The end time can't be after the walk's time limit.") {
-  const ms = new Date(value).getTime();
+  let ms = new Date(value).getTime();
   if (!Number.isFinite(ms)) return { error: 'That end time is not a valid time.' };
-  if (ms <= new Date(startedAt).getTime()) return { error: 'The end time has to be after the walk started.' };
+  // A phone whose clock runs a little behind the server's, ending a walk
+  // seconds after starting it, sends an end time before the start. When that
+  // time is also within clock-skew of now, it meant "now": the server's clock
+  // decides. (Earlier end times, e.g. when a notification's End was tapped,
+  // are kept as sent.)
+  const startMs = new Date(startedAt).getTime();
+  if (ms <= startMs && Math.abs(ms - Date.now()) <= CLOCK_SKEW_MS) ms = Math.min(Date.now(), latestMs);
+  if (ms <= startMs) return { error: 'The end time has to be after the walk started.' };
   if (ms > latestMs + CLOCK_SKEW_MS) {
     return { error: latestMs < Date.now() - CLOCK_SKEW_MS ? tooLateError : "The end time can't be in the future." };
   }
   return { iso: new Date(Math.min(ms, latestMs)).toISOString() };
+}
+
+// A time from a request as toISOString(), or null if it isn't a real time.
+// Only full dates with a time are taken ("2026-11-09T14:00:00Z", with or
+// without milliseconds or an offset), not loose text like "Nov 9 10:00".
+function isoTime(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+const sameInstant = (a, b) => (a == null || b == null ? a == b : new Date(a).getTime() === new Date(b).getTime()); // eslint-disable-line eqeqeq
+
+// The note for other walkers left on a walk: up to MAX_WALK_NOTE characters,
+// the same as a tip (notes.js), refused with a clear message rather than cut.
+function walkNoteError(notes) {
+  if (notes == null) return null;
+  return String(notes).trim().length > notesApi.MAX_WALK_NOTE
+    ? `A note can be up to ${notesApi.MAX_WALK_NOTE} characters. This one has ${String(notes).trim().length}.`
+    : null;
+}
+
+// Hand-logged and edited entries can't be longer than a live one could run:
+// 12 hours for a daycation, 3 hours for anything else.
+function walkLengthError(activity, startedAt, endedAt) {
+  const maxMinutes = activity === 'daycation' ? DAYCATION_MINUTES : MAX_TOTAL_MINUTES;
+  if (new Date(endedAt) - new Date(startedAt) <= maxMinutes * 60000) return null;
+  return `${activity === 'daycation' ? 'A daycation' : `A ${activityNoun(activity)}`} can't be longer than ${maxMinutes / 60} hours.`;
+}
+
+// Another walk of this walker's, or with this dog, at the same time (one
+// still going counts up to now). Times are compared with julianday() so
+// older rows stored in other formats still compare correctly. Play group is
+// the one shared activity: several walkers can log the same dog's session.
+const overlappingWalk = db.prepare(`
+  SELECT w.id, w.user_id, d.name AS dog_name FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+  WHERE (w.user_id = @userId OR (w.dog_id = @dogId AND @activity != 'playgroup' AND w.activity != 'playgroup'))
+    AND w.id != @exceptId
+    AND julianday(w.started_at) < julianday(@endedAt)
+    AND julianday(COALESCE(w.ended_at, @now)) > julianday(@startedAt)
+  ORDER BY (w.user_id = @userId) DESC LIMIT 1
+`);
+function walkOverlapError({ userId, dogId, activity, startedAt, endedAt, exceptId = 0 }) {
+  const now = new Date().toISOString();
+  const row = overlappingWalk.get({ userId: userId == null ? -1 : userId, dogId, activity, exceptId, startedAt, endedAt: endedAt || now, now });
+  if (!row) return null;
+  return row.user_id === userId
+    ? `This overlaps another of your entries (${row.dog_name || 'another animal'}) at the same time.`
+    : `${row.dog_name || 'This animal'} already has an entry at that time.`;
 }
 
 // A length alert more than this late (the walker added it partway through
@@ -2281,7 +2904,7 @@ function enforceWalkLimits() {
           url: '/',
           tag: WALK_PUSH_TAG,
           ...walkAlertActions(w)
-        }).catch(() => {});
+        }, push.WALK_ALERT_PUSH).catch(() => {});
       }
     }
     if (now >= stopsAt) {
@@ -2311,7 +2934,7 @@ function enforceWalkLimits() {
           url: '/',
           tag: WALK_PUSH_TAG,
           ...walkAlertActions(w)
-        }).catch(() => {});
+        }, push.WALK_ALERT_PUSH).catch(() => {});
       }
     }
   }
@@ -2338,7 +2961,7 @@ modulesCore.registerModuleAdminRoutes(app, discoveredModules, moduleState, db);
 for (const m of discoveredModules) {
   const ctx = modulesCore.buildModuleCtx(m.id, {
     db, state: moduleState,
-    legacyExtras: { cachedPhotoUrl, isStaffOrPrivileged, resolveAuthedUser, push }
+    legacyExtras: { cachedPhotoUrl, isStaffOrPrivileged, resolveAuthedUser, push, onAccountDeleted: account.onAccountDeleted }
   });
   m.register(app, ctx);
 }
@@ -2350,6 +2973,26 @@ function pruneOldRecords() {
 setInterval(() => { try { pruneOldRecords(); } catch (err) { console.error('[server] prune failed:', err); } }, 24 * 3600 * 1000);
 try { pruneOldRecords(); } catch (err) { console.error('[server] prune failed:', err); }
 
+// These two stay LAST, after every route above (core, staff, schedule and
+// every module), or a later route's errors would skip them.
+// An /api path nothing answered: JSON, like every other API reply.
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found.' });
+});
+// Any error that escapes a route becomes a clean JSON response instead of
+// Express's default HTML stack page (which the frontend can't parse, and
+// which shows file paths). Details go to the server log only.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const raw = err.status || err.statusCode;
+  const status = Number.isInteger(raw) && raw >= 400 && raw <= 599 ? raw : 500;
+  if (status >= 500) console.error(`[server] ${req.method} ${req.originalUrl} failed:`, err);
+  // Express's own 4xx errors (bad JSON, too large) have safe, short messages.
+  const message = status >= 500 ? 'Something went wrong on the server. Please try again.'
+    : (err.expose !== false && err.message ? String(err.message).slice(0, 200) : 'Bad request');
+  res.status(status).json({ error: message });
+});
+
 // Loopback only: Caddy is the sole legitimate client (it injects the trusted
 // X-Auth-Email header after authenticating), so nothing else should ever be
 // able to reach this port and forge that header.
@@ -2360,8 +3003,10 @@ app.listen(PORT, process.env.BIND_HOST || '127.0.0.1', () => {
 // Run once shortly after startup (catches up after a restart regardless of
 // time of day), then every 30 minutes from 6am (catches overnight intakes
 // before walking starts at 7am) through 7:30pm, covering walking and adoption
-// hours. About 120 requests per run, one at a time, so ~28 runs a day stays
-// gentle on the county's site.
+// hours. About 3 requests per listed animal (details, photo list, and a
+// conditional photo GET that is usually a bodyless 304), so roughly 650 per
+// run at ~215 animals, one at a time with a pause between animals; ~28 runs
+// a day stays gentle on the county's site.
 const SCRAPE_SCHEDULE = '0,30 6-19 * * *';
 if (!process.env.DISABLE_SCRAPER) {
   setTimeout(() => {

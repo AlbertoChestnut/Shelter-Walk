@@ -66,7 +66,7 @@
   }
 
   let lastTypingSent = 0;
-  const TYPING_SEND_THROTTLE_MS = 2000;
+  const TYPING_SEND_THROTTLE_MS = 3000; // the server takes at most one per 3 s
   function notifyTyping() {
     const now = Date.now();
     if (now - lastTypingSent < TYPING_SEND_THROTTLE_MS) return;
@@ -109,8 +109,25 @@
     list.scrollTop = list.scrollHeight;
   }
 
+  // The browser's own reconnect gives up for good after an answer that isn't
+  // a stream (a 429 when too many tabs are open, a 502 during a restart), and
+  // chat would then just go quiet. So any error closes it and a new one is
+  // opened after a wait that doubles each time (2 s up to a minute), back to
+  // 2 s once a stream opens. Messages missed meanwhile come from the history.
+  const RETRY_MIN_MS = 2000;
+  const RETRY_MAX_MS = 60000;
+  let retryMs = RETRY_MIN_MS;
+  let retryTimer = null;
+  let hadStream = false;
   function connectStream() {
+    retryTimer = null;
     const es = new EventSource('/api/modules/walker-chat/stream');
+    window.__wcStream = es;
+    es.onopen = () => {
+      if (hadStream) loadHistory();
+      hadStream = true;
+      retryMs = RETRY_MIN_MS;
+    };
     es.addEventListener('message', (e) => {
       const m = JSON.parse(e.data);
       // The stream carries userId, not mine -- stamped against whichever
@@ -124,7 +141,13 @@
       const t = JSON.parse(e.data);
       if (t.userId !== window.__wcMeId) markTyping(t.userId, t.authorName);
     });
-    es.onerror = () => { /* EventSource retries on its own */ };
+    es.onerror = () => {
+      es.close();
+      if (retryTimer) return;
+      const wait = retryMs;
+      retryMs = Math.min(RETRY_MAX_MS, retryMs * 2);
+      retryTimer = setTimeout(connectStream, wait);
+    };
   }
 
   toggle.addEventListener('click', () => {

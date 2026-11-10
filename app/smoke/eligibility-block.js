@@ -2,16 +2,14 @@
 // Walk is disabled, not just a "walk anyway" confirm. Also covers the live
 // bar: ticking PB flips the badge/button the instant it's tapped, and
 // starting the walk saves that marker change before re-checking eligibility.
-// Needs Playwright: npm i --no-save playwright@1 && npx playwright install chromium
+// Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/eligibility-block.js
-const { spawn } = require('child_process'); const { chromium } = require('playwright'); const Database = require('better-sqlite3'); const fs = require('fs');
-const PORT = 3995, base = `http://127.0.0.1:${PORT}`, DB = '/tmp/_elig.db';
+const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
+let base, DB;
 const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓ ' + m); };
 (async () => {
-  fs.rmSync(DB, { force: true });
-  const srv = spawn('node', ['src/server.js'], { env: { ...process.env, PORT: String(PORT), DB_PATH: DB, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: ['ignore', 'ignore', 'inherit'] });
+  const h = await startSmoke(); ({ base, dbFile: DB } = h);
   try {
-    for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
     const estEmail = 'est@example.com', begEmail = 'beg@example.com';
     const est = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': estEmail } })).json();
     const beg = await (await fetch(base + '/api/me', { headers: { 'x-auth-email': begEmail } })).json();
@@ -23,7 +21,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     db.prepare("INSERT INTO dogs (shelter_buddy_id, name, sex, age, date_in_shelter, still_listed, first_seen_at, last_seen_at) VALUES (501, 'Newt', 'Male', '2 Years', ?, 1, ?, ?)").run(now, now, now);
     db.close();
 
-    const b = await chromium.launch();
+    const b = await launch();
     const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, extraHTTPHeaders: { 'x-auth-email': estEmail }, serviceWorkers: 'block' });
     const p = await ctx.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.goto(base, { waitUntil: 'networkidle' });
@@ -71,7 +69,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p2.waitForSelector('#startWalkBtn');
     await p2.waitForTimeout(300);
     ok(await p2.isDisabled('#startWalkBtn'), 'a beginner still cannot start this PB dog at all');
-    ok((await p2.textContent('#eligibilityBadge')).includes('Potty-break-only'), 'the bar says why');
+    ok((await p2.textContent('#eligibilityBadge')).includes('Potty break only'), 'the bar says why');
     ok(errs2.length === 0, 'no page errors ' + JSON.stringify(errs2));
     await ctx2.close();
 
@@ -86,5 +84,5 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
 
     await b.close();
     console.log('eligibility-block smoke passed');
-  } finally { srv.kill(); }
+  } finally { await h.stop(); }
 })().catch((e) => { console.error(e); process.exit(1); });

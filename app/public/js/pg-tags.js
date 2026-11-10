@@ -113,15 +113,22 @@
     return { text: `${plain.slice(0, maxLen).replace(/\s+\S*$/, '')}…`, truncated: true };
   }
 
-  const localKey = (d) => d.toLocaleDateString('en-CA'); // YYYY-MM-DD, viewer's day
-  const today = () => localKey(new Date());
-  const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return localKey(d); };
+  // "Today" is the shelter's date (America/New_York), whatever time zone this
+  // device is in -- the server rejects a note dated after the shelter's
+  // today, so a device ahead of New York (or a UTC clock) must not offer it.
+  const shelterKeyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = () => shelterKeyFmt.format(new Date()); // YYYY-MM-DD
+  const daysAgo = (n) => {
+    const d = new Date(`${today()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
   function fmtDate(key, { weekday = false } = {}) {
     const [y, m, d] = key.split('-').map(Number);
-    const opts = { month: 'short', day: 'numeric' };
+    const opts = { month: 'short', day: 'numeric', timeZone: 'UTC' };
     if (weekday) opts.weekday = 'short';
-    if (y !== new Date().getFullYear()) opts.year = 'numeric';
-    return new Date(y, m - 1, d).toLocaleDateString(undefined, opts);
+    if (String(y) !== today().slice(0, 4)) opts.year = 'numeric';
+    return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString(undefined, opts);
   }
 
   // The date of the play group: Today / Yesterday chips and a picker for
@@ -458,7 +465,7 @@
     const close = () => { box.classList.add('hidden'); at = -1; };
     const paint = () => {
       box.innerHTML = shown.map((d, i) => `<button type="button" class="pg-suggest-item${i === sel ? ' active' : ''}" role="option" aria-selected="${i === sel}" data-id="${d.id}">
-          <img src="${d.photoUrl ? esc(d.photoUrl) : `/dog-silhouettes/${d.id}.svg`}" alt="" loading="lazy" />
+          <img src="${d.photoUrl ? esc(d.photoUrl.replace(/^\/cached-images\/(\d+\.jpg)/, '/cached-images/thumbs/$1')) : `/dog-silhouettes/${d.id}.svg`}" alt="" loading="lazy" />
           <span class="pg-suggest-name">${esc(d.name)}</span>
           <span class="small muted nowrap">🏠 ${esc(d.kennelLocation || '?')}</span>
         </button>`).join('');
@@ -653,7 +660,7 @@
 
   window.PgTags = {
     TAG_RE, esc, pickLabel, toEditable, fromEditable, bodyHtml, bodyText, bodySnippet, linkifyYouTube,
-    fmtDate, today, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools, wireAutoTagger,
+    fmtDate, today, daysAgo, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools, wireAutoTagger,
     richText
   };
 })();

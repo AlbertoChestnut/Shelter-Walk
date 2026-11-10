@@ -14,26 +14,55 @@
 const MAX_TIP = 1000;
 const MAX_PRIVATE = 4000;
 const MAX_TIPS_PER_DOG = 300;
+// Same cap for the note left at the end of a walk (server.js checks it on save).
+const MAX_WALK_NOTE = MAX_TIP;
+const crypto = require('crypto');
+const { noteDay } = require('./noteTags');
+
+const shelterDateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+const shelterDate = (iso) => shelterDateFmt.format(new Date(iso));
 
 function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   const dogExists = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ?');
+
+  // A walk note is named by an opaque id, never its walk's id: walk ids are
+  // global and only go up, so a volunteer's own walk ids would box in when
+  // (and so by whom) a note was written. The id is an HMAC of the walk id
+  // with a secret kept in the database, so it stays the same across restarts
+  // but can't be turned back into the walk id or compared with another.
+  let secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
+  if (!secret) {
+    db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('walk_note_secret', ?)").run(crypto.randomBytes(32).toString('hex'));
+    secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
+  }
+  const noteIdOf = (walkId) => crypto.createHmac('sha256', secret.value).update(`walk-note:${walkId}`).digest('base64url').slice(0, 22);
+
+  // One dog's end-of-walk notes as their own list: opaque id, text, shelter
+  // date and what kind of session it was. Never joined to a walk row, a time
+  // or a walker, and ordered by date then text, not by when they happened.
+  const notedWalks = db.prepare("SELECT id, started_at, activity, notes FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL AND notes IS NOT NULL AND notes != ''");
+  const byDateThenText = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.text.localeCompare(b.text));
+  function walkNotesFor(dogId) {
+    return notedWalks.all(dogId)
+      .map((w) => ({ noteId: noteIdOf(w.id), text: w.notes, date: shelterDate(w.started_at), activity: w.activity }))
+      .sort(byDateThenText);
+  }
 
   // What one walker is allowed to see about one dog's notes.
   function notesFor(dogId, userId) {
     const sharedTips = db.prepare(
       `SELECT id, body, created_at AS createdAt, updated_at AS updatedAt
        FROM dog_notes WHERE dog_id = ? AND visibility = 'public' ORDER BY created_at DESC, id DESC`
-    ).all(dogId);
+    ).all(dogId).map((t) => ({ ...t, createdAt: noteDay(t.createdAt), updatedAt: noteDay(t.updatedAt) }));
     const priv = db.prepare(
       "SELECT body, updated_at AS updatedAt FROM dog_notes WHERE dog_id = ? AND user_id = ? AND visibility = 'private'"
     ).get(dogId, userId) || null;
-    // tagged: names for the tags in these notes (the app adds the dog's own
-    // walk notes, which come with its walks). mentions: notes on other
+    // tagged: names for the tags in these notes. mentions: notes on other
     // animals that tag this one.
-    const walkNotes = db.prepare("SELECT notes FROM walks WHERE dog_id = ? AND notes IS NOT NULL AND notes != ''").all(dogId).map((w) => w.notes);
+    const walkNotes = walkNotesFor(dogId);
     const mentions = noteTags.mentionsOf(dogId, userId);
-    const tagged = noteTags.namesFor([...sharedTips.map((t) => t.body), priv ? priv.body : '', ...walkNotes, ...mentions.map((m) => m.body)]);
-    return { sharedTips, privateNote: priv, tagged, mentions };
+    const tagged = noteTags.namesFor([...sharedTips.map((t) => t.body), priv ? priv.body : '', ...walkNotes.map((n) => n.text), ...mentions.map((m) => m.body)]);
+    return { sharedTips, privateNote: priv, walkNotes, tagged, mentions };
   }
 
   const cleanText = (raw, max) => String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').trim().slice(0, max);
@@ -89,9 +118,22 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
         dog.previousNames = JSON.parse(dog.previousNames || '[]');
         byDog.set(r.dogId, { dog, notes: [] });
       }
-      byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.at });
+      // Shared notes (tips, walk notes) carry their date only; your own
+      // private note keeps its time.
+      byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.kind === 'private' ? r.at : noteDay(r.at) });
     }
-    res.json({ dogs: Array.from(byDog.values()), tagged: noteTags.namesFor(rows.map((r) => r.body)) });
+    // Within a dog, and between dogs, order by date and then text: the rows
+    // above came sorted by exact time, which would line a walk note up
+    // against the walks around it.
+    const day = (n) => (n.kind === 'private' && n.at ? shelterDate(n.at) : String(n.at || '').slice(0, 10));
+    const groups = Array.from(byDog.values());
+    for (const g of groups) g.notes.sort((a, b) => (day(a) < day(b) ? 1 : day(a) > day(b) ? -1 : String(a.body).localeCompare(String(b.body))));
+    // Same day: a dog with your own private note from that day (whose exact
+    // time is yours to know) first, newest first, then by name.
+    const ownAt = (g) => { const p = g.notes.find((n) => n.kind === 'private' && day(n) === day(g.notes[0])); return p ? p.at : ''; };
+    groups.sort((a, b) => (day(a.notes[0]) < day(b.notes[0]) ? 1 : day(a.notes[0]) > day(b.notes[0]) ? -1
+      : ownAt(b).localeCompare(ownAt(a)) || String(a.dog.name).localeCompare(String(b.dog.name))));
+    res.json({ dogs: groups, tagged: noteTags.namesFor(rows.map((r) => r.body)) });
   });
 
   app.post('/api/dogs/:id/notes', (req, res) => {
@@ -132,20 +174,27 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   // The "note for other walkers" left when ending a walk lives on the walk
   // itself, but it's listed with the tips and follows the same whiteboard
   // rules: any walker can reword or clear it. Only the note text is touched;
-  // the walk record stays as it was.
-  const sharedWalkNote = db.prepare(
-    "SELECT id FROM walks WHERE id = ? AND dog_id = ? AND ended_at IS NOT NULL AND notes IS NOT NULL AND notes != ''"
-  );
-  app.put('/api/dogs/:id/walk-notes/:walkId', (req, res) => {
-    const walk = sharedWalkNote.get(parseInt(req.params.walkId, 10), parseInt(req.params.id, 10));
+  // the walk record stays as it was. Named by the opaque note id from
+  // walkNotesFor (a walk id is not accepted).
+  function sharedWalkNote(req) {
+    const want = String(req.params.noteId || '');
+    if (!/^[A-Za-z0-9_-]{22}$/.test(want)) return null;
+    const wantBuf = Buffer.from(want);
+    return notedWalks.all(parseInt(req.params.id, 10))
+      .find((w) => crypto.timingSafeEqual(Buffer.from(noteIdOf(w.id)), wantBuf)) || null;
+  }
+  app.put('/api/dogs/:id/walk-notes/:noteId', (req, res) => {
+    const walk = sharedWalkNote(req);
     if (!walk) return res.status(404).json({ error: 'Note not found' });
-    const body = noteTags.clean(cleanText(req.body && req.body.body, MAX_TIP), parseInt(req.params.id, 10));
+    const raw = String((req.body && req.body.body) == null ? '' : req.body.body).trim();
+    if (raw.length > MAX_WALK_NOTE) return res.status(400).json({ error: `A note can be up to ${MAX_WALK_NOTE} characters.` });
+    const body = noteTags.clean(cleanText(raw, MAX_WALK_NOTE), parseInt(req.params.id, 10));
     if (!body) return res.status(400).json({ error: 'A note can\'t be empty. Delete it instead.' });
     db.prepare('UPDATE walks SET notes = ? WHERE id = ?').run(body, walk.id);
-    res.json({ id: walk.id });
+    res.json({ noteId: req.params.noteId });
   });
-  app.delete('/api/dogs/:id/walk-notes/:walkId', (req, res) => {
-    const walk = sharedWalkNote.get(parseInt(req.params.walkId, 10), parseInt(req.params.id, 10));
+  app.delete('/api/dogs/:id/walk-notes/:noteId', (req, res) => {
+    const walk = sharedWalkNote(req);
     if (!walk) return res.status(404).json({ error: 'Note not found' });
     db.prepare('UPDATE walks SET notes = NULL WHERE id = ?').run(walk.id);
     res.json({ ok: true });
@@ -173,7 +222,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
     res.json({ privateNote: { body, updatedAt: now } });
   });
 
-  return { notesFor };
+  return { notesFor, walkNotesFor, MAX_WALK_NOTE };
 }
 
 module.exports = { register };

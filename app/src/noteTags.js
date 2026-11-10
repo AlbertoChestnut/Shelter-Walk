@@ -12,6 +12,19 @@
 const TAG_RE = /@\[(\d+)\]/g;
 const MAX_MENTIONS = 60;
 
+// Shared notes never carry their exact time: a note next to a time could give
+// away who wrote it (whoever was out with that dog then). noteDay() keeps
+// only the shelter date, as a timestamp at 16:00 UTC on that date (late
+// morning in New York), which reads as the same calendar day on any US
+// phone, so the app's date formatting keeps working unchanged.
+const shelterDayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+function noteDay(iso) {
+  if (!iso) return iso;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return null;
+  return `${shelterDayFmt.format(d)}T16:00:00.000Z`;
+}
+
 function create(db, { cachedPhotoUrl } = {}) {
   const animalExists = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ?');
   const animalInfo = db.prepare('SELECT shelter_buddy_id AS id, name, species, photo_url AS photoUrl, still_listed AS stillListed FROM dogs WHERE shelter_buddy_id = ?');
@@ -68,10 +81,15 @@ function create(db, { cachedPhotoUrl } = {}) {
   function mentionsOf(animalId, userId) {
     const rows = mentionRows.all({ id: animalId, me: userId, needle: `%@[${Number(animalId)}]%` });
     const from = namesFor(rows.map((r) => `@[${r.fromId}]`));
-    return rows.filter((r) => from[r.fromId]).map((r) => ({ from: from[r.fromId], kind: r.kind, body: r.body, at: r.at }));
+    // Date only, except on the asker's own private note.
+    // Then ordered by date and text, not exact time, so a walk note can't be
+    // placed against the walks around it.
+    const day = (m) => String(m.at || '').slice(0, 10);
+    return rows.filter((r) => from[r.fromId]).map((r) => ({ from: from[r.fromId], kind: r.kind, body: r.body, at: r.kind === 'private' ? r.at : noteDay(r.at) }))
+      .sort((a, b) => (day(a) < day(b) ? 1 : day(a) > day(b) ? -1 : String(a.body).localeCompare(String(b.body))));
   }
 
   return { clean, namesFor, toText, mentionsOf };
 }
 
-module.exports = { create, TAG_RE };
+module.exports = { create, TAG_RE, noteDay };

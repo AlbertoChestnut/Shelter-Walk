@@ -2,17 +2,11 @@
 // show up as mentions on the tagged dog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('child_process');
-const os = require('os');
-const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { startServer } = require('./_helpers');
 
-const PORT = 4000 + Math.floor(Math.random() * 90);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-pg-'));
-const dbFile = path.join(dir, 'test.db');
-const base = `http://127.0.0.1:${PORT}`;
-let proc;
+let base; let dbFile; let server;
 const ALICE = 'alice.pg@example.com';
 const BOB = 'bob.pg@example.com';
 const STAFF = 'staff.pg@example.com';
@@ -30,8 +24,8 @@ async function call(method, url, { user = ALICE, staff = false, body } = {}) {
 
 const ids = {};
 test.before(async () => {
-  proc = spawn('node', ['src/server.js'], { cwd: path.join(__dirname, '..'), env: { ...process.env, PORT: String(PORT), DB_PATH: dbFile, DISABLE_SCRAPER: '1', WALK_HOURS: '00:00-24:00' }, stdio: 'ignore' });
-  for (let i = 0; i < 50; i += 1) { try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (e) { /* wait */ } await new Promise((r) => setTimeout(r, 100)); }
+  server = await startServer({ prefix: 'sw-pg-' });
+  ({ base, dbFile } = server);
   for (const [k, e] of [['alice', ALICE], ['bob', BOB], ['staff', STAFF]]) ids[k] = (await call('GET', '/api/me', { user: e })).json;
   const db = new Database(dbFile);
   const now = new Date().toISOString();
@@ -40,7 +34,7 @@ test.before(async () => {
   }
   db.close();
 });
-test.after(() => { if (proc) proc.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
+test.after(async () => { if (server) { await server.stop(); fs.rmSync(server.dir, { recursive: true, force: true }); } });
 
 test('a note tags another dog, and the tagged dog lists it as a mention', async () => {
   const added = await call('POST', '/api/dogs/1/playgroup-notes', { body: { body: 'Played great with @[2], ignored @[999] and @[1].', noteDate: '2026-10-01' } });

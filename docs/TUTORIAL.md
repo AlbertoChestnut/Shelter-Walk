@@ -125,7 +125,7 @@ that. A daycation can last up to 12 hours, so it doesn't stop after 45
 minutes the way a walk does. Set your **usual activity** in Settings so the
 button starts with it. Already out and doing something different? Pick it
 under **Doing something else?** on the timer screen, or fix it later in
-Stats/Notes.
+Stats&Notes.
 
 <p>
 <img src="tutorial/09-scan-start-walk.png" width="260" alt="Markers, kennel location and Start walk button">
@@ -168,7 +168,7 @@ button, to return to the camera. Nothing starts until you tap Start walk.
 
 ## The other screens
 
-Four tabs run along the bottom: Available, Scan, Stats/Notes and Updates. Three
+Four tabs run along the bottom: Available, Scan, Stats&Notes and Updates. Three
 buttons sit at the top right: 👤 your account, 📖 the Guide, and ⚙ Settings.
 
 ### 🐾 Available
@@ -193,7 +193,7 @@ Dogs, and you can save your own there too.
 <img src="tutorial/17-dog-info.png" width="260" alt="Dog profile">
 </p>
 
-### 📝 Stats/Notes
+### 📝 Stats&Notes
 
 **My stats** shows your walks today and over your lifetime. Tap ✎ to fix a
 walk's times or 🗑 to delete it. **Together** shows anonymous totals for the
@@ -244,5 +244,5 @@ with how many come in and get adopted.
 | "New kennel card · We don't have this dog's details yet" | The shelter printed the card before adding the dog to its online listing. Pick the kennel letter and tap **Start walk** as usual, after checking the card's age and stickers yourself. The walk is kept under the card's Animal ID and added to the dog's record once the listing has them (it's checked every 30 minutes). |
 | The dog's screen shows the wrong dog | Tap **Scan a different dog** and scan again. Tell staff if a kennel card has the wrong dog's code. |
 | You forgot to end a walk | It stops by itself at the time limit. Next time you open the app, choose when it really ended: Just now, At the limit, or Pick a time. |
-| A finished walk has the wrong times | Go to **Stats/Notes**, find the walk, tap ✎ and fix it. |
+| A finished walk has the wrong times | Go to **Stats&Notes**, find the walk, tap ✎ and fix it. |
 | No walk alerts on iPhone | Add the app to your Home Screen, open it from there, and turn alerts on in Settings. |

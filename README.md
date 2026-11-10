@@ -45,7 +45,7 @@ New volunteers: see the illustrated [tutorial](docs/TUTORIAL.md).
   now, at the limit, or a picked time (never a future one)
 - **Walk length alerts:** up to 3 push notifications per walk at lengths
   each walker picks in Settings (e.g. 7 and 10 minutes)
-- **Stats/Notes:** personal stats, plus **Together**, anonymous shelter-wide
+- **Stats&Notes:** personal stats, plus **Together**, anonymous shelter-wide
   totals, split by dogs and cats; every note in one place, with @ tags to
   link a note to another dog or cat
 - **Updates feed:** new, returned, and adopted dogs, plus staff alerts.

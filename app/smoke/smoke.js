@@ -94,7 +94,7 @@ async function main() {
     await page.waitForTimeout(300);
     assert.equal(await title(), 'Guide');
     await back();
-    assert.equal(await title(), 'Stats/Notes', 'Back from the Guide returns to where it was opened');
+    assert.equal(await title(), 'Stats&Notes', 'Back from the Guide returns to where it was opened');
     await back();
     assert.equal(await title(), 'Dogs to walk');
     await page.locator('.avail-card .walk-history-btn').first().click();

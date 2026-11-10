@@ -1886,7 +1886,7 @@
       const keys = state.currentUser ? prefSpeciesKeys() : ['dog'];
       return keys.length > 1 ? 'Scan a kennel card' : `Scan a ${speciesInfo(keys[0]).noun}`;
     },
-    stats: 'Stats/Notes', updates: 'Updates', audit: 'Audit mode', guide: 'Guide'
+    stats: 'Stats&Notes', updates: 'Updates', audit: 'Audit mode', guide: 'Guide'
   };
   let syncingFromHistory = false;
   // The scan screens (scanning, and the dog just scanned) drop the green bar
@@ -5242,10 +5242,10 @@
       <div class="seg seg-scroll" role="tablist" aria-label="Stats view">
         <button type="button" class="seg-btn ${state.statsScope === 'mine' ? 'on' : ''}" data-scope="mine" role="tab" aria-selected="${state.statsScope === 'mine'}">My stats</button>
         <button type="button" class="seg-btn ${state.statsScope === 'together' ? 'on' : ''}" data-scope="together" role="tab" aria-selected="${state.statsScope === 'together'}">Together</button>
+        <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
         <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
         <button type="button" class="seg-btn ${state.statsScope === 'playgroup' ? 'on' : ''}" data-scope="playgroup" role="tab" aria-selected="${state.statsScope === 'playgroup'}">Play group</button>
-        <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
-      </div>${['mine', 'together', 'shelter'].includes(state.statsScope) ? statsSpeciesSwitchHtml() : ''}`;
+      </div>${['mine', 'together', 'shelter', 'notes'].includes(state.statsScope) ? statsSpeciesSwitchHtml() : ''}`;
   }
   function wireStatsScopeSwitch() {
     wireStatsSpeciesSwitch();
@@ -5253,8 +5253,8 @@
     const bar = appEl.querySelector('.seg-scroll');
     const on = bar && bar.querySelector('.seg-btn.on');
     if (on && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2);
-    // Fade whichever edge still has tabs past it, so "Shelter" off-screen
-    // doesn't look like the bar simply ends at "Play group".
+    // Fade whichever edge still has tabs past it, so "Play group" off-screen
+    // doesn't look like the bar simply ends at "Notes".
     if (bar) {
       const edges = () => {
         const max = bar.scrollWidth - bar.clientWidth;
@@ -5748,6 +5748,9 @@
       return;
     }
     if (state.tab !== myTab || state.statsScope !== 'notes') return;
+    // One species at a time, on the same Dogs / Cats switch as the stats.
+    const species = statsSpecies();
+    data = { ...data, dogs: data.dogs.filter((g) => (g.dog.species || 'dog') === species) };
     // A "walk" note is labeled by the dog it's actually about (walk vs. play
     // session), never by the asker's current Settings preference -- so a
     // dog's own species, not whoever's looking, decides the wording.
@@ -5779,16 +5782,16 @@
     const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => window.PgTags.bodyText(n.body, data.tagged || {}).toLowerCase().includes(q));
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
-      <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : `All ${nounFor(prefSpeciesKeys())} notes`}</h2>
       <div class="seg seg-small" role="tablist" aria-label="Whose notes">
         <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? '' : 'on'}" data-mine="0" role="tab" aria-selected="${!state.notesMine}">All notes</button>
         <button type="button" class="seg-btn notes-scope-btn ${state.notesMine ? 'on' : ''}" data-mine="1" role="tab" aria-selected="${state.notesMine}">My notes</button>
       </div>
-      ${data.dogs.length ? `<input type="search" id="allNotesSearch" class="all-notes-search" aria-label="Search notes by dog or word" placeholder="Search by dog or word…" value="${esc(state.notesQuery)}" />` : ''}
+      <h2 class="section-heading" style="margin-top:0;">${state.notesMine ? 'My notes' : `All ${nounFor(statsSpeciesKeys())} notes`}</h2>
+      ${data.dogs.length ? `<input type="search" id="allNotesSearch" class="all-notes-search" aria-label="Search notes by ${nounFor(statsSpeciesKeys())} or word" placeholder="Search by ${nounFor(statsSpeciesKeys())} or word…" value="${esc(state.notesQuery)}" />` : ''}
       <div class="stack tight" id="allNotesList"></div>
       <p class="small muted center" style="margin-top:14px;">${state.notesMine
-    ? `${capFirst(nounFor(prefSpeciesKeys(), true))} still at the shelter. Your private notes and the notes from your ${myTerms().nouns}. Shared tips have no owner, so they're only under All notes.`
-    : `${capFirst(nounFor(prefSpeciesKeys(), true))} still at the shelter. Tips and notes left at the end never show who wrote them; private notes are yours alone.`}</p>`;
+    ? `${capFirst(nounFor(statsSpeciesKeys(), true))} still at the shelter. Your private notes and the notes from your ${termsFor(statsSpeciesKeys()).nouns}. Shared tips have no owner, so they're only under All notes.`
+    : `${capFirst(nounFor(statsSpeciesKeys(), true))} still at the shelter. Tips and notes left at the end never show who wrote them; private notes are yours alone.`}</p>`;
     wireStatsScopeSwitch();
     appEl.querySelectorAll('.notes-scope-btn').forEach((b) => b.addEventListener('click', () => {
       const mine = b.dataset.mine === '1';
@@ -5803,8 +5806,8 @@
       list.innerHTML = shown.length
         ? shown.map(groupHtml).join('')
         : `<div class="card compact center"><p class="muted" style="margin:0;">${data.dogs.length ? 'No notes match that search.'
-          : state.notesMine ? `No notes of yours yet. Private notes and notes you leave at the end of ${aNoun(myTerms())} show up here. 🐾`
-          : `No notes yet. Tips and notes for any ${nounFor(prefSpeciesKeys())} will show up here. 🐾`}</p></div>`;
+          : state.notesMine ? `No notes of yours yet. Private notes and notes you leave at the end of ${aNoun(termsFor(statsSpeciesKeys()))} show up here. 🐾`
+          : `No notes yet. Tips and notes for any ${nounFor(statsSpeciesKeys())} will show up here. 🐾`}</p></div>`;
       list.querySelectorAll('.all-notes-head').forEach((head) => {
         const open = async () => {
           try {

@@ -175,7 +175,7 @@ if (!userColumns.includes('hide_name_while_walking')) {
 // walk_alert_minutes: up to 3 walk lengths (a JSON list of minutes, e.g.
 // [7, 10]) at which the walker wants a push notification. Empty = none.
 // default_activity: what the scan screen's start button offers first
-// (walk, cuddle, matchmaking or play group).
+// (walk, cuddle, matchmaking or playgroup).
 if (!userColumns.includes('default_activity')) {
   db.exec("ALTER TABLE users ADD COLUMN default_activity TEXT NOT NULL DEFAULT 'walk'");
 }
@@ -341,6 +341,12 @@ db.exec(`
     occurred_at TEXT NOT NULL
   );
 `);
+// A shelter alert stops showing in the Updates feed at expires_at (see
+// shelterSchedule.js). about_date ties an alert sent for a special day to
+// that date, so changing or removing the day can retire the alert with it.
+const eventColumns = db.prepare('PRAGMA table_info(shelter_events)').all().map((c) => c.name);
+if (!eventColumns.includes('expires_at')) db.exec('ALTER TABLE shelter_events ADD COLUMN expires_at TEXT');
+if (!eventColumns.includes('about_date')) db.exec('ALTER TABLE shelter_events ADD COLUMN about_date TEXT');
 const oldNotifColumns = db.prepare("PRAGMA table_info(notifications)").all().map((c) => c.name);
 if (oldNotifColumns.length > 0) {
   const oldRows = db.prepare(
@@ -382,6 +388,19 @@ db.exec(`
     p256dh TEXT NOT NULL,
     auth TEXT NOT NULL,
     created_at TEXT NOT NULL
+  );
+`);
+
+// Scraper news found during quiet hours (adopted, pending, back at the
+// shelter), held until the morning instead of buzzing anyone overnight; see
+// sendScraperPush in scraper.js. Rows are deleted as they're sent, and with
+// the account (account.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS queued_pushes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    queued_at TEXT NOT NULL
   );
 `);
 
@@ -474,7 +493,7 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_dog_notes_private ON dog_notes(dog_id, user_id) WHERE visibility = 'private';
 `);
 
-// Play group notes (see playgroupNotes.js): dated entries, one per session
+// Playgroup notes (see playgroupNotes.js): dated entries, one per session
 // or pasted history, readable by every walker. Anonymous unless the writer
 // chose to sign it (signed = 1 shows their name). Tags of other dogs are
 // written into the body as @[dogId]; playgroup_mentions indexes them so each
@@ -498,6 +517,11 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_playgroup_mentions_dog ON playgroup_mentions(dog_id);
 `);
+// Set once anyone but the writer changes a Playgroup note's text: from then
+// on the writer can't sign it, or their name would go on someone else's words.
+if (!db.prepare('PRAGMA table_info(playgroup_notes)').all().some((c) => c.name === 'edited_by_other')) {
+  db.exec('ALTER TABLE playgroup_notes ADD COLUMN edited_by_other INTEGER NOT NULL DEFAULT 0');
+}
 
 // Dogs a walker has hearted. Personal, like private notes: drives the
 // "My favorites" filter and the favorite_* push notices (see scraper.js).
@@ -543,6 +567,16 @@ if (!walkColumns.includes('wrap_up_pending')) db.exec('ALTER TABLE walks ADD COL
 // activity: what the volunteer did with the dog. Every kind counts as time
 // with the dog exactly like a walk; only the label/emoji differs.
 if (!walkColumns.includes('activity')) db.exec("ALTER TABLE walks ADD COLUMN activity TEXT NOT NULL DEFAULT 'walk'");
+// closes_at: the official closing time in force when the walk started.
+// Staff changing that day's hours later never ends or shortens a walk
+// already out (server.js walkClosesMs). Open walks from before this column
+// are filled in at startup, once the staff hours are loaded (server.js).
+if (!walkColumns.includes('closes_at')) db.exec('ALTER TABLE walks ADD COLUMN closes_at TEXT');
+// end_token: a random secret handed to the phone that started the walk. An
+// End tapped there offline can still be sent after someone else signs in on
+// that (shared) phone: the token stands in for the walker's sign-in, for
+// ending it at the tap and nothing else (server.js PUT /api/walks/:id/end).
+if (!walkColumns.includes('end_token')) db.exec('ALTER TABLE walks ADD COLUMN end_token TEXT');
 if (!walkColumns.includes('alerted_minutes')) db.exec('ALTER TABLE walks ADD COLUMN alerted_minutes INTEGER NOT NULL DEFAULT 0');
 
 // Names the shelter used for a dog before renaming them (JSON array, see
@@ -565,6 +599,15 @@ if (!userColumns.includes('species_pref')) {
 // computer (desktopViews.js). NULL = the default for who they are.
 if (!userColumns.includes('desktop_view')) {
   db.exec('ALTER TABLE users ADD COLUMN desktop_view TEXT');
+}
+// default_activity_cat (audit 3, ui): the cats' own default activity, so a
+// "both" volunteer's Matchmaking for cats doesn't turn every dog into
+// matchmaking (default_activity stays the dogs'). NULL = the cats' first
+// activity (cuddle). A cat-only volunteer's current default, when cats can
+// do it, becomes their cat default.
+if (!userColumns.includes('default_activity_cat')) {
+  db.exec('ALTER TABLE users ADD COLUMN default_activity_cat TEXT');
+  db.exec("UPDATE users SET default_activity_cat = default_activity WHERE species_pref = 'cat' AND default_activity IN ('cuddle', 'matchmaking')");
 }
 // video_url: a YouTube link found in the dog's summary on the shelter's own
 // page (scraper.js), so their profile can link straight to it.
@@ -615,23 +658,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'matchmaker_pitch_stripped'"
 // sticker currently on with no sticker_on event yet, add one dated to this
 // stay's start -- the earliest point being on it can honestly be pinned to.
 if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'sticker_events_backfilled'").get()) {
-  const STICKER_LABELS = {
-    star: 'Good for beginners (star)',
-    pb: 'PB: Potty break only',
-    poo: 'POO: Potty Outside Only',
-    poo_priority: 'POO: priority (first out, last in)',
-    blue_c: 'Blue: Difficult to collar',
-    blue_d: 'Blue: Door dasher',
-    blue_e: 'Blue: Energetic',
-    blue_h: 'Blue: Humpy',
-    blue_j: 'Blue: Jumpy',
-    blue_m: 'Blue: Mouthy',
-    blue_p: 'Blue: Puller',
-    blue_q: 'Blue: Quirky',
-    blue_r: 'Blue: Reactive',
-    blue_s: 'Blue: Shy / shutdown',
-    blue_evo: 'Blue: Experienced volunteer only'
-  };
+  const { STICKER_LABELS } = require('./constants'); // the same labels server.js logs
   const stickerRows = db.prepare(`
     SELECT shelter_buddy_id AS id, blue_markers, poo_status, star_flag, pb_flag,
            COALESCE(date_in_shelter, first_seen_at) AS since
@@ -676,6 +703,11 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 `);
+// Which animals a saved report format is for ('dog' | 'cat' | 'all'), so a
+// saved "cats" format reloads as cats. Older rows were all made as dog reports.
+if (!db.prepare('PRAGMA table_info(saved_staff_reports)').all().some((c) => c.name === 'species')) {
+  db.exec("ALTER TABLE saved_staff_reports ADD COLUMN species TEXT NOT NULL DEFAULT 'dog'");
+}
 
 // Staff-set walking hours (see shelterSchedule.js). One row per weekday
 // (0 = Sunday) for the usual week, and one per date that's different:
@@ -697,6 +729,12 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 `);
+
+// A longer, optional message for a special day, shown in the app's notice
+// that day and in the shelter alert about it (`note` stays the short label).
+if (!db.prepare('PRAGMA table_info(shelter_special_days)').all().some((c) => c.name === 'message')) {
+  db.exec("ALTER TABLE shelter_special_days ADD COLUMN message TEXT NOT NULL DEFAULT ''");
+}
 
 // Indexes for the queries every screen leans on (all were full table scans).
 db.exec(`
@@ -725,6 +763,29 @@ for (const [name, column] of [['idx_walks_one_open_per_user', 'user_id'], ['idx_
     continue;
   }
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON walks(${column}) WHERE ended_at IS NULL`);
+}
+
+// Floor returns used to read "<name> is back on the adoption floor"; they now
+// say how long the animal was gone (see the 'returned' logEvent in
+// scraper.js). Rewords the old rows the same way, counting from the
+// "Taken off the floor" event just before each return. Only touches rows
+// still in the old wording, so it's a no-op after the first run.
+{
+  const SUFFIX = ' is back on the adoption floor';
+  const oldRows = db.prepare(`
+    SELECT e.id, e.title, e.occurred_at,
+      (SELECT MAX(r.occurred_at) FROM shelter_events r
+        WHERE r.dog_id = e.dog_id AND r.kind = 'removed' AND r.occurred_at < e.occurred_at) AS left_at
+    FROM shelter_events e
+    WHERE e.kind = 'returned' AND e.title LIKE '%' || ?
+  `).all(SUFFIX);
+  const setTitle = db.prepare('UPDATE shelter_events SET title = ? WHERE id = ?');
+  for (const r of oldRows) {
+    const name = r.title.slice(0, -SUFFIX.length);
+    const ms = r.left_at ? new Date(r.occurred_at) - new Date(r.left_at) : 0;
+    const days = ms > 0 ? Math.floor(ms / (24 * 60 * 60 * 1000)) : 0;
+    setTitle.run(days > 0 ? `${name} returned to the shelter after ${days} day${days === 1 ? '' : 's'}` : `${name} returned to the shelter`, r.id);
+  }
 }
 
 // The module system (src/modules.js): which optional modules (app/modules/*)

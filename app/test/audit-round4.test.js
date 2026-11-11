@@ -109,17 +109,23 @@ test('#3 other volunteers\' totals are to 5 minutes (walk-stats and walk-history
 });
 
 test('#3 a Together day: others\' engagements have a session and a rounded length, no clock times', async () => {
+  // Yesterday around noon at the shelter, so all three land on one day
+  // whatever the clock (TEST_CLOCK=real or any TEST_CLOCK=<ISO>).
+  const { shelterClock, shelterTimeToDate } = require('../src/walkHours');
+  const c = shelterClock(Date.now() - 86400000);
+  const noon = shelterTimeToDate(c.y, c.m, c.d, 12 * 60).getTime();
+  const before = (min) => new Date(noon - min * 60000).toISOString();
   withDb((db) => {
     const ins = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, activity) VALUES (?, ?, ?, ?, ?, ?)');
-    ins.run(4, ids.walker, ago(100), ago(90), 607, 'walk');
-    ins.run(5, ids.other, ago(80), ago(60), 1111, 'walk');
-    ins.run(6, ids.third, ago(70), ago(50), 1499, 'walk');
+    ins.run(4, ids.walker, before(100), before(90), 607, 'walk');
+    ins.run(5, ids.other, before(80), before(60), 1111, 'walk');
+    ins.run(6, ids.third, before(70), before(50), 1499, 'walk');
   });
-  const today = shelterParts(new Date().toISOString());
-  const date = `${today.year}-${today.month}-${today.day}`;
+  const day = shelterParts(before(100));
+  const date = `${day.year}-${day.month}-${day.day}`;
   const r = await call('GET', `/api/impact/day?date=${date}`);
   assert.equal(r.status, 200, r.text);
-  const list = (await call('GET', '/api/impact?days=1')).json.days.find((d) => d.dateKey === date);
+  const list = (await call('GET', '/api/impact?days=2')).json.days.find((d) => d.dateKey === date);
   assert.equal(r.json.totals.seconds, list.seconds, 'exact day total = the Together list row');
   assert.equal(r.json.totals.walks, r.json.walks.length);
   for (const w of r.json.walks) {

@@ -5,7 +5,7 @@
 // covers them; this file adds:
 //   - one seeded fixture with KNOWN answers (several walkers, dogs and cats,
 //     walks across ET midnight and both DST changes, an in-progress walk, a
-//     misscan, a daycation, play group, POO sticker timing, adopted/returned
+//     misscan, a daycation, playgroup, POO sticker timing, adopted/returned
 //     events, daily species counts), checked with exact numbers across
 //     /api/stats, /api/impact, /api/impact/day, /api/staff/live,
 //     /api/staff/reports, /api/shelter-trends, walk-stats and walk-history,
@@ -22,7 +22,6 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { spawnSync } = require('child_process');
 const Database = require('better-sqlite3');
 const { startServer, tempDirs, APP_DIR } = require('./_helpers');
 
@@ -176,7 +175,7 @@ async function exactDay(date, sp) {
 // ---------------------------------------------------------------------------
 // Stats invariants
 // ---------------------------------------------------------------------------
-test('/api/stats: exact totals per walker; all = dog + cat = bySpecies; breakdowns sum to totals', async () => {
+test('/api/stats: exact totals per walker; all = dog + cat; breakdowns sum to totals', async () => {
   const expected = {
     // walks, seconds, uniqueDogs, avgSeconds (walk-only, finished, >= 60 s)
     a: { dog: [7, 5430, 3, 960], cat: [1, 1200, 1, 1200], all: [8, 6630, 4, 960] },
@@ -195,10 +194,11 @@ test('/api/stats: exact totals per walker; all = dog + cat = bySpecies; breakdow
       assert.deepEqual(badValues(r[sp].totals), []);
     }
     for (const k of ['totalWalks', 'totalSeconds']) assert.equal(r.all.totals[k], r.dog.totals[k] + r.cat.totals[k], `${who} all = dog + cat (${k})`);
-    const bySp = Object.fromEntries(r.all.bySpecies.map((x) => [x.species, x]));
-    assert.equal((bySp.dog || { count: 0 }).count, r.dog.totals.totalWalks, `${who} bySpecies dog`);
-    assert.equal((bySp.cat || { count: 0 }).count, r.cat.totals.totalWalks, `${who} bySpecies cat`);
-    assert.equal(r.dog.byPoo.reduce((s, x) => s + x.count, 0), r.dog.totals.totalWalks, `${who} byPoo sums to the dog total`);
+    // No species split rides along any more: nothing showed it (audit3).
+    assert.equal(r.all.bySpecies, undefined, `${who} no bySpecies`);
+    // POO splits walks only (it means nothing for a cuddle or playgroup).
+    const dogWalks = (r.dog.byActivity.find((x) => x.activity === 'walk') || { count: 0 }).count;
+    assert.equal(r.dog.byPoo.reduce((s, x) => s + x.count, 0), dogWalks, `${who} byPoo sums to the dog walks`);
     assert.equal(r.cat.byAge.reduce((s, x) => s + x.count, 0), r.cat.totals.totalWalks, `${who} byAge sums to the cat total`);
   }
   const a = (await call('GET', '/api/stats?species=dog', as(A))).json;
@@ -209,33 +209,35 @@ test('/api/stats: exact totals per walker; all = dog + cat = bySpecies; breakdow
 
 test('POO split uses the sticker at walk start: 1h before sticker_on is non-POO, 1h after is POO', async () => {
   const a = (await call('GET', '/api/stats?species=dog', as(A))).json.byPoo;
-  assert.deepEqual(a.map((x) => [x.status, x.count]), [['poo', 1], ['none', 6]], "Alice: only W4 (after the sticker) is POO; W1 an hour before isn't");
+  assert.deepEqual(a.map((x) => [x.status, x.count]), [['poo', 1], ['none', 5]], "Alice: only W4 (after the sticker) is POO; W1 an hour before isn't; her cuddle W11 isn't a walk");
   const b = (await call('GET', '/api/stats?species=dog', as(B))).json.byPoo;
-  assert.deepEqual(b.map((x) => [x.status, x.count]), [['poo', 2], ['none', 5]], 'Bob: W12 (an hour after) and today are POO');
+  assert.deepEqual(b.map((x) => [x.status, x.count]), [['poo', 2], ['none', 3]], 'Bob: W12 (an hour after) and today are POO; daycation W6 and playgroup W16 are left out');
   const together = (await call('GET', '/api/impact?days=all&species=dog', as(A))).json.allTime.byPoo;
-  assert.deepEqual(together.map((x) => [x.status, x.count]), [['poo', 3], ['none', 13]]);
+  assert.deepEqual(together.map((x) => [x.status, x.count]), [['poo', 3], ['none', 10]], 'walks only: W11, W6 and W16 left out');
   // The walk list carries the same answer per walk.
   const walks = (await call('GET', '/api/walks?ended=1', as(A))).json.walks;
   assert.equal(walks.find((w) => w.started_at === '2026-10-31T14:00:00.000Z').poo_then, 'none');
   assert.equal(walks.find((w) => w.started_at === '2026-11-01T05:30:00.000Z').poo_then, 'poo');
 });
 
-test('Together all-time: exact totals, walk-only average, suppressed slices still in totals', async () => {
+test('Together all-time: exact totals, walk-only average, every slice shown however small', async () => {
   const dog = (await call('GET', '/api/impact?days=all&species=dog', as(A))).json;
   assert.equal(dog.allTime.walks, 16);
   assert.equal(dog.allTime.seconds, 33900);
   assert.equal(dog.allTime.dogs, 4);
-  assert.equal(dog.allTime.avgSeconds, 9870 / 12, 'walk-only, finished, >= 60 s: misscan, daycation, cuddle, play group and in-progress left out');
+  assert.equal(dog.allTime.avgSeconds, 9870 / 12, 'walk-only, finished, >= 60 s: misscan, daycation, cuddle, playgroup and in-progress left out');
   assert.equal(dog.allTime.since, '2026-03-08T04:30:00.000Z');
-  // Only walk has 3+; cuddle/daycation/play group (1 each) are hidden but counted.
-  assert.deepEqual(dog.allTime.byActivity.map((x) => [x.activity, x.count]), [['walk', 13]]);
-  assert.ok(dog.allTime.byActivity.reduce((s, x) => s + x.count, 0) < dog.allTime.walks, 'hidden slices stay in the total');
-  assert.deepEqual(dog.allTime.bySpecies.map((x) => [x.species, x.count]), [['dog', 16], ['cat', 4]], 'species split covers both');
+  // Small slices (cuddle/daycation/playgroup, 1 each) are listed too, so they add up.
+  assert.equal(dog.allTime.byActivity[0].activity, 'walk');
+  assert.equal(dog.allTime.byActivity[0].count, 13);
+  assert.equal(dog.allTime.byActivity.reduce((s, x) => s + x.count, 0), dog.allTime.walks, 'the slices add up to the total');
   const cat = (await call('GET', '/api/impact?days=all&species=cat', as(A))).json;
   assert.equal(cat.allTime.walks, 4);
+  // Both species = dogs + cats (the old bySpecies split, which nothing showed).
+  assert.equal((await call('GET', '/api/impact?days=all&species=all', as(A))).json.allTime.walks, dog.allTime.walks + cat.allTime.walks);
   assert.equal(cat.allTime.seconds, 2790);
   assert.equal(cat.allTime.avgSeconds, 2790 / 4, 'no walks: the >= 60 s average of every engagement');
-  assert.deepEqual(cat.allTime.byAge, [], 'kittens 2, adults 2: both under 3, hidden');
+  assert.deepEqual(cat.allTime.byAge.map((x) => [x.group, x.count]), [['young', 2], ['adult', 2]], 'small slices are shown');
   assert.deepEqual(cat.days, [], 'no cat day reaches 3');
   const all = (await call('GET', '/api/impact?days=all&species=all', as(A))).json;
   assert.equal(all.allTime.walks, dog.allTime.walks + cat.allTime.walks);
@@ -268,7 +270,7 @@ test('Together list row = /api/impact/day for every listed day and species (coun
       // Round 4: other volunteers' rows are to the nearest 5 minutes, so
       // the exact day figures come as `totals` (= the list row), and the
       // exact rows are each walker's own.
-      assert.deepEqual(r.json.totals, { walks: d.walks, dogs: d.dogs, seconds: d.seconds, avgSeconds: d.avgSeconds, avgActivity: d.avgActivity }, `${sp} ${d.dateKey} totals`);
+      assert.deepEqual(r.json.totals, { walks: d.walks, dogs: d.dogs, seconds: d.seconds, avgSeconds: d.avgSeconds, avgActivity: d.avgActivity, avgCount: d.avgCount, avgSkipped: d.avgSkipped }, `${sp} ${d.dateKey} totals`);
       const exact = await exactDay(d.dateKey, sp);
       assert.equal(exact.length, d.walks, `${sp} ${d.dateKey} every walk is someone's own`);
       assert.equal(exact.reduce((s, x) => s + x.durationSeconds, 0), d.seconds, `${sp} ${d.dateKey} seconds`);
@@ -276,6 +278,12 @@ test('Together list row = /api/impact/day for every listed day and species (coun
       const pool = walksOnly.length ? walksOnly : exact.filter((x) => x.durationSeconds >= 60);
       const avg = pool.length ? pool.reduce((s, x) => s + x.durationSeconds, 0) / pool.length : 0;
       assert.equal(avg, d.avgSeconds, `${sp} ${d.dateKey} average`);
+      // audit3: the server says what the average is over, so the app never
+      // re-judges others' rounded lengths (a 1-2 minute walk arrives as 0).
+      assert.equal(d.avgCount, pool.length, `${sp} ${d.dateKey} avgCount`);
+      assert.equal(w.filter((x) => x.averaged).length, pool.length, `${sp} ${d.dateKey} rows flagged averaged`);
+      const sameKind = walksOnly.length ? exact.filter((x) => x.activity === 'walk') : exact;
+      assert.equal(d.avgSkipped, sameKind.length - pool.length, `${sp} ${d.dateKey} avgSkipped`);
       assert.ok(Math.abs(w.reduce((s, x) => s + x.durationSeconds, 0) - d.seconds) <= 150 * w.length, 'rounded rows stay close');
       assert.ok(w.every((x) => (x.mine ? x.endedAt : x.durationSeconds % 300 === 0 && !('startedAt' in x))), 'no walk in progress; others have no times');
     }
@@ -560,7 +568,8 @@ test('DELETE /api/me leaves no row pointing at that walker in any table; walks a
     db.close();
     const ago = (m) => new Date(Date.now() - m * 60000).toISOString();
     assert.equal((await c('POST', '/api/walks/manual', { user: LEAVER, body: { dogId: 1, userId: me.id, startedAt: ago(120), endedAt: ago(100), notes: 'good' } })).status, 200);
-    assert.equal((await c('POST', '/api/walks/start', { user: LEAVER, body: { dogId: 1, userId: me.id } })).status, 200);
+    const started = await c('POST', '/api/walks/start', { user: LEAVER, body: { dogId: 1, userId: me.id } });
+    assert.equal(started.status, 200);
     const seeds = [
       ['POST', '/api/dogs/1/notes', { body: 'shared tip' }],
       ['PUT', '/api/dogs/1/private-note', { body: 'private' }],
@@ -576,6 +585,9 @@ test('DELETE /api/me leaves no row pointing at that walker in any table; walks a
       const r = await c(m, u, { user: LEAVER, body });
       assert.ok(r.status < 300, `seed ${m} ${u} -> ${r.status} ${r.text}`);
     }
+    // Not while a walk is open (audit2): the walk is cancelled first.
+    assert.equal((await c('DELETE', '/api/me', { user: LEAVER, body: { confirm: 'DELETE' } })).status, 409);
+    assert.equal((await c('DELETE', `/api/walks/${started.json.walkId}`, { user: LEAVER })).status, 200);
     assert.equal((await c('DELETE', '/api/me', { user: LEAVER, body: { confirm: 'DELETE' } })).status, 200);
 
     db = new Database(s2.dbFile, { readonly: true });
@@ -733,26 +745,22 @@ test('every local <script>/<link> on /, /staff and /playgroup carries ?v= (sw.js
 
 test('the scraper tests leave app/data untouched', async () => {
   const dataDir = path.join(APP_DIR, 'data');
-  const snap = () => {
-    const out = {};
-    const walk = (d) => {
-      if (!fs.existsSync(d)) return;
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const p = path.join(d, e.name);
-        if (e.isDirectory()) walk(p);
-        else { const st = fs.statSync(p); out[path.relative(dataDir, p)] = `${st.size}:${Math.floor(st.mtimeMs)}`; }
-      }
-    };
-    walk(dataDir);
-    return out;
-  };
-  const before = snap();
-  const files = fs.readdirSync(path.join(APP_DIR, 'test')).filter((f) => /^(scraper.*|favorites-scraper|sticker-backfill|dog-names|audit-data)\.test\.js$/.test(f)).map((f) => `test/${f}`);
+  // eng (audit2): a cheap check instead of running the scraper suite a
+  // second time (npm test already runs it). Each of these files points the
+  // DB and image folders at a temp dir (isolateEnv, or startServer's own)
+  // before it loads anything from src/ that opens the DB, so none of them
+  // can write to app/data.
+  const files = fs.readdirSync(path.join(APP_DIR, 'test')).filter((f) => /^(scraper.*|favorites-scraper|sticker-backfill|dog-names|audit-data)\.test\.js$/.test(f));
   assert.ok(files.length >= 4, files.join(', '));
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  delete env.DB_PATH; delete env.IMAGES_DIR; delete env.WIKI_IMAGES_DIR; // each test isolates itself
-  const r = spawnSync(process.execPath, ['--test', ...files], { cwd: APP_DIR, env, encoding: 'utf8', timeout: 120000 });
-  assert.equal(r.status, 0, `scraper tests failed:\n${(r.stdout || '').slice(-3000)}${r.stderr || ''}`);
-  assert.deepEqual(snap(), before, 'app/data changed while the scraper tests ran');
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(APP_DIR, 'test', f), 'utf8');
+    const firstSrc = src.search(/require\(['"]\.\.\/src\//);
+    if (firstSrc < 0) continue;
+    const isolated = [src.indexOf('isolateEnv('), src.search(/process\.env\.DB_PATH\s*=/)].filter((i) => i >= 0);
+    assert.ok(isolated.length && Math.min(...isolated) < firstSrc, `${f} loads src/ before isolating the DB (isolateEnv from _helpers.js)`);
+  }
+  // The isolation itself: the DB path a test sees is never under app/data.
+  const t = require('./_helpers').tempDirs('sw-release-');
+  fs.rmSync(t.dir, { recursive: true, force: true });
+  assert.ok(!path.resolve(t.dbFile).startsWith(path.resolve(dataDir)), 'temp DBs live outside app/data');
 });

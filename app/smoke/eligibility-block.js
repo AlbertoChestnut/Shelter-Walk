@@ -51,10 +51,14 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('.marker-shape[data-group="pb"]'); // tick it back on for the real start below
     await p.waitForTimeout(150);
 
+    // Start never saves stickers by itself (audit2): it asks first.
     await p.click('#startWalkBtn');
+    await p.waitForSelector('#appDialogOk', { state: 'visible' });
+    ok(/Save them before you start/.test(await p.textContent('#appDialog')), 'Start asks before saving the unsaved PB tap');
+    await p.click('#appDialogOk');
     await p.waitForSelector('#endWalkBtn');
     const afterStart = await (await fetch(base + '/api/dogs/501', { headers: { 'x-auth-email': estEmail } })).json();
-    ok(afterStart.dog.pbFlag === true, 'starting the walk saved the PB marker first');
+    ok(afterStart.dog.pbFlag === true, 'saying yes saved the PB marker before starting');
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs));
     await ctx.close();
 

@@ -169,4 +169,4 @@ function catSilhouetteSvg(id) {
 // Cats get their own drawing at cat-<id>.svg; everything else is a dog.
 const silhouetteUrl = (id, species) => `/dog-silhouettes/${species === 'cat' ? 'cat-' : ''}${Number(id)}.svg?v=${SILHOUETTE_VERSION}`;
 
-module.exports = { dogSilhouetteSvg, catSilhouetteSvg, silhouetteUrl, SILHOUETTE_VERSION };
+module.exports = { dogSilhouetteSvg, catSilhouetteSvg, silhouetteUrl };

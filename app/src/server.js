@@ -26,6 +26,10 @@ const modulesCore = require('./modules');
 const WALK_PUSH_TAG = 'walk';
 const { hashEmail } = require('./emailHash');
 const walkHours = require('./walkHours');
+const { realDateKey } = require('./validate');
+// Numbers the app must agree with (served at GET /api/config).
+const constants = require('./constants');
+const shelterTime = require('./shelterTime');
 
 const PORT = process.env.PORT || 3000;
 // Production needs the shared secret for the auth service's calls (account
@@ -37,6 +41,12 @@ if (process.env.NODE_ENV === 'production' && !process.env.INTERNAL_API_TOKEN) {
 // The example .env's placeholder is public, so it's as good as no token.
 if (process.env.NODE_ENV === 'production' && process.env.INTERNAL_API_TOKEN.trim() === 'change-me') {
   throw new Error("[server] INTERNAL_API_TOKEN is still the example value 'change-me'. Set a real secret before starting in production.");
+}
+// A short token can be guessed (audit 3: "x" booted): at least 32 characters,
+// e.g. `openssl rand -hex 32`.
+const MIN_INTERNAL_TOKEN_LENGTH = 32;
+if (process.env.NODE_ENV === 'production' && process.env.INTERNAL_API_TOKEN.trim().length < MIN_INTERNAL_TOKEN_LENGTH) {
+  throw new Error(`[server] INTERNAL_API_TOKEN is shorter than ${MIN_INTERNAL_TOKEN_LENGTH} characters. Set a long random secret (openssl rand -hex 32) before starting in production.`);
 }
 const crypto = require('crypto');
 const app = express();
@@ -69,6 +79,21 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '200kb' }));
+require('./validate').registerTextFieldGuards(app); // text fields must be strings (audit 3)
+// A JSON object with its own "toString" or "valueOf" (or "__proto__") field
+// can't be turned into text: String() on it throws, which every route
+// would answer with a 500. No real request sends one, so any body (at any
+// depth) that has one is refused up front with a 400.
+const POISON_KEYS = ['toString', 'valueOf', '__proto__'];
+function hasPoisonKey(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 20) return false;
+  if (!Array.isArray(value) && POISON_KEYS.some((k) => Object.prototype.hasOwnProperty.call(value, k))) return true;
+  return Object.values(value).some((v) => hasPoisonKey(v, depth + 1));
+}
+app.use((req, res, next) => {
+  if (hasPoisonKey(req.body)) return res.status(400).json({ error: 'That request has a field the app doesn\'t accept.' });
+  next();
+});
 
 // Personal answers (your account, your walks, stats and notes, anything that
 // carries a private note or marks what's yours) are never stored: not by the
@@ -151,6 +176,10 @@ app.use((req, res, next) => {
 // noticeServerBuild).
 app.use('/api', (req, res, next) => {
   res.set('X-App-Build', ASSET_VERSION);
+  // The server's clock (ms), so the app's timers and countdowns can run on
+  // it rather than on a phone that's minutes off (audit 3, ui: app.js
+  // noteServerClock).
+  res.set('X-Server-Now', String(Date.now()));
   next();
 });
 
@@ -186,7 +215,7 @@ function sendIndex(req, res) {
 }
 
 // Opening the site itself on a computer lands on that person's start page
-// (desktopViews.js): the volunteer app, the play group desk, or for staff
+// (desktopViews.js): the volunteer app, the playgroup desk, or for staff
 // the staff dashboard. Phones always get the app. /app and /scan are the app
 // itself, never redirected, so every page's "Volunteer app" link works.
 function sendRoot(req, res) {
@@ -255,31 +284,51 @@ try {
 } catch (err) {
   console.warn('[thumbs] sharp unavailable, list photos use the full image:', err.message);
 }
+// A photo that couldn't be made into a thumbnail (empty, truncated, not a
+// JPEG) is remembered by its mtime, so it isn't retried on every request;
+// the silhouette stands in until the scraper replaces the photo.
+const THUMB_FAILED = 'failed';
+const thumbFailures = new Map(); // id -> photo mtimeMs that failed
 function ensureThumb(id) {
   const src = path.join(IMAGES_DIR, `${id}.jpg`);
   const dest = path.join(thumbsDir, `${id}.jpg`);
   let srcStat;
   try { srcStat = fs.statSync(src); } catch (err) { return Promise.resolve(null); }
   try { if (fs.statSync(dest).mtimeMs >= srcStat.mtimeMs) return Promise.resolve(dest); } catch (err) { /* not made yet */ }
+  if (thumbFailures.get(id) === srcStat.mtimeMs) return Promise.resolve(THUMB_FAILED);
   if (!sharp) return Promise.resolve(src);
   if (thumbsInFlight.has(id)) return thumbsInFlight.get(id);
   const tmp = `${dest}.${process.pid}.tmp`;
+  // Only a real JPEG is resized: sharp picks its decoder from the bytes, and
+  // the photo folder should never hold anything else (see the scraper).
   const job = fs.promises.mkdir(thumbsDir, { recursive: true })
-    .then(() => sharp(src).rotate().resize(THUMB_PX, THUMB_PX, { fit: 'cover', position: 'attention' }).jpeg({ quality: 72, mozjpeg: true }).toFile(tmp))
+    .then(() => sharp(src).metadata())
+    .then((meta) => {
+      if (meta.format !== 'jpeg') throw new Error(`not a JPEG (${meta.format || 'unknown'})`);
+      return sharp(src).rotate().resize(THUMB_PX, THUMB_PX, { fit: 'cover', position: 'attention' }).jpeg({ quality: 72, mozjpeg: true }).toFile(tmp);
+    })
     .then(() => fs.promises.rename(tmp, dest))
-    .then(() => dest)
+    .then(() => { thumbFailures.delete(id); return dest; })
     .catch((err) => {
       console.warn(`[thumbs] couldn't make a thumbnail for ${id}:`, err.message);
       fs.rm(tmp, { force: true }, () => {});
-      return src;
+      thumbFailures.set(id, srcStat.mtimeMs);
+      return THUMB_FAILED;
     })
     .finally(() => thumbsInFlight.delete(id));
   thumbsInFlight.set(id, job);
   return job;
 }
 app.get(/^\/cached-images\/thumbs\/(\d{1,12})\.jpg$/, (req, res, next) => {
-  ensureThumb(req.params[0]).then((file) => {
+  const id = req.params[0];
+  ensureThumb(id).then((file) => {
     if (!file) return res.status(404).end();
+    if (file === THUMB_FAILED) {
+      // Short cache: a replaced photo should show up soon.
+      res.set('Cache-Control', 'public, max-age=3600');
+      const row = speciesOfStmt.get(Number(id));
+      return res.redirect(302, silhouetteUrl(Number(id), row && row.species));
+    }
     res.set('Cache-Control', 'public, max-age=2592000');
     res.type('image/jpeg').sendFile(file, (err) => { if (err && !res.headersSent) next(err); });
   });
@@ -292,8 +341,8 @@ app.get('/', sendRoot);
 app.get('/scan', sendIndex);
 app.get('/app', sendIndex);
 app.get('/staff', sendStaff);
-// The play group desk: a computer-sized page for typing up and exporting play
-// group notes. Open to every walker, like the notes themselves.
+// The playgroup desk: a computer-sized page for typing up and exporting
+// playgroup notes. Open to every walker, like the notes themselves.
 const PLAYGROUP_BASE = withAssetVersions(withStageBanner(fs
   .readFileSync(path.join(__dirname, '..', 'public', 'playgroup.html'), 'utf8')));
 app.get('/playgroup', (req, res) => {
@@ -407,7 +456,6 @@ function resolveExperienceLevel(userId) {
 // bumping any more. Accepts a full code or the kennel-card "Da12" quirk and
 // keeps only the letter; anything that doesn't come down to one of the
 // species' letters is null (caller decides whether that's an error).
-const KENNEL_LETTERS = species.SPECIES.dog.kennels; // Audit Mode's wings
 function kennelLetter(raw, kind) {
   const letters = species.speciesInfo(kind).kennels;
   let v = String(raw || '').trim().toUpperCase();
@@ -456,7 +504,7 @@ function resolvePhotoUrl(row) {
 // the ONLY thing that setting affects -- see the near-identical
 // substitution in the walk-start "already out" check below, the other
 // place a name could otherwise leak while a walk is in progress.
-// Walk, cuddle, matchmaking, play group or daycation: all timed and counted
+// Walk, cuddle, matchmaking, playgroup or daycation: all timed and counted
 // the same way. A daycation (the dog out for the day) has its own time limit,
 // see walkLimitMinutes below.
 const ACTIVITIES = ['walk', 'cuddle', 'matchmaking', 'playgroup', 'daycation'];
@@ -493,7 +541,11 @@ function dogLookups(userId, todayKey, dogId = null) {
   const one = dogId != null ? ' AND w.dog_id = ?' : '';
   const oneParam = dogId != null ? [dogId] : [];
   const byDog = (rows) => new Map(rows.map((r) => [r.dog_id, r]));
-  const recentSince = new Date(Date.now() - RECENT_WALK_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  // From shelter midnight RECENT_WALK_WINDOW_DAYS days ago, not a rolling
+  // window: a count that drops at exactly started_at + 7 days would time
+  // other volunteers' walks to the second.
+  const today = walkHours.shelterClock(new Date());
+  const recentSince = walkHours.shelterTimeToDate(today.y, today.m, today.d - RECENT_WALK_WINDOW_DAYS, 0).toISOString();
   const walkStats = byDog(dogLookupStatement(`
     SELECT w.dog_id, COUNT(*) AS count, MAX(w.started_at) AS last_started_at,
            SUM(CASE WHEN w.started_at >= ? THEN 1 ELSE 0 END) AS recent
@@ -710,6 +762,8 @@ function serializeDog(row, experienceLevel, todayKey, userId, { lookups, withSum
     // Hard rule, no override: puppies under 6 months old can never be walked.
     tooYoung: ageMonthsHard,
     blueMarkers,
+    // Sent back with a sticker save (PUT /api/dogs/:id/markers): see markersVersion.
+    markersVersion: kind.stickers ? markersVersion(row) : null,
     pooStatus: (kind.stickers && row.poo_status) || 'none',
     starFlag: kind.stickers && !!row.star_flag,
     pbFlag,
@@ -757,7 +811,7 @@ function serializeDog(row, experienceLevel, todayKey, userId, { lookups, withSum
 // deterministic: anyone with both this app's pepper and Django's database
 // COULD reconstruct which walker profile belongs to which login account
 // -- that's a real, accepted tradeoff now, not an oversight.
-const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, species_pref AS speciesPref, desktop_view AS desktopView';
+const ME_COLUMNS = 'id, name, experience_level AS experienceLevel, is_privileged AS isPrivileged, can_audit AS canAudit, onboarding_completed AS onboardingCompleted, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, default_activity_cat AS defaultActivityCat, species_pref AS speciesPref, desktop_view AS desktopView';
 
 // Resolves (and if needed, creates or links) the walker profile for the
 // trusted X-Auth-Email header. Returns null if the header is missing, e.g.
@@ -804,7 +858,7 @@ function resolveAuthedUser(req) {
       ).run(name, nowIso, emailHash, nowIso);
       row = {
         id: info.lastInsertRowid, name, experienceLevel: null, isPrivileged: false, canAudit: false,
-        onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk',
+        onboardingCompleted: false, hideNameWhileWalking: true, defaultActivity: 'walk', defaultActivityCat: null,
         speciesPref: species.DEFAULT_SPECIES_PREF
       };
       notifyAdmins({ title: '👋 New account', body: `${name} just opened Shelter Walk for the first time.`, tag: `signup-${row.id}` });
@@ -832,7 +886,7 @@ function notifyAdmins(payload) {
 // Any `userId` a page sends (query string or body) is overwritten with that
 // identity, and /api/users/:id/... paths only work for your own id -- staff
 // and privileged walkers included: no page anywhere (the app, the staff
-// dashboard, the Feedback inbox, the play group desk) reads or changes
+// dashboard, the Feedback inbox, the playgroup desk) reads or changes
 // another member's settings, prefs, filters or alerts, so nobody can. The
 // one exception is /permissions, below. Without this, anyone signed in could
 // read another volunteer's walks/stats/history just by changing a number in
@@ -912,7 +966,9 @@ app.param('id', (req, res, next, raw) => {
 function walkAccessDenied(req, res, walk) {
   if (req.me && walk.user_id === req.me.id) return false;
   if (isInternalRequest(req)) return false;
-  res.status(403).json({ error: 'You can only change your own walks.' });
+  // notYourWalk: the app on the phone that was showing it (moved to another
+  // volunteer meanwhile) says so and keeps what was typed.
+  res.status(403).json({ error: 'You can only change your own walks.', notYourWalk: true });
   return true;
 }
 
@@ -970,10 +1026,11 @@ const CONFUSABLES = {
   ɑ: 'a', ɡ: 'g', ı: 'i', ȷ: 'j', ℓ: 'l', '0': 'o'
 };
 // Two names that read the same: lowercased, spaces collapsed, accents and
-// look-alike letters folded.
+// look-alike letters folded. A capital I (and 1, |) reads as a small l in
+// most fonts, and "rn" as "m" (audit 3: "AIberto" next to "Alberto").
 function nameSkeleton(name) {
-  return cleanDisplayName(name).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
-    .replace(/./gu, (c) => CONFUSABLES[c] || c).replace(/\s+/g, ' ').trim();
+  return cleanDisplayName(name).replace(/[I1|]/g, 'l').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+    .replace(/./gu, (c) => CONFUSABLES[c] || c).replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/\s+/g, ' ').trim();
 }
 
 // The Profile section's two fields save together as one first/last pair.
@@ -1028,20 +1085,42 @@ app.get('/api/me/export', (req, res) => {
   const me = req.me;
   if (!me) return res.status(401).json({ error: 'Not signed in.' });
   const profile = db.prepare(
-    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, walk_alert_minutes AS walkAlertMinutes FROM users WHERE id = ?'
+    'SELECT name, experience_level AS experienceLevel, created_at AS createdAt, hide_name_while_walking AS hideNameWhileWalking, default_activity AS defaultActivity, default_activity_cat AS defaultActivityCat, walk_alert_minutes AS walkAlertMinutes, species_pref AS speciesPref, desktop_view AS desktopView, is_privileged AS isPrivileged, can_audit AS canAudit FROM users WHERE id = ?'
   ).get(me.id);
   profile.hideNameWhileWalking = !!profile.hideNameWhileWalking;
+  // Permission flags (audit 3): Alumni/privileged, and audit mode.
+  profile.isPrivileged = !!profile.isPrivileged;
+  profile.canAudit = !!profile.canAudit;
   profile.walkAlertMinutes = walkAlertMinutes(profile.walkAlertMinutes);
   // The database itself never holds a reversible copy of your email (see
   // emailHash.js) -- this is the live, trusted value from the request that
   // got you here, the same source account deletion already uses.
   profile.email = String(req.headers['x-auth-email'] || '').trim().toLowerCase();
   const walks = db.prepare(`
-    SELECT d.name AS dog, w.started_at AS startedAt, w.ended_at AS endedAt, w.duration_seconds AS durationSeconds,
-           w.location, w.notes, w.manual_entry AS manualEntry, w.auto_stopped AS autoStopped
+    SELECT d.name AS dog, w.activity, w.started_at AS startedAt, w.ended_at AS endedAt, w.duration_seconds AS durationSeconds,
+           w.location, w.notes, w.manual_entry AS manualEntry, w.auto_stopped AS autoStopped, w.edited,
+           w.original_started_at AS originalStartedAt, w.original_ended_at AS originalEndedAt
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     WHERE w.user_id = ? ORDER BY w.started_at ASC
-  `).all(me.id);
+  `).all(me.id).map((w) => ({ ...w, manualEntry: !!w.manualEntry, autoStopped: !!w.autoStopped, edited: !!w.edited }));
+  const playgroupNotesWritten = db.prepare(`
+    SELECT d.name AS dog, p.note_date AS noteDate, p.body, p.signed, p.created_at AS createdAt, p.updated_at AS updatedAt
+    FROM playgroup_notes p JOIN dogs d ON d.shelter_buddy_id = p.dog_id
+    WHERE p.user_id = ? ORDER BY p.created_at ASC
+  `).all(me.id).map((n) => ({ ...n, signed: !!n.signed }));
+  // Walker chat is an optional module: its table only exists once it's been on.
+  let chatMessages = [];
+  try {
+    chatMessages = db.prepare('SELECT body, created_at AS createdAt FROM walker_chat_messages WHERE user_id = ? ORDER BY created_at ASC').all(me.id);
+  } catch (err) { /* module never enabled */ }
+  // Which push services this account's devices are registered with, not
+  // the endpoint addresses themselves (each is a secret capability URL).
+  const pushSubscriptions = db.prepare('SELECT endpoint, created_at AS createdAt FROM push_subscriptions WHERE user_id = ? ORDER BY created_at ASC')
+    .all(me.id).map((s) => {
+      let service = null;
+      try { service = new URL(s.endpoint).host; } catch (err) { /* not a URL */ }
+      return { service, createdAt: s.createdAt };
+    });
   const privateNotes = db.prepare(`
     SELECT d.name AS dog, n.body, n.created_at AS createdAt, n.updated_at AS updatedAt
     FROM dog_notes n JOIN dogs d ON d.shelter_buddy_id = n.dog_id
@@ -1059,6 +1138,19 @@ app.get('/api/me/export', (req, res) => {
     FROM favorite_dogs f JOIN dogs d ON d.shelter_buddy_id = f.dog_id
     WHERE f.user_id = ? ORDER BY f.created_at ASC
   `).all(me.id);
+  // Shift check-offs you ticked (the walk-schedule boxes), and news held
+  // back overnight for your phone (audit 3).
+  const shiftCheckoffs = db.prepare(`
+    SELECT d.name AS dog, c.date_key AS dateKey, c.slot_index AS slotIndex, c.checked_at AS checkedAt
+    FROM manual_shift_checkoffs c JOIN dogs d ON d.shelter_buddy_id = c.dog_id
+    WHERE c.user_id = ? ORDER BY c.checked_at ASC
+  `).all(me.id);
+  const queuedPushes = db.prepare('SELECT payload, queued_at AS queuedAt FROM queued_pushes WHERE user_id = ? ORDER BY id ASC').all(me.id)
+    .map((q) => {
+      let message = null;
+      try { const p = JSON.parse(q.payload); message = { title: p.title || null, body: p.body || null }; } catch (err) { /* not JSON */ }
+      return { message, queuedAt: q.queuedAt };
+    });
   res.json({
     exportedAt: new Date().toISOString(),
     note: "This is everything Shelter Walk has stored about your account. It does not include your email sign-in history or passkeys, which belong to the separate login system.",
@@ -1067,9 +1159,14 @@ app.get('/api/me/export', (req, res) => {
     walks: walks.map((w) => ({ ...w, notes: tags.toText(w.notes) })),
     privateNotes: privateNotes.map((n) => ({ ...n, body: tags.toText(n.body) })),
     publicTipsWritten: publicTipsWritten.map((n) => ({ ...n, body: tags.toText(n.body) })),
+    playgroupNotesWritten: playgroupNotesWritten.map((n) => ({ ...n, body: tags.toText(n.body) })),
+    chatMessages,
     savedFilters,
     notificationPrefs,
-    favoriteDogs
+    pushSubscriptions,
+    favoriteDogs,
+    shiftCheckoffs,
+    queuedPushes
   });
 });
 
@@ -1320,6 +1417,14 @@ app.get('/api/experience-levels', (req, res) => {
   });
 });
 
+// The numbers the app must agree with the server on (walk windows, time
+// limits, the under-a-minute and 5-minute rules, the shelter's time zone),
+// from src/constants.js. The app keeps fallback copies (SHARED_CONFIG in
+// app.js) that test/audit2-eng.test.js compares against these.
+app.get('/api/config', (req, res) => {
+  res.json(constants.publicConfig());
+});
+
 // Trusted server-to-server calls (currently: the Django staff panel's
 // walker-permissions page, since that's the only UI for this now) present
 // this shared secret instead of a requestingUserId -- there's no dogwalk
@@ -1360,9 +1465,10 @@ app.put('/api/users/:id/permissions', (req, res) => {
 // (start page on a computer; null = the default).
 app.put('/api/users/:id/settings', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { experienceLevel, defaultActivity, speciesPref, desktopView } = req.body;
-  if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined && desktopView === undefined) {
-    return res.status(400).json({ error: 'Nothing to save: send experienceLevel, defaultActivity, speciesPref and/or desktopView.' });
+  // defaultActivityCat (audit 3, ui): the cats' own default; defaultActivity is the dogs'.
+  const { experienceLevel, defaultActivity, defaultActivityCat, speciesPref, desktopView } = req.body;
+  if (experienceLevel === undefined && defaultActivity === undefined && defaultActivityCat === undefined && speciesPref === undefined && desktopView === undefined) {
+    return res.status(400).json({ error: 'Nothing to save: send experienceLevel, defaultActivity, defaultActivityCat, speciesPref and/or desktopView.' });
   }
   // Everything is checked first, then saved in one UPDATE, so a bad field
   // never leaves the good ones half-saved.
@@ -1378,20 +1484,25 @@ app.put('/api/users/:id/settings', (req, res) => {
   if (defaultActivity !== undefined && !ACTIVITIES.includes(defaultActivity)) {
     return res.status(400).json({ error: `defaultActivity must be one of: ${ACTIVITIES.join(', ')}` });
   }
-  const user = db.prepare('SELECT experience_level, default_activity, species_pref, desktop_view FROM users WHERE id = ?').get(id);
+  const catActivities = species.speciesInfo('cat').activities;
+  if (defaultActivityCat !== undefined && !catActivities.includes(defaultActivityCat)) {
+    return res.status(400).json({ error: `defaultActivityCat must be one of: ${catActivities.join(', ')}` });
+  }
+  const user = db.prepare('SELECT experience_level, default_activity, default_activity_cat, species_pref, desktop_view FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   // desktopView alone answers with just that (what the desktop switcher expects).
-  if (experienceLevel === undefined && defaultActivity === undefined && speciesPref === undefined) {
+  if (experienceLevel === undefined && defaultActivity === undefined && defaultActivityCat === undefined && speciesPref === undefined) {
     db.prepare('UPDATE users SET desktop_view = ? WHERE id = ?').run(desktopView, id);
     return res.json({ id, desktopView });
   }
   const next = {
     experienceLevel: experienceLevel !== undefined ? experienceLevel : user.experience_level,
     defaultActivity: defaultActivity !== undefined ? defaultActivity : user.default_activity,
+    defaultActivityCat: defaultActivityCat !== undefined ? defaultActivityCat : user.default_activity_cat,
     speciesPref: speciesPref !== undefined ? speciesPref : user.species_pref
   };
-  db.prepare('UPDATE users SET experience_level = ?, default_activity = ?, species_pref = ?, desktop_view = ? WHERE id = ?')
-    .run(next.experienceLevel, next.defaultActivity, next.speciesPref, desktopView !== undefined ? desktopView : user.desktop_view, id);
+  db.prepare('UPDATE users SET experience_level = ?, default_activity = ?, default_activity_cat = ?, species_pref = ?, desktop_view = ? WHERE id = ?')
+    .run(next.experienceLevel, next.defaultActivity, next.defaultActivityCat, next.speciesPref, desktopView !== undefined ? desktopView : user.desktop_view, id);
   res.json({ id, ...next });
 });
 
@@ -1402,13 +1513,9 @@ function clampLimit(raw, fallback, max = 5000) {
   return Number.isFinite(n) && n > 0 ? Math.min(n, max) : fallback;
 }
 
-const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
-// A real calendar date ("2026-13-40" isn't one).
-function validDateKey(v) {
-  if (typeof v !== 'string' || !DATE_KEY_RE.test(v)) return null;
-  const d = new Date(`${v}T12:00:00Z`);
-  return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : null;
-}
+// A real calendar date ("2026-13-40" isn't one): the one check for the
+// whole API (validate.js).
+const validDateKey = realDateKey;
 
 // ---- Dogs ----
 // The shelter's Animal IDs (kennel card QR/barcode) are 4-9 digit numbers.
@@ -1427,6 +1534,27 @@ app.get('/api/dogs', (req, res) => {
   const onlyListed = req.query.all !== 'true';
   const todayKey = validDateKey(req.query.dateKey);
   const kinds = speciesWhere(req);
+  // ?fields=names: just what the @-tag and name pickers need (about a fifth
+  // of the full list's size), no per-dog lookups.
+  if (req.query.fields === 'names') {
+    const dogs = db.prepare(`SELECT shelter_buddy_id, name, previous_names, species, location, still_listed, kennel_location, photo_url,
+        removed_at, last_seen_at
+      FROM dogs WHERE awaiting_listing = 0 AND ${kinds.sql}${onlyListed ? ' AND still_listed = 1' : ''} ORDER BY name COLLATE NOCASE`).all(...kinds.params)
+      .map((r) => ({
+        id: r.shelter_buddy_id,
+        name: r.name,
+        previousNames: JSON.parse(r.previous_names || '[]'),
+        species: species.validSpecies(r.species) ? r.species : species.DEFAULT_SPECIES,
+        location: r.location,
+        stillListed: !!r.still_listed,
+        // When a dog no longer listed left, so the @-tag picker can offer
+        // recently gone dogs below the current ones.
+        leftAt: r.still_listed ? null : (r.removed_at || r.last_seen_at || null),
+        kennelLocation: r.kennel_location || null,
+        photoUrl: resolvePhotoUrl(r)
+      }));
+    return res.json({ dogs });
+  }
   // Stand-ins for not-yet-listed kennel cards aren't real dogs yet: no list shows them.
   let rows = db.prepare(`SELECT * FROM dogs WHERE awaiting_listing = 0 AND ${kinds.sql}` + (onlyListed ? ' AND still_listed = 1' : '')).all(...kinds.params);
   const lookups = dogLookups(req.me.id, todayKey);
@@ -1482,6 +1610,9 @@ app.get('/api/dogs/:id', (req, res) => {
     });
   dog.playgroupCounts = playgroupApi.counts(id);
   dog.stickerDates = stickerDatesFor(id);
+  // Stickers this person can't take off (their level is why they're there).
+  dog.lockedMarkers = species.speciesInfo(row.species).stickers
+    ? lockedMarkersFor(markersOf(row), experienceLevel, isStaffOrPrivileged(req, req.me)) : [];
   Object.assign(dog, modulesCore.runDogEnrichers(id, moduleState));
   res.json({ dog, walks, notes: notesApi.notesFor(id, req.me.id) });
 });
@@ -1579,14 +1710,12 @@ app.get('/api/dogs/:id/walk-stats', (req, res) => {
   res.json({ mine, everyone });
 });
 
-// The app's four daily walk windows (WALK_SLOTS in app.js), in shelter
-// hours: 7-10, 10-1, 1-4 and 4-7 (to 8, for a walk that runs long). The
-// index of the one a time falls in, or -1 outside them.
-const SHELTER_SLOTS = [[7, 10], [10, 13], [13, 16], [16, 20]];
-const shelterHourFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' });
+// The app's four daily walk windows (constants.js WALK_SLOTS), in shelter
+// hours: 7-10, 10-1, 1-4 and 4-7 (counted to 7:15). The index of the one a
+// time falls in, or -1 outside them.
+const SHELTER_SLOTS = constants.WALK_SLOTS.map((s) => [s.from, s.to]);
 function shelterSlotIndex(iso) {
-  const hour = Number(shelterHourFmt.format(new Date(iso)));
-  return SHELTER_SLOTS.findIndex(([from, to]) => hour >= from && hour < to);
+  return constants.slotIndexOfHour(shelterTime.shelterTimeOfDay(iso));
 }
 // A walk time anyone may see, at walk-window precision: the start of its
 // window (SHELTER_SLOTS) on its shelter day, as an ISO time so dates, sorts
@@ -1597,7 +1726,7 @@ function coarseWalkTime(iso) {
   const ms = new Date(iso).getTime();
   if (!Number.isFinite(ms)) return null;
   const c = walkHours.shelterClock(ms);
-  const hour = Math.floor(c.minutes / 60);
+  const hour = c.minutes / 60;
   const slot = SHELTER_SLOTS.findIndex(([from, to]) => hour >= from && hour < to);
   const fromHour = slot >= 0 ? SHELTER_SLOTS[slot][0]
     : hour < SHELTER_SLOTS[0][0] ? SHELTER_SLOTS[0][0] : SHELTER_SLOTS[SHELTER_SLOTS.length - 1][0];
@@ -1607,7 +1736,7 @@ function coarseWalkTime(iso) {
 // same precision as their rows in walk-history): an exact shelter-wide total
 // minus your own would give someone else's exact walk length, and two looks
 // a walk apart would give that walk's. Your own part stays exact.
-const roundToFive = (seconds) => Math.round((seconds || 0) / 300) * 300;
+const roundToFive = constants.roundToStep;
 function dogTotalsFor(dogId, userId) {
   const all = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE dog_id = ? AND ended_at IS NOT NULL').get(dogId);
   const mine = db.prepare('SELECT COALESCE(SUM(duration_seconds), 0) AS totalSeconds FROM walks WHERE dog_id = ? AND user_id = ? AND ended_at IS NOT NULL').get(dogId, userId);
@@ -1632,7 +1761,7 @@ app.get('/api/dogs/:id/walk-history', (req, res) => {
     const base = { date: statsBreakdown.shelterDateKey(w.started_at), slot: shelterSlotIndex(w.started_at), activity: w.activity };
     return w.user_id === req.me.id
       ? { ...base, mine: true, startedAt: w.started_at, endedAt: w.ended_at, durationSeconds: w.duration_seconds }
-      : { ...base, mine: false, durationSeconds: Math.round((w.duration_seconds || 0) / 300) * 300 };
+      : { ...base, mine: false, durationSeconds: constants.roundToStep(w.duration_seconds) };
   }).sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1)
     : a.slot !== b.slot ? b.slot - a.slot
       : a.mine !== b.mine ? (a.mine ? -1 : 1)
@@ -1654,24 +1783,8 @@ const VALID_POO_STATUSES = ['none', 'poo', 'priority'];
 // Human-readable label for each individually-tracked sticker, used only for
 // the "turned on/off" events on a dog's timeline (see /api/dogs/:id/stay-
 // history) -- independent of the icon/letter shown on the kennel card
-// itself (see BLUE_MARKER_NAMES in app.js).
-const STICKER_LABELS = {
-  star: 'Good for beginners (star)',
-  pb: 'PB: Potty break only',
-  poo: 'POO: Potty Outside Only',
-  poo_priority: 'POO: priority (first out, last in)',
-  blue_c: 'Blue: Difficult to collar',
-  blue_d: 'Blue: Door dasher',
-  blue_e: 'Blue: Energetic',
-  blue_h: 'Blue: Humpy',
-  blue_j: 'Blue: Jumpy',
-  blue_m: 'Blue: Mouthy',
-  blue_p: 'Blue: Puller',
-  blue_q: 'Blue: Quirky',
-  blue_r: 'Blue: Reactive',
-  blue_s: 'Blue: Shy / shutdown',
-  blue_evo: 'Blue: Experienced volunteer only'
-};
+// itself (see BLUE_MARKER_NAMES in app.js). One copy, shared with db.js's backfill.
+const { STICKER_LABELS } = constants;
 const insertStickerEvent = db.prepare(
   'INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES (?, ?, ?, ?, ?)'
 );
@@ -1704,31 +1817,105 @@ function logStickerChanges(dogId, before, after) {
     insertStickerEvent.run(on ? 'sticker_on' : 'sticker_off', dogId, STICKER_LABELS[key] || key, key, now);
   }
 }
+// A short fingerprint of a dog's stickers as they are now (sent as
+// markersVersion with the dog). A sticker save carries the version it was
+// made from, and one made from an older version is refused (409), so a
+// screen opened before staff added a sticker can't quietly take it off again.
+function markersOf(row) {
+  return {
+    blueMarkers: JSON.parse((row && row.blue_markers) || '[]'),
+    pooStatus: (row && row.poo_status) || 'none',
+    starFlag: !!(row && row.star_flag),
+    pbFlag: !!(row && row.pb_flag)
+  };
+}
+function markersVersion(row) {
+  const m = markersOf(row);
+  const key = JSON.stringify([[...new Set(m.blueMarkers)].sort(), m.pooStatus, m.starFlag, m.pbFlag]);
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
+// The stickers on this dog that keep this level off it: someone below that
+// level can't take them off (and so can't unlock the dog for themselves).
+// Staff and privileged volunteers can. Adding a sticker is always fine.
+function lockedMarkersFor(markers, experienceLevel, privileged) {
+  if (privileged) return [];
+  const level = EXPERIENCE_LEVELS[experienceLevel] || EXPERIENCE_LEVELS[DEFAULT_EXPERIENCE_LEVEL];
+  const locked = markers.blueMarkers.filter((m) => !level.allowBlue || (m === 'blue_evo' && !level.allowEvo));
+  if (markers.pbFlag && !level.allowPb) locked.push('pb');
+  return [...new Set(locked)];
+}
+const isBool = (v) => typeof v === 'boolean';
 app.put('/api/dogs/:id/markers', (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { blueMarkers, pooStatus, starFlag, pbFlag } = req.body;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
   const animal = db.prepare('SELECT species, blue_markers, poo_status, star_flag, pb_flag FROM dogs WHERE shelter_buddy_id = ?').get(id);
-  if (animal && !species.speciesInfo(animal.species).stickers) {
+  if (!animal) return res.status(404).json({ error: 'Dog not found' });
+  if (!species.speciesInfo(animal.species).stickers) {
     return res.status(400).json({ error: `${species.speciesInfo(animal.species).plural} don't have kennel card stickers.` });
   }
-  if (!Array.isArray(blueMarkers) || blueMarkers.some((m) => !VALID_BLUE_MARKERS.includes(m))) {
-    return res.status(400).json({ error: `blueMarkers must be an array of: ${VALID_BLUE_MARKERS.join(', ')}` });
+  const before = markersOf(animal);
+  const currentVersion = markersVersion(animal);
+  if (body.version !== undefined && body.version !== null) {
+    if (typeof body.version !== 'string') return res.status(400).json({ error: 'version must be text.' });
+    if (body.version !== currentVersion) {
+      return res.status(409).json({
+        error: "Someone changed this dog's stickers since you opened it. Check the stickers now shown and make your change again.",
+        staleMarkers: true, markers: { ...before, version: currentVersion }
+      });
+    }
   }
-  if (!VALID_POO_STATUSES.includes(pooStatus)) {
-    return res.status(400).json({ error: `pooStatus must be one of ${VALID_POO_STATUSES.join(', ')}` });
+  let next;
+  if (body.patch !== undefined) {
+    // Only the stickers this person changed: everything else stays as it is
+    // now, whatever this screen showed when it was opened.
+    const p = body.patch;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return res.status(400).json({ error: 'patch must be an object.' });
+    const blue = p.blueMarkers === undefined ? { add: [], remove: [] } : p.blueMarkers;
+    const okList = (l) => l === undefined || (Array.isArray(l) && l.every((m) => VALID_BLUE_MARKERS.includes(m)));
+    if (!blue || typeof blue !== 'object' || !okList(blue.add) || !okList(blue.remove)) {
+      return res.status(400).json({ error: `patch.blueMarkers needs add/remove lists of: ${VALID_BLUE_MARKERS.join(', ')}` });
+    }
+    if (p.pooStatus !== undefined && !VALID_POO_STATUSES.includes(p.pooStatus)) {
+      return res.status(400).json({ error: `pooStatus must be one of ${VALID_POO_STATUSES.join(', ')}` });
+    }
+    if ((p.starFlag !== undefined && !isBool(p.starFlag)) || (p.pbFlag !== undefined && !isBool(p.pbFlag))) {
+      return res.status(400).json({ error: 'starFlag and pbFlag must be true or false.' });
+    }
+    const remove = new Set(blue.remove || []);
+    next = {
+      blueMarkers: [...new Set([...before.blueMarkers.filter((m) => !remove.has(m)), ...(blue.add || [])])],
+      pooStatus: p.pooStatus !== undefined ? p.pooStatus : before.pooStatus,
+      starFlag: p.starFlag !== undefined ? p.starFlag : before.starFlag,
+      pbFlag: p.pbFlag !== undefined ? p.pbFlag : before.pbFlag
+    };
+  } else {
+    // The whole set (older app versions, and the internal staff tools).
+    const { blueMarkers, pooStatus, starFlag, pbFlag } = body;
+    if (!Array.isArray(blueMarkers) || blueMarkers.some((m) => !VALID_BLUE_MARKERS.includes(m))) {
+      return res.status(400).json({ error: `blueMarkers must be an array of: ${VALID_BLUE_MARKERS.join(', ')}` });
+    }
+    if (!VALID_POO_STATUSES.includes(pooStatus)) {
+      return res.status(400).json({ error: `pooStatus must be one of ${VALID_POO_STATUSES.join(', ')}` });
+    }
+    next = { blueMarkers: [...new Set(blueMarkers)], pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag };
   }
-  const uniqueBlue = [...new Set(blueMarkers)];
-  const info = db.prepare(`
+  const privileged = isInternalRequest(req) || isStaffOrPrivileged(req, req.me);
+  const level = (req.me && req.me.experienceLevel) || DEFAULT_EXPERIENCE_LEVEL;
+  const removedLocked = lockedMarkersFor(before, level, privileged)
+    .filter((k) => (k === 'pb' ? !next.pbFlag : !next.blueMarkers.includes(k)));
+  if (removedLocked.length) {
+    const names = removedLocked.map((k) => (k === 'pb' ? STICKER_LABELS.pb : (STICKER_LABELS[k] || 'Blue')));
+    return res.status(403).json({
+      error: `Only staff or a privileged volunteer can take off ${names.join(', ')}: it's there for volunteers at your level.`,
+      lockedMarkers: removedLocked
+    });
+  }
+  db.prepare(`
     UPDATE dogs SET blue_markers = ?, poo_status = ?, star_flag = ?, pb_flag = ? WHERE shelter_buddy_id = ?
-  `).run(JSON.stringify(uniqueBlue), pooStatus, starFlag ? 1 : 0, pbFlag ? 1 : 0, id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Dog not found' });
-  logStickerChanges(id, {
-    blueMarkers: JSON.parse(animal.blue_markers || '[]'),
-    pooStatus: animal.poo_status,
-    starFlag: !!animal.star_flag,
-    pbFlag: !!animal.pb_flag
-  }, { blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
-  res.json({ id, blueMarkers: uniqueBlue, pooStatus, starFlag: !!starFlag, pbFlag: !!pbFlag });
+  `).run(JSON.stringify(next.blueMarkers), next.pooStatus, next.starFlag ? 1 : 0, next.pbFlag ? 1 : 0, id);
+  logStickerChanges(id, before, next);
+  const version = markersVersion({ blue_markers: JSON.stringify(next.blueMarkers), poo_status: next.pooStatus, star_flag: next.starFlag, pb_flag: next.pbFlag });
+  res.json({ id, ...next, version, markersVersion: version });
 });
 
 // Alumni (returned dog): privileged users only, enforced here server-side
@@ -1803,11 +1990,27 @@ app.get('/api/users/:id/saved-filters', (req, res) => {
   res.json({ filters: rows.map((r) => ({ id: r.id, name: r.name, filter: JSON.parse(r.filterJson), createdAt: r.createdAt })) });
 });
 
+// A preset is a few chips' worth of settings: these caps are far above any
+// real one, and stop one account from filling the database.
+const MAX_SAVED_FILTERS = 30;
+const MAX_FILTER_NAME = 60;
+const MAX_FILTER_JSON = 4000;
+function savedFilterError(name, filter) {
+  if (name != null && (typeof name !== 'string' || name.trim().length > MAX_FILTER_NAME)) return `A preset name can be up to ${MAX_FILTER_NAME} characters.`;
+  if (filter != null && (typeof filter !== 'object' || Array.isArray(filter))) return 'filter must be an object.';
+  if (filter != null && JSON.stringify(filter).length > MAX_FILTER_JSON) return 'That preset has too much in it.';
+  return null;
+}
 app.post('/api/users/:id/saved-filters', (req, res) => {
   const userId = parseInt(req.params.id, 10);
   const { name, filter } = req.body;
-  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name is required' });
   if (!filter || typeof filter !== 'object') return res.status(400).json({ error: 'filter is required' });
+  const capError = savedFilterError(name, filter);
+  if (capError) return res.status(400).json({ error: capError });
+  if (db.prepare('SELECT COUNT(*) AS n FROM saved_filters WHERE user_id = ?').get(userId).n >= MAX_SAVED_FILTERS) {
+    return res.status(409).json({ error: `You can keep up to ${MAX_SAVED_FILTERS} presets. Delete one to add another.` });
+  }
   const info = db.prepare(
     'INSERT INTO saved_filters (user_id, name, filter_json, created_at) VALUES (?, ?, ?, ?)'
   ).run(userId, String(name).trim(), JSON.stringify(filter), new Date().toISOString());
@@ -1820,6 +2023,8 @@ app.put('/api/users/:id/saved-filters/:filterId', (req, res) => {
   const { name, filter } = req.body;
   const existing = db.prepare('SELECT * FROM saved_filters WHERE id = ? AND user_id = ?').get(filterId, userId);
   if (!existing) return res.status(404).json({ error: 'Saved filter not found' });
+  const capError = savedFilterError(name, filter);
+  if (capError) return res.status(400).json({ error: capError });
   const newName = name != null && String(name).trim() ? String(name).trim() : existing.name;
   const newFilterJson = filter != null ? JSON.stringify(filter) : existing.filter_json;
   db.prepare('UPDATE saved_filters SET name = ?, filter_json = ? WHERE id = ?').run(newName, newFilterJson, filterId);
@@ -1903,6 +2108,28 @@ app.put('/api/manual-checkoffs', (req, res) => {
 // The event kinds the Updates feed shows. 'removed' (a plain delisting that
 // wasn't an adoption) is left out on purpose; see below.
 const UPDATE_KINDS = ['new_dog', 'adopted', 'returned', 'alert'];
+// The one WHERE clause the feed and its badge (unread-count) share, so the
+// badge never counts what the feed won't show (audit 3): the feed's kinds,
+// the volunteer's species, unexpired alerts, and -- unless kinds were picked
+// on the feed's chips -- not the categories this user hid, except news about
+// their own favourites.
+function updatesWhere(req, userId, kinds) {
+  const kindList = kinds.length ? kinds : UPDATE_KINDS;
+  const kindsOf = speciesWhere(req);
+  let sql = `e.kind IN (${kindList.map(() => '?').join(', ')})
+      AND (d.shelter_buddy_id IS NULL OR d.${kindsOf.sql})
+      AND (e.expires_at IS NULL OR e.expires_at > ?)`;
+  const params = [...kindList, ...kindsOf.params, new Date().toISOString()];
+  if (userId && !kinds.length) {
+    const prefs = getUserPrefs(userId);
+    const hidden = kindList.filter((k) => prefs[`show_${k}`] === false);
+    if (hidden.length) {
+      sql += ` AND (e.kind NOT IN (${hidden.map(() => '?').join(', ')}) OR e.dog_id IN (SELECT dog_id FROM favorite_dogs WHERE user_id = ?))`;
+      params.push(...hidden, userId);
+    }
+  }
+  return { sql, params };
+}
 app.get('/api/updates', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   const limit = clampLimit(req.query.limit, 100);
@@ -1912,7 +2139,6 @@ app.get('/api/updates', (req, res) => {
   const sinceDate = req.query.since ? new Date(String(req.query.since)) : null;
   const since = sinceDate && !isNaN(sinceDate) ? sinceDate.toISOString() : '';
   const kinds = String(req.query.kinds || '').split(',').filter((k) => UPDATE_KINDS.includes(k));
-  const kindList = kinds.length ? kinds : UPDATE_KINDS;
   // Fetch more than asked before filtering by show_* prefs, so hiding a
   // category doesn't just leave someone with a short feed once they've
   // scrolled past however many of that kind happened to lead the results.
@@ -1921,19 +2147,18 @@ app.get('/api/updates', (req, res) => {
   // The scraper stopped writing new ones of these; this also hides any
   // already sitting in the table from before that change.
   // Only news about the species this volunteer works with; shelter-wide
-  // alerts (no animal) always show.
-  const kindsOf = speciesWhere(req);
+  // alerts (no animal) always show until they expire (shelterSchedule.js).
+  const where = updatesWhere(req, userId, kinds);
   let rows = db.prepare(`
     SELECT e.id, e.kind, e.dog_id, d.name AS dog_name, d.photo_url, d.species,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag,
            e.title, e.detail, e.occurred_at
     FROM shelter_events e
     LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
-    WHERE e.kind IN (${kindList.map(() => '?').join(', ')}) AND e.occurred_at >= ?
-      AND (d.shelter_buddy_id IS NULL OR d.${kindsOf.sql})
+    WHERE ${where.sql} AND e.occurred_at >= ?
     ORDER BY e.occurred_at DESC, e.id DESC
     LIMIT ?
-  `).all(...kindList, since, ...kindsOf.params, limit * 4);
+  `).all(...where.params, since, limit * 4);
   rows.forEach((r) => {
     if (r.dog_id) r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
     // No stickers for a species without them, same as serializeDog.
@@ -1953,9 +2178,8 @@ app.get('/api/updates', (req, res) => {
     favoriteDogIds = new Set(
       db.prepare('SELECT dog_id FROM favorite_dogs WHERE user_id = ?').all(userId).map((r) => r.dog_id)
     );
-    // A favorite's own news always shows, even in a category hidden here,
-    // and so does a kind picked on the feed's type chips (asked for outright).
-    if (!kinds.length) rows = rows.filter((r) => prefs[`show_${r.kind}`] !== false || favoriteDogIds.has(r.dog_id));
+    // Hidden categories are left out in updatesWhere: a favorite's own news
+    // always shows, and so does a kind picked on the feed's type chips.
     const userRow = db.prepare('SELECT updates_last_seen_at FROM users WHERE id = ?').get(userId);
     lastSeenAt = userRow ? userRow.updates_last_seen_at : null;
   }
@@ -1979,11 +2203,11 @@ app.get('/api/updates/unread-count', (req, res) => {
   if (!userId) return res.status(400).json({ error: 'userId is required' });
   const userRow = db.prepare('SELECT updates_last_seen_at FROM users WHERE id = ?').get(userId);
   const lastSeenAt = userRow ? userRow.updates_last_seen_at : null;
-  const kindsOf = speciesWhere(req);
+  const where = updatesWhere(req, userId, []);
   const count = db.prepare(`
     SELECT COUNT(*) AS c FROM shelter_events e LEFT JOIN dogs d ON d.shelter_buddy_id = e.dog_id
-    WHERE e.kind != 'removed' AND e.occurred_at > ? AND (d.shelter_buddy_id IS NULL OR d.${kindsOf.sql})
-  `).get(lastSeenAt || '', ...kindsOf.params).c;
+    WHERE ${where.sql} AND e.occurred_at > ?
+  `).get(...where.params, lastSeenAt || '').c;
   res.json({ count });
 });
 
@@ -2010,18 +2234,23 @@ app.get('/api/walks/active', (req, res) => {
     row.photo_url = cachedPhotoUrl(row.dog_id, row.photo_url);
     row.stopsAt = walkStopsAt(row);
     row.closesAt = closesAtFor(row);
+    row.endsBy = endsByFor(row);
+    row.endToken = row.end_token || null;
+    delete row.end_token;
   }
   // No walk going, but one ended recently and its end screen was never
   // finished: the app shows that screen again. Either the time limit
   // stopped it (auto_stopped: the walker says when it really ended), or End
   // was tapped (it ended then; only the notes are left).
   const wrapUp = row ? null : db.prepare(`
-    SELECT id, dog_id, location, started_at, ended_at, activity, auto_stopped FROM walks
+    SELECT id, dog_id, location, started_at, ended_at, activity, auto_stopped, closes_at FROM walks
     WHERE user_id = ? AND wrap_up_pending = 1 AND ended_at > ?
     ORDER BY started_at DESC LIMIT 1
   `).get(userId, new Date(Date.now() - WRAP_UP_HOURS * 3600000).toISOString());
   if (wrapUp) {
     wrapUp.closesAt = closesAtFor(wrapUp);
+    wrapUp.endsBy = endsByFor(wrapUp);
+    delete wrapUp.closes_at;
     wrapUp.autoStopped = !!wrapUp.auto_stopped;
     delete wrapUp.auto_stopped;
   }
@@ -2029,10 +2258,12 @@ app.get('/api/walks/active', (req, res) => {
   // (deleted or cancelled on another device), so the app can stop showing
   // it rather than guess it was ended. Only this user's own walks count.
   const askedId = parseInt(req.query.walkId, 10);
-  const walkMissing = askedId > 0
-    ? !db.prepare('SELECT 1 FROM walks WHERE id = ? AND user_id = ?').get(askedId, userId)
-    : undefined;
-  res.json({ walk: row || null, wrapUp: wrapUp || null, ...(walkMissing !== undefined ? { walkMissing } : {}) });
+  const asked = askedId > 0 ? db.prepare('SELECT user_id FROM walks WHERE id = ?').get(askedId) : undefined;
+  const walkMissing = askedId > 0 ? !(asked && asked.user_id === userId) : undefined;
+  // Still there but someone else's now: staff moved it to another volunteer
+  // (PUT /api/walks/:id/user), which the app words differently from a deletion.
+  const walkMoved = !!(walkMissing && asked && asked.user_id != null);
+  res.json({ walk: row || null, wrapUp: wrapUp || null, ...(walkMissing !== undefined ? { walkMissing, walkMoved } : {}) });
 });
 
 const MAX_STAND_INS_PER_DAY = 3;
@@ -2133,11 +2364,12 @@ app.post('/api/walks/start', (req, res) => {
   // time keeps the time-limit end (it can still be fixed in Stats).
   db.prepare('UPDATE walks SET wrap_up_pending = 0 WHERE user_id = ? AND wrap_up_pending = 1').run(userId);
   const startedAt = new Date().toISOString();
+  const endToken = crypto.randomBytes(16).toString('hex');
   let info;
   try {
     info = db.prepare(`
-      INSERT INTO walks (dog_id, location, started_at, user_id, activity) VALUES (?, ?, ?, ?, ?)
-    `).run(dogId, trimmedLocation || null, startedAt, userId, activity);
+      INSERT INTO walks (dog_id, location, started_at, user_id, activity, closes_at, end_token) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(dogId, trimmedLocation || null, startedAt, userId, activity, closesAtToStore(startedAt), endToken);
   } catch (err) {
     // Two taps racing past the checks above: the one-open-walk indexes (db.js) catch it.
     if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'A walk is already in progress for you or this dog.' });
@@ -2152,7 +2384,7 @@ app.post('/api/walks/start', (req, res) => {
     // Shelter's local time, not the server's (server runs in UTC) -- same
     // timezone used for the scraper's cron schedule elsewhere in this file.
     const startTimeLabel = new Intl.DateTimeFormat('en-US', {
-      hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York'
+      hour: 'numeric', minute: '2-digit', timeZone: constants.SHELTER_TZ
     }).format(new Date(startedAt));
     // Location and start time are baked into the title itself, not just the
     // body -- some platforms only surface the title in a collapsed
@@ -2172,6 +2404,8 @@ app.post('/api/walks/start', (req, res) => {
     startedAt,
     stopsAt: walkStopsAt({ started_at: startedAt, extend_minutes: 0, activity }),
     closesAt: closesAtFor({ started_at: startedAt, activity }),
+    endsBy: endsByFor({ started_at: startedAt, activity }),
+    endToken,
     autoStopMinutes: walkLimitMinutes({ extend_minutes: 0, activity })
   });
 });
@@ -2184,20 +2418,26 @@ app.post('/api/walks/:id/extend', (req, res) => {
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
   if (walkAccessDenied(req, res, walk)) return;
   if (walk.ended_at) {
-    return res.status(409).json({ error: walk.auto_stopped ? 'This walk already stopped automatically. You can fix its time in Stats.' : 'This walk has already ended.', autoStopped: !!walk.auto_stopped });
+    return res.status(409).json({ error: walk.auto_stopped ? 'This walk already stopped automatically. You can fix its time in Stats&Notes.' : 'This walk has already ended.', autoStopped: !!walk.auto_stopped });
   }
   if (walk.activity === 'daycation') {
     return res.status(409).json({ error: `Daycations already run up to ${DAYCATION_MINUTES / 60} hours, so there's no time to add.` });
   }
-  if (new Date(walkStopsAt(walk)).getTime() === walkClosesMs(walk)) {
-    return res.status(409).json({ error: `The shelter closes at ${walkHours.walkWindow(walk.started_at).closeLabel}, so this one can't go any longer.` });
+  // Already held to closing (stopping at or after the official time): no
+  // more time to add. The quiet grace after closing is never offered.
+  if (new Date(walkStopsAt(walk)).getTime() >= walkClosesMs(walk)) {
+    return res.status(409).json({ error: `The shelter closes at ${closeLabelFor(walk)}, so this one can't go any longer.` });
   }
   if (walkLimitMinutes(walk) + EXTEND_MINUTES > MAX_TOTAL_MINUTES) {
     return res.status(409).json({ error: `Walks can be extended up to ${MAX_TOTAL_MINUTES / 60} hours in total.` });
   }
   db.prepare('UPDATE walks SET extend_minutes = extend_minutes + ?, warned = 0 WHERE id = ?').run(EXTEND_MINUTES, id);
   const updated = db.prepare('SELECT * FROM walks WHERE id = ?').get(id);
-  res.json({ walkId: id, stopsAt: walkStopsAt(updated), addedMinutes: EXTEND_MINUTES });
+  const stopsAt = walkStopsAt(updated);
+  // shownStopsAt: the stop as the walker is told it (never past the official
+  // closing time), for the notification's "Now stops automatically at".
+  const shownMs = Math.min(new Date(stopsAt).getTime(), walkClosesMs(updated));
+  res.json({ walkId: id, stopsAt, shownStopsAt: new Date(shownMs).toISOString(), addedMinutes: EXTEND_MINUTES });
 });
 
 // Ending a walk by hand: it ended when End Walk was tapped (endTappedAt),
@@ -2216,7 +2456,12 @@ app.put('/api/walks/:id/end', (req, res) => {
   if (noteError) return res.status(400).json({ error: noteError });
   const walk = db.prepare('SELECT * FROM walks WHERE id = ?').get(id);
   if (!walk) return res.status(404).json({ error: 'Walk not found' });
-  if (walkAccessDenied(req, res, walk)) return;
+  // An End queued offline on a shared phone, sent after someone else signed
+  // in there: the walk's end_token (only ever given to the phone that
+  // started it) allows that one thing -- an End tap with no notes.
+  const byEndToken = !(req.me && walk.user_id === req.me.id) && req.body.finishLater === true && !notes
+    && endTokenMatches(walk.end_token, req.body.endToken);
+  if (!byEndToken && walkAccessDenied(req, res, walk)) return;
   const now = Date.now();
   const handEndLimit = Math.min(now, new Date(walkStopsAt(walk)).getTime());
   // finishLater: the app's End button. The walk ends now, and its end
@@ -2226,10 +2471,15 @@ app.put('/api/walks/:id/end', (req, res) => {
   // after it ended some other way) is not a hand end: the 409 below sends
   // the app to that walk's own end screen.
   const finishLater = req.body.finishLater === true;
+  // Times this phone recorded are on its own clock: moved onto the
+  // server's by how far apart the two are (X-Client-Now), so a phone running
+  // slow doesn't end a walk "before it started" or shorten it.
+  const clockOffset = clientClockOffsetMs(req);
+  const sentEndedAt = onServerClock(req.body.endedAt, clockOffset);
   // A tap "in the future" on a walk that's still going is a phone clock
   // running fast: it meant now, so the server's now it is (never refused --
   // End must always work). Hand-picked times in edits are still checked.
-  let sentEnd = req.body.endTappedAt;
+  let sentEnd = onServerClock(req.body.endTappedAt, clockOffset);
   if (sentEnd && !walk.ended_at) {
     const sentMs = new Date(sentEnd).getTime();
     if (Number.isFinite(sentMs) && sentMs > now) sentEnd = new Date(handEndLimit).toISOString();
@@ -2239,7 +2489,13 @@ app.put('/api/walks/:id/end', (req, res) => {
     if (!(finishLater && walk.ended_at)) return res.status(400).json({ error: tapped.error });
     tapped = null;
   }
-  const endedByHand = !walk.ended_at || (walk.auto_stopped && tapped && new Date(tapped.iso) < new Date(walk.ended_at));
+  // An End tapped before the time limit stopped the walk (sent late, e.g.
+  // from offline) still counts, but only while its end screen is waiting
+  // (wrap_up_pending): once the walker has saved it, a stray late tap can't
+  // rewrite the walk. It's recorded as an edit, and the note is kept.
+  const reEnding = !!walk.ended_at && !!walk.auto_stopped && !!walk.wrap_up_pending
+    && !!tapped && new Date(tapped.iso) < new Date(walk.ended_at);
+  const endedByHand = !walk.ended_at || reEnding;
   const wrappingUp = !endedByHand && !finishLater && walk.auto_stopped && walk.wrap_up_pending;
   if (!endedByHand && !wrappingUp) {
     return res.status(409).json({
@@ -2256,16 +2512,16 @@ app.put('/api/walks/:id/end', (req, res) => {
   let recordedEnd;
   if (endedByHand) {
     endedAt = tapped ? tapped.iso : new Date(handEndLimit).toISOString();
-    recordedEnd = endedAt;
+    recordedEnd = reEnding ? walk.ended_at : endedAt;
   } else {
     const daycation = walk.activity === 'daycation';
-    const closesMs = daycation ? Infinity : walkClosesMs(walk);
+    const closesMs = daycation ? Infinity : walkCutoffMs(walk);
     const maxMinutes = daycation ? DAYCATION_MINUTES : MAX_TOTAL_MINUTES;
     const latest = Math.min(now, new Date(walk.started_at).getTime() + maxMinutes * 60000, closesMs);
     // A walk can't run past closing, so "just now" (or any time) after it
     // means it ended at closing.
-    const sentMs = req.body.endedAt ? new Date(req.body.endedAt).getTime() : NaN;
-    const sent = Number.isFinite(sentMs) && sentMs > closesMs && closesMs <= now ? new Date(closesMs).toISOString() : req.body.endedAt;
+    const sentMs = sentEndedAt ? new Date(sentEndedAt).getTime() : NaN;
+    const sent = Number.isFinite(sentMs) && sentMs > closesMs && closesMs <= now ? new Date(closesMs).toISOString() : sentEndedAt;
     const picked = sent
       ? walkEndTime(sent, walk.started_at, latest, `${daycation ? 'Daycations' : 'Walks'} can't be longer than ${maxMinutes / 60} hours.`)
       : { iso: walk.ended_at };
@@ -2278,7 +2534,7 @@ app.put('/api/walks/:id/end', (req, res) => {
   const autoStopped = wrappingUp ? 1 : 0;
   // A note sent along is kept; ending without one (finishLater) keeps any
   // already there rather than blanking it.
-  const cleanNotes = notes ? tags.clean(String(notes).trim(), walk.dog_id) : (finishLater ? walk.notes : null);
+  const cleanNotes = notes ? tags.clean(String(notes).trim(), walk.dog_id) : (finishLater || reEnding ? walk.notes : null);
 
   db.prepare(`
     UPDATE walks SET ended_at = ?, duration_seconds = ?, notes = ?, auto_stopped = ?, wrap_up_pending = ?,
@@ -2289,8 +2545,14 @@ app.put('/api/walks/:id/end', (req, res) => {
   `).run(endedAt, durationSeconds, cleanNotes, autoStopped, finishLater ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, edited ? 1 : 0, recordedEnd, id);
 
   const levelUp = !!req.me && walk.user_id === req.me.id && levelUpOffer(req.me.id);
+  if (byEndToken) return res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped, levelUpOffer: false });
   res.json({ walkId: id, endedAt, durationSeconds, edited, autoStopped: !!autoStopped, levelUpOffer: levelUp });
 });
+
+function endTokenMatches(stored, sent) {
+  if (typeof stored !== 'string' || typeof sent !== 'string' || !stored || sent.length !== stored.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(stored), Buffer.from(sent));
+}
 
 // Correct a walk's recorded times after the fact (you forgot to end it
 // promptly, mis-tapped, etc). Only touches fields actually sent.
@@ -2354,10 +2616,12 @@ app.put('/api/walks/:id', (req, res) => {
   // Switching what an open walk is mid-way: a daycation's 12 hours can't
   // turn into a walk that's already past a walk's limit.
   if (!walk.ended_at && activity !== walk.activity && Date.now() >= new Date(walkStopsAt({ ...walk, activity })).getTime()) {
-    return res.status(409).json({ error: `This has already gone past the time limit for a ${activity}. End it instead, then fix it in Stats if needed.` });
+    return res.status(409).json({ error: `This has already gone past the time limit for a ${activity}. End it instead, then fix it in Stats&Notes if needed.` });
   }
   if (timesChanged || activity !== walk.activity) {
-    const hoursError = walkHoursErrorFor(activity, startedAt, endedAt);
+    // The walk's own closing time (closes_at) only while it stays on its day.
+    const sameDay = walkHours.walkWindow(startedAt).dateKey === walkHours.walkWindow(walk.started_at).dateKey;
+    const hoursError = walkHoursErrorFor(activity, startedAt, endedAt, sameDay ? walk.closes_at : null);
     if (hoursError) return res.status(400).json({ error: hoursError });
   }
   if (timesChanged || activity !== walk.activity) {
@@ -2387,6 +2651,7 @@ app.put('/api/walks/:id', (req, res) => {
     id, startedAt, endedAt, location, notes, durationSeconds, activity, edited: timesChanged || !!walk.edited,
     stopsAt: running ? walkStopsAt(running) : undefined,
     closesAt: running ? closesAtFor(running) : undefined,
+    endsBy: running ? endsByFor(running) : undefined,
     levelUpOffer: wrapUpDone && !!req.me && walk.user_id === req.me.id ? levelUpOffer(req.me.id) : undefined
   });
 });
@@ -2459,6 +2724,8 @@ app.get('/api/walks', (req, res) => {
   const dogId = req.query.dogId ? parseInt(req.query.dogId, 10) : null;
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   const limit = clampLimit(req.query.limit, 1000);
+  // ?offset=N: the next page, for a history longer than one page (Stats).
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const conditions = [];
   const params = [];
   if (dogId) { conditions.push('w.dog_id = ?'); params.push(dogId); }
@@ -2474,8 +2741,8 @@ app.get('/api/walks', (req, res) => {
            d.name AS dog_name, d.photo_url, d.breed, d.species, d.tags,
            d.blue_markers, d.poo_status, d.star_flag, d.pb_flag
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
-    ${where} ORDER BY w.started_at DESC LIMIT ?
-  `).all(...params, limit);
+    ${where} ORDER BY w.started_at DESC, w.id DESC LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
   const pooAt = statsBreakdown.pooResolver(db, rows.map((r) => r.dog_id));
   rows.forEach((r) => {
     r.photo_url = cachedPhotoUrl(r.dog_id, r.photo_url);
@@ -2564,10 +2831,10 @@ app.put('/api/walks/:id/user', (req, res) => {
 // overall average otherwise (a cat volunteer never has a 'walk' row).
 //
 // ?species=dog|cat narrows everything to one species (anything else: both).
-// Breakdowns (statsBreakdown.js) ride along: bySpecies (always both, so the
-// app can show the split), byActivity, byPoo (dogs, POO as it was at the
-// time), byAge (kittens / adult cats), and shelterNow -- what's listed right
-// now and how many of those this volunteer engaged with today.
+// Breakdowns (statsBreakdown.js) ride along, for the chosen species only:
+// byActivity, byPoo (dogs, POO as it was at the time), byAge (kittens /
+// adult cats), and shelterNow -- what's listed right now and how many of
+// those this volunteer engaged with today.
 app.get('/api/stats', (req, res) => {
   const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
   if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -2582,7 +2849,7 @@ app.get('/api/stats', (req, res) => {
   const totals = db.prepare(`
     SELECT COUNT(*) AS totalWalks, COUNT(DISTINCT w.dog_id) AS uniqueDogs,
            COALESCE(SUM(w.duration_seconds), 0) AS totalSeconds,
-           COALESCE(AVG(CASE WHEN w.duration_seconds >= ${statsBreakdown.MIN_AVG_SECONDS} THEN w.duration_seconds END), 0) AS avgAllSeconds
+           COALESCE(AVG(CASE WHEN w.duration_seconds >= ${constants.MIN_AVG_SECONDS} THEN w.duration_seconds END), 0) AS avgAllSeconds
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE ${where}
   `).get(...params);
   // Averages (here and below) leave out anything under a minute: an
@@ -2597,7 +2864,7 @@ app.get('/api/stats', (req, res) => {
       SELECT COUNT(*) AS walkCount, COALESCE(AVG(w.duration_seconds), 0) AS avgSeconds
       FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
       WHERE w.ended_at IS NOT NULL AND w.user_id = ? AND ${kindSql} AND w.activity = 'walk'
-        AND w.duration_seconds >= ${statsBreakdown.MIN_AVG_SECONDS}
+        AND w.duration_seconds >= ${constants.MIN_AVG_SECONDS}
     `).get(userId, ...kinds);
     totals.avgSeconds = walkOnly.walkCount > 0 ? walkOnly.avgSeconds : totals.avgAllSeconds;
   }
@@ -2629,7 +2896,6 @@ app.get('/api/stats', (req, res) => {
   const pooAt = statsBreakdown.pooResolver(db, rows.map((r) => r.dog_id));
   const inFilter = rows.filter((r) => kinds.includes(r.species) && (!activity || r.activity === activity));
   const { byActivity, byPoo, byAge } = statsBreakdown.breakdown(inFilter, pooAt);
-  const { bySpecies } = statsBreakdown.breakdown(rows, pooAt);
 
   // Today in shelter time, including an engagement still under way.
   const todayKey = statsBreakdown.shelterDateKey(new Date().toISOString());
@@ -2638,7 +2904,7 @@ app.get('/api/stats', (req, res) => {
     .filter((r) => statsBreakdown.shelterDateKey(r.started_at) === todayKey).map((r) => r.dog_id));
   const shelterNow = statsBreakdown.shelterNow(db, filter, { isWalkable: walkableFor(req), walkedIds });
 
-  res.json({ species: filter, totals, perDog, byActivity, bySpecies, byPoo, byAge, shelterNow });
+  res.json({ species: filter, totals, perDog, byActivity, byPoo, byAge, shelterNow });
 });
 
 // ---- Manual scrape trigger ----
@@ -2744,13 +3010,12 @@ app.get('/uptime', (req, res) => {
 // The walker can add EXTEND_MINUTES at a time (before it stops) for a longer
 // walk. A walk the system ended is flagged auto_stopped, and is recorded as
 // running exactly to its limit -- not to whenever we noticed.
-const AUTO_STOP_MINUTES = 45; // walks, cuddles, play group (was 30 until 2026-11-06, owner)
-// Activities whose default limit isn't AUTO_STOP_MINUTES: matchmaking (meeting
-// a possible adopter) usually runs longer than a walk (owner, 2026-11-06).
-// +10 min and the 3-hour cap work the same way on top of it.
-const ACTIVITY_LIMIT_MINUTES = { matchmaking: 60 };
-const EXTEND_MINUTES = 10;
-const MAX_TOTAL_MINUTES = 180;
+// AUTO_STOP_MINUTES covers walks, cuddles and Playgroup. Activities whose
+// default limit isn't AUTO_STOP_MINUTES (ACTIVITY_LIMIT_MINUTES): matchmaking
+// (meeting a possible adopter) usually runs longer than a walk (owner,
+// 2026-11-06). +10 min and the 3-hour cap work the same way on top of it.
+// The numbers live in constants.js, shared with the app (GET /api/config).
+const { AUTO_STOP_MINUTES, ACTIVITY_LIMIT_MINUTES, EXTEND_MINUTES, MAX_TOTAL_MINUTES, DAYCATION_MINUTES } = constants;
 const WARN_MINUTES_BEFORE = 3;
 // How long a stopped walk keeps asking for its real end time when the app is
 // next opened. After that it keeps the time-limit end (fixable in Stats).
@@ -2758,40 +3023,94 @@ const WRAP_UP_HOURS = 12;
 // A daycation (the dog out with the volunteer for the day) is different:
 // it runs up to DAYCATION_MINUTES with no extending, no length alerts, and
 // isn't stopped at closing time (it still has to start during walking hours).
-const DAYCATION_MINUTES = 12 * 60;
 // Never past MAX_TOTAL_MINUTES: time added as one activity can't carry a
 // walk past the cap after switching to one with a longer default (a walk
 // extended to 3 hours, switched to matchmaking).
 const walkLimitMinutes = (w) => (w.activity === 'daycation'
   ? DAYCATION_MINUTES
   : Math.min(MAX_TOTAL_MINUTES, (ACTIVITY_LIMIT_MINUTES[w.activity] || AUTO_STOP_MINUTES) + (w.extend_minutes || 0)));
-// Closing time for the walk's day, in ms. Staff can move a day's closing
-// time while walks are out; one that started after the new closing time
-// isn't held to it (it would otherwise stop before it began).
+// The official closing time a walk is held to, in ms: the one in force when
+// it started (walks.closes_at). Staff changing that day's hours later never
+// ends or shortens a walk already out; a later closing time does apply. A
+// walk with no stored time (from before closes_at) uses the day's hours.
+// One that started after its closing time isn't held to it (it would
+// otherwise stop before it began).
 const walkClosesMs = (w) => {
-  const closesMs = walkHours.walkWindow(w.started_at).closesAt.getTime();
-  return closesMs > new Date(w.started_at).getTime() ? closesMs : Infinity;
+  const startMs = new Date(w.started_at).getTime();
+  const currentMs = walkHours.walkWindow(w.started_at).closesAt.getTime();
+  const storedMs = w.closes_at ? new Date(w.closes_at).getTime() : NaN;
+  const closesMs = Number.isFinite(storedMs) ? Math.max(storedMs, currentMs) : currentMs;
+  return closesMs > startMs ? closesMs : Infinity;
+};
+// What a new walk stores in walks.closes_at (null with no walking-hours limit).
+const closesAtToStore = (startedAt) => {
+  const ms = walkHours.walkWindow(startedAt).closesAt.getTime();
+  return ms >= 8.64e15 ? null : new Date(ms).toISOString();
+};
+// When a walk out at closing really stops: its closing time plus the quiet
+// CLOSING_GRACE_MINUTES (constants.js). Never shown: messages name the
+// official closing time (closesAtFor / closeLabelFor).
+const walkCutoffMs = (w) => {
+  const closesMs = walkClosesMs(w);
+  return closesMs === Infinity || closesMs >= 8.64e15 ? Infinity : closesMs + constants.CLOSING_GRACE_MINUTES * 60000;
+};
+// "7pm": the official closing time a walk is held to, for messages.
+const closeLabelFor = (w) => {
+  const closesMs = walkClosesMs(w);
+  if (closesMs === Infinity || closesMs >= 8.64e15) return walkHours.walkWindow(w.started_at).closeLabel;
+  return walkHours.fmtMinutes(walkHours.shelterClock(closesMs).minutes);
 };
 // Whichever comes first: the time limit, or closing time for walks (7pm
-// unless staff set other hours).
+// unless staff set other hours, plus the grace above).
 const walkStopsAt = (w) => {
   const limitMs = new Date(w.started_at).getTime() + walkLimitMinutes(w) * 60000;
   if (w.activity === 'daycation') return new Date(limitMs).toISOString();
-  return new Date(Math.min(limitMs, walkClosesMs(w))).toISOString();
+  return new Date(Math.min(limitMs, walkCutoffMs(w))).toISOString();
 };
-// Closing time for the walk's day, or null for a daycation (not held to it).
+// Official closing time for the walk, or null for a daycation (not held to
+// it). The app shows this one in its wording.
 const closesAtFor = (w) => {
   const closesMs = w.activity === 'daycation' ? Infinity : walkClosesMs(w);
   return closesMs === Infinity ? null : new Date(closesMs).toISOString();
 };
+// The latest end time the app's end-time picker allows for this walk
+// (closing plus the grace), or null for none. Not for wording.
+const endsByFor = (w) => {
+  const cutoffMs = w.activity === 'daycation' ? Infinity : walkCutoffMs(w);
+  return cutoffMs === Infinity ? null : new Date(cutoffMs).toISOString();
+};
 // Walking-hours check for a start/end pair; a daycation only has to start
-// during walking hours.
-const walkHoursErrorFor = (activity, startedAt, endedAt) =>
-  walkHours.walkHoursError(startedAt, activity === 'daycation' ? null : endedAt);
+// during walking hours. An end is allowed up to the walk's own closing time
+// (closes_at, when known) plus the grace.
+const walkHoursErrorFor = (activity, startedAt, endedAt, closesAt = null) => {
+  if (activity === 'daycation' || endedAt == null) return walkHours.walkHoursError(startedAt, null);
+  return walkHours.walkHoursError(startedAt, endedAt, {
+    graceMinutes: constants.CLOSING_GRACE_MINUTES,
+    closesAt: closesAt ? new Date(closesAt) : null
+  });
+};
 
 // Phones and the server can disagree on the time by a little, so an end
 // time up to this far in the future is taken as "now", not rejected.
 const CLOCK_SKEW_MS = 2 * 60000;
+// How far the phone's clock is behind (+) or ahead (-) of the server's, from
+// the X-Client-Now header (the phone's Date.now() as it sent the request).
+// Under 15 s is network delay, not a wrong clock; over a day is nonsense.
+const CLIENT_CLOCK_MIN_OFFSET_MS = 15000;
+const CLIENT_CLOCK_MAX_OFFSET_MS = 24 * 3600000;
+function clientClockOffsetMs(req) {
+  const raw = req.headers['x-client-now'];
+  if (typeof raw !== 'string' || !/^\d{12,14}$/.test(raw)) return 0;
+  const offset = Date.now() - Number(raw);
+  return Math.abs(offset) >= CLIENT_CLOCK_MIN_OFFSET_MS && Math.abs(offset) <= CLIENT_CLOCK_MAX_OFFSET_MS ? offset : 0;
+}
+// A time the phone recorded, moved onto the server's clock. Anything that
+// isn't a time is passed on unchanged for the usual checks to refuse.
+function onServerClock(value, offsetMs) {
+  if (!offsetMs || typeof value !== 'string') return value;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? new Date(ms + offsetMs).toISOString() : value;
+}
 // Checks an end time the walker sent: after the start, and no later than
 // latestMs (now, or an earlier cap such as the walk's limit, which gets
 // tooLateError). Returns { iso } or { error }.
@@ -2841,7 +3160,7 @@ function walkLengthError(activity, startedAt, endedAt) {
 
 // Another walk of this walker's, or with this dog, at the same time (one
 // still going counts up to now). Times are compared with julianday() so
-// older rows stored in other formats still compare correctly. Play group is
+// older rows stored in other formats still compare correctly. Playgroup is
 // the one shared activity: several walkers can log the same dog's session.
 const overlappingWalk = db.prepare(`
   SELECT w.id, w.user_id, d.name AS dog_name FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id
@@ -2863,9 +3182,9 @@ function walkOverlapError({ userId, dogId, activity, startedAt, endedAt, exceptI
 // A length alert more than this late (the walker added it partway through
 // the walk, or the server was down) is skipped rather than sent stale.
 const ALERT_GRACE_MS = 2 * 60000;
-const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at play group', daycation: 'on a daycation' };
+const ACTIVITY_VERBS = { walk: 'walking', cuddle: 'cuddling', matchmaking: 'at matchmaking', playgroup: 'at playgroup', daycation: 'on a daycation' };
 // What notifications call each activity ("End cuddle", "Cuddles stop after...").
-const ACTIVITY_NOUNS = { walk: 'walk', cuddle: 'cuddle', matchmaking: 'matchmaking session', playgroup: 'play group', daycation: 'daycation' };
+const ACTIVITY_NOUNS = { walk: 'walk', cuddle: 'cuddle', matchmaking: 'matchmaking session', playgroup: 'playgroup', daycation: 'daycation' };
 const activityNoun = (activity) => ACTIVITY_NOUNS[activity] || 'walk';
 // Buttons on the walk alerts. Android shows them (iPhone ignores them, so the
 // tap-to-open path must still do everything); sw.js handles each one.
@@ -2879,7 +3198,7 @@ const walkAlertActions = (w) => ({
 
 function enforceWalkLimits() {
   const open = db.prepare(`
-    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, w.alerted_minutes, w.location, w.activity,
+    SELECT w.id, w.user_id, w.started_at, w.extend_minutes, w.warned, w.alerted_minutes, w.location, w.activity, w.closes_at,
            d.name AS dog_name, d.kennel_location, u.walk_alert_minutes
     FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id LEFT JOIN users u ON u.id = w.user_id
     WHERE w.ended_at IS NULL
@@ -2909,7 +3228,7 @@ function enforceWalkLimits() {
     }
     if (now >= stopsAt) {
       const seconds = Math.round((stopsAt - startedMs) / 1000);
-      const atClosing = w.activity !== 'daycation' && stopsAt === walkClosesMs(w);
+      const atClosing = w.activity !== 'daycation' && stopsAt === walkCutoffMs(w);
       db.prepare('UPDATE walks SET ended_at = ?, duration_seconds = ?, auto_stopped = 1, wrap_up_pending = 1 WHERE id = ? AND ended_at IS NULL')
         .run(new Date(stopsAt).toISOString(), seconds, w.id);
       console.warn(`[server] auto-stopped walk ${w.id} after ${Math.round(seconds / 60)} min${atClosing ? ' (closing time)' : ''}`);
@@ -2917,7 +3236,7 @@ function enforceWalkLimits() {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || `Your ${activityNoun(w.activity)}`}: stopped automatically`,
           body: atClosing
-            ? `The shelter closes at ${walkHours.walkWindow(w.started_at).closeLabel}. Open the app to say when it really ended.`
+            ? `The shelter closes at ${closeLabelFor(w)}. Open the app to say when it really ended.`
             : w.activity === 'daycation'
               ? `Daycations stop after ${DAYCATION_MINUTES / 60} hours. Open the app to say when it really ended.`
               : `A ${activityNoun(w.activity)} stops after ${walkLimitMinutes(w)} minutes. Open the app to say when it really ended.`,
@@ -2925,12 +3244,17 @@ function enforceWalkLimits() {
           tag: WALK_PUSH_TAG
         }).catch(() => {});
       }
-    } else if (!w.warned && stopsAt - now <= WARN_MINUTES_BEFORE * 60000) {
+    } else if (!w.warned && Math.min(stopsAt, w.activity === 'daycation' ? Infinity : walkClosesMs(w)) - now <= WARN_MINUTES_BEFORE * 60000) {
+      // Held to closing: warned before the official closing time, the one
+      // the walker knows about (the grace after it is never mentioned).
+      const byClosing = w.activity !== 'daycation' && stopsAt === walkCutoffMs(w);
       db.prepare('UPDATE walks SET warned = 1 WHERE id = ?').run(w.id);
       if (w.user_id && push.hasPref(w.user_id, 'walk_started')) {
         push.sendPushToUser(w.user_id, {
           title: `${w.dog_name || `Your ${activityNoun(w.activity)}`}: ${WARN_MINUTES_BEFORE} minutes left`,
-          body: w.activity === 'daycation' ? 'The daycation will stop on its own. End it when the dog is back.' : `Add more time, or the ${activityNoun(w.activity)} will stop on its own.`,
+          body: w.activity === 'daycation' ? 'The daycation will stop on its own. End it when the dog is back.'
+            : byClosing ? `The shelter closes at ${closeLabelFor(w)}. End it when you're done.`
+              : `Add more time, or the ${activityNoun(w.activity)} will stop on its own.`,
           url: '/',
           tag: WALK_PUSH_TAG,
           ...walkAlertActions(w)
@@ -2947,6 +3271,12 @@ try { enforceWalkLimits(); } catch (err) { console.error('[server] walk limit sw
 // it needs enforceWalkLimits, which isn't defined until just above this line.
 staffDashboard.register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, ACTIVITY_VERBS, ACTIVITIES });
 shelterSchedule.register(app, { db, push });
+// Walks still out from before walks.closes_at existed: hold them to the
+// closing time in force now (the staff hours are loaded just above).
+for (const w of db.prepare('SELECT id, started_at FROM walks WHERE ended_at IS NULL AND closes_at IS NULL').all()) {
+  const closesAt = closesAtToStore(w.started_at);
+  if (closesAt) db.prepare('UPDATE walks SET closes_at = ? WHERE id = ?').run(closesAt, w.id);
+}
 
 // The module system: GET/PUT /api/modules (the Settings tab's backend), then
 // every discovered module's own register(app, ctx), regardless of its
@@ -3021,5 +3351,5 @@ if (!process.env.DISABLE_SCRAPER) {
     }
     scrapeInFlight = true;
     runScrape().catch((err) => console.error('[scraper] scheduled run failed:', err)).finally(() => { scrapeInFlight = false; });
-  }, { timezone: 'America/New_York' }); // the shelter's local time, not the server's - matters since the server runs in UTC
+  }, { timezone: constants.SHELTER_TZ }); // the shelter's local time, not the server's - matters since the server runs in UTC
 }

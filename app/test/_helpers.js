@@ -130,4 +130,15 @@ async function boot(port, t, env) {
   throw err;
 }
 
-module.exports = { startServer, isolateEnv, tempDirs, freePort, APP_DIR };
+// A shelter-day key (YYYY-MM-DD) `days` days from today, by the test clock.
+// Use it instead of a typed-out future date, which turns into "already
+// passed" once the calendar catches up (audit3; CI runs npm run test:future).
+function shelterDayFromToday(days = 0) {
+  const { SHELTER_TZ } = require('../src/constants');
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: SHELTER_TZ });
+  // Noon UTC of today's shelter date, then whole days: no DST edge in reach.
+  const noon = Date.parse(`${fmt.format(new Date())}T12:00:00Z`);
+  return new Date(noon + days * 86400000).toISOString().slice(0, 10);
+}
+
+module.exports = { startServer, isolateEnv, tempDirs, freePort, APP_DIR, shelterDayFromToday };

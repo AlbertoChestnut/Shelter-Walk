@@ -23,6 +23,13 @@ const PEPPER = process.env.EMAIL_HASH_PEPPER || DEV_PEPPER;
 if (PEPPER === DEV_PEPPER && process.env.NODE_ENV === 'production') {
   throw new Error('[email-hash] EMAIL_HASH_PEPPER is not set. Refusing to start in production without it.');
 }
+// The example file's placeholder, or anything short enough to guess, would
+// be just as permanent (it can never be changed later), so a new install
+// stops here instead of starting on it.
+const MIN_PEPPER_LENGTH = 32;
+if (process.env.NODE_ENV === 'production' && (PEPPER.trim() === 'change-me' || PEPPER.length < MIN_PEPPER_LENGTH)) {
+  throw new Error(`[email-hash] EMAIL_HASH_PEPPER is the example value or shorter than ${MIN_PEPPER_LENGTH} characters. Generate one with \`openssl rand -hex 32\` before the first start in production.`);
+}
 
 function hashEmail(email) {
   return crypto.createHmac('sha256', PEPPER).update(String(email || '').trim().toLowerCase()).digest('hex');

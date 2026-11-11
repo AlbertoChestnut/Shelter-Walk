@@ -124,11 +124,11 @@
     statsBreakdownScope: 'lifetime', // 'lifetime' | 'today' | 'day' -- which stats view a By Activity / Avg chart / By Dog drill-down was opened from
     togetherByActivity: false, // whether Together is showing its "By Activity" breakdown screen
     togetherAvgChart: null, // dateKey of the day Together's "Average engagement" bar chart is showing, if any (today only)
-    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes) | 'playgroup' (play group notes) | 'shelter' (listing trends)
+    statsScope: 'mine', // 'mine' | 'together' (shelter-wide, anonymous) | 'notes' (every dog's notes) | 'playgroup' (playgroup notes) | 'shelter' (listing trends)
     shelterRange: 30, // days shown on the Shelter trend charts (0 = all)
     notesQuery: '', // search text on the all-notes view
     notesMine: false, // all-notes view narrowed to my private + my walk notes
-    pgStatsQuery: '', // search text on the Stats play group notes view
+    pgStatsQuery: '', // search text on the Stats playgroup notes view
     togetherDay: null, // dateKey of the Together day being viewed, if any
     statsRange: 'today', // 'today' | 'lifetime' -- which Stats tiles are shown
     audit: { location: '', dog: null, loading: false, pendingMarkers: null, recent: [], scanned: {}, scanError: '' }
@@ -190,7 +190,7 @@
     banner.id = 'newBuildBanner';
     banner.className = 'new-build-banner';
     banner.setAttribute('role', 'status');
-    banner.innerHTML = 'A new version is ready, reload when you finish. <button type="button" class="btn small">Reload</button>';
+    banner.innerHTML = '<span>A new version is ready. Reload when you\'re done.</span> <button type="button" class="btn">Reload</button>';
     banner.querySelector('button').addEventListener('click', () => window.location.reload());
     document.body.prepend(banner);
   }
@@ -212,15 +212,31 @@
   // ever failing it, which used to leave a screen on "Loading..." forever)
   // and network failures come back as plain-English errors instead of the
   // browser's "Failed to fetch".
+  // How far this phone's clock is off the server's (audit 3): + when the
+  // phone is behind. From each live answer's X-Server-Now (never the service
+  // worker's saved copy); under 15 s is network delay, so 0. The walk timer,
+  // its countdown and the auto-stop check run on serverNow().
+  let serverClockOffsetMs = 0;
+  const serverNow = () => Date.now() + serverClockOffsetMs;
+  function noteServerClock(res, sentAt) {
+    if (res.headers.get('X-SW-Stale') === '1') return;
+    const server = Number(res.headers.get('X-Server-Now'));
+    if (!Number.isFinite(server) || server <= 0) return;
+    const off = server - (sentAt + Date.now()) / 2;
+    serverClockOffsetMs = Math.abs(off) >= 15000 && Math.abs(off) <= 24 * 3600000 ? Math.round(off) : 0;
+  }
   async function api(path, opts = {}) {
     const { timeout = 30000, ...fetchOpts } = opts;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
+    const sentAt = Date.now();
     let res;
     try {
+      // X-Client-Now: this phone's clock, so the server can turn times this
+      // phone recorded (an End tap) into its own clock (clientClockOffsetMs).
       res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json' },
         ...fetchOpts,
+        headers: { 'Content-Type': 'application/json', ...(fetchOpts.headers || {}), 'X-Client-Now': String(Date.now()) },
         signal: controller.signal
       });
     } catch (err) {
@@ -241,6 +257,7 @@
       toast("Can't reach the server right now: showing saved data");
     }
     noticeServerBuild(res);
+    noteServerClock(res, sentAt);
     const isJson = res.headers.get('content-type')?.includes('application/json');
     const body = isJson ? await res.json().catch(() => null) : null;
     if (!res.ok) {
@@ -298,7 +315,11 @@
 
   // The shelter's listing writes ages as "4 Months", "2 Years": units read
   // lower-case in a sentence ("4 months").
-  const fmtAge = (age) => String(age || '').replace(/\b(Years?|Months?|Weeks?|Days?)\b/g, (u) => u.toLowerCase());
+  // A count of 1 takes the singular, whatever the listing wrote ("1 Years"
+  // -> "1 year").
+  const fmtAge = (age) => String(age || '')
+    .replace(/\b(Years?|Months?|Weeks?|Days?)\b/gi, (u) => u.toLowerCase())
+    .replace(/\b1\s+(year|month|week|day)s\b/g, '1 $1');
 
   // A time-of-day window's short key ("7-10a", "10-1p") as people read it:
   // "7–10 am", "10 am–1 pm".
@@ -315,7 +336,40 @@
   // Every date and clock time in the app is the shelter's, never the
   // device's: "today" has to agree with the server (which counts days in
   // America/New_York) even on a phone still set to another time zone.
-  const SHELTER_TZ = 'America/New_York';
+  // ---- eng (audit2): numbers shared with the server ----
+  // Fallback copies of GET /api/config (src/constants.js); init() replaces
+  // them with the live values, so an app cached by the service worker can't
+  // run on old limits. test/audit2-eng.test.js fails CI if they drift.
+  const SHARED_CONFIG = {
+    shelterTz: 'America/New_York',
+    slots: [
+      { label: '7-10a', from: 7, to: 10 },
+      { label: '10-1p', from: 10, to: 13 },
+      { label: '1-4p', from: 13, to: 16 },
+      { label: '4-7p', from: 16, to: 19.25 }
+    ],
+    autoStopMinutes: 45,
+    activityLimitMinutes: { matchmaking: 60 },
+    extendMinutes: 10,
+    maxTotalMinutes: 180,
+    daycationMinutes: 720,
+    minAvgSeconds: 60,
+    roundSeconds: 300
+  };
+  // In place, so WALK_SLOTS (the same array) follows. The time zone stays:
+  // formatters below are built from it once.
+  function applySharedConfig(c) {
+    if (!c || typeof c !== 'object') return;
+    for (const k of ['autoStopMinutes', 'extendMinutes', 'maxTotalMinutes', 'daycationMinutes', 'minAvgSeconds', 'roundSeconds']) {
+      if (Number.isFinite(c[k])) SHARED_CONFIG[k] = c[k];
+    }
+    if (c.activityLimitMinutes && typeof c.activityLimitMinutes === 'object') SHARED_CONFIG.activityLimitMinutes = { ...c.activityLimitMinutes };
+    if (Array.isArray(c.slots) && c.slots.length) SHARED_CONFIG.slots.splice(0, SHARED_CONFIG.slots.length, ...c.slots);
+  }
+  // Default time limit of an activity, in minutes (server.js walkLimitMinutes).
+  const activityLimitMinutes = (activity) => (activity === 'daycation' ? SHARED_CONFIG.daycationMinutes
+    : (SHARED_CONFIG.activityLimitMinutes[activity] || SHARED_CONFIG.autoStopMinutes));
+  const SHELTER_TZ = SHARED_CONFIG.shelterTz;
   const shelterPartsFmt = new Intl.DateTimeFormat('en-US', {
     timeZone: SHELTER_TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
@@ -347,9 +401,23 @@
   }
   const shelterHour = (iso) => shelterParts(iso).hh;
 
+  // One clock style everywhere, single times and ranges alike: "6:09 pm"
+  // (audit 3; it used to be the phone's own "6:09 PM" next to "5:04–5:11 pm").
   function fmtClock(iso) {
-    const d = iso ? new Date(iso) : new Date();
-    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: SHELTER_TZ });
+    const p = shelterParts(iso ? new Date(iso) : new Date());
+    return `${p.hh % 12 || 12}:${pad2(p.mm)} ${p.hh < 12 ? 'am' : 'pm'}`;
+  }
+  // A start–end range in the same style as the session labels ("4–7 pm"),
+  // for lists that mix the two: "5:50–6:01 pm", "11:50 am–12:10 pm".
+  function fmtClockRange(startIso, endIso) {
+    const part = (iso) => {
+      const p = shelterParts(iso);
+      return { t: `${p.hh % 12 || 12}:${pad2(p.mm)}`, sfx: p.hh < 12 ? 'am' : 'pm' };
+    };
+    const a = part(startIso);
+    if (!endIso) return `${a.t} ${a.sfx}`;
+    const b = part(endIso);
+    return a.sfx === b.sfx ? `${a.t}–${b.t} ${b.sfx}` : `${a.t} ${a.sfx}–${b.t} ${b.sfx}`;
   }
 
   function dateKey(iso) {
@@ -422,7 +490,7 @@
     // dog from before the lettered system existed.
     orderedBlueMarkers(dog.blueMarkers).forEach((m) => {
       const cls = m === 'blue_evo' ? 'marker-dot blue rect' : 'marker-dot blue';
-      html += `<span class="${cls}" title="${esc(BLUE_MARKER_NAMES[m] || 'Behavior marker')}">${BLUE_MARKER_LETTERS[m] || ''}</span>`;
+      html += `<span class="${cls}" title="${esc(BLUE_MARKER_NAMES[m] || 'Behavior sticker')}">${BLUE_MARKER_LETTERS[m] || ''}</span>`;
     });
     // POO is a strict single-select: plain OR priority, never both shown —
     // no longer implies the other.
@@ -468,7 +536,7 @@
       isPendingAdoption: !!dog.isPendingAdoption,
       isHistorical: !!isHistorical
     }));
-    return `<span class="marker-badges-toggle" data-dog-info="${payload}">${html}</span>`;
+    return `<span class="marker-badges-toggle" data-dog-info="${payload}" role="button" tabindex="0" aria-label="${esc(dog.name ? `What ${dog.name}'s stickers mean` : 'What these stickers mean')}">${html}</span>`;
   }
 
   // Full icon → meaning breakdown for a dog's active markers, shown on tap
@@ -479,7 +547,7 @@
     const rows = [];
     orderedBlueMarkers(dog.blueMarkers).forEach((m) => {
       const cls = m === 'blue_evo' ? 'marker-dot blue rect' : 'marker-dot blue';
-      rows.push({ icon: `<span class="${cls}">${BLUE_MARKER_LETTERS[m] || ''}</span>`, name: BLUE_MARKER_NAMES[m] || 'Behavior marker', key: m });
+      rows.push({ icon: `<span class="${cls}">${BLUE_MARKER_LETTERS[m] || ''}</span>`, name: BLUE_MARKER_NAMES[m] || 'Behavior sticker', key: m });
     });
     if (dog.pooStatus === 'priority') rows.push({ icon: `<span class="marker-dot poo-priority">${ASTERISK_SVG}</span>`, name: 'High priority POO dog - first out in the morning, last out in the evening', key: 'poo_priority' });
     else if (dog.pooStatus === 'poo') rows.push({ icon: '<span class="marker-dot poo"></span>', name: 'POO dog: Potty Outside Only', key: 'poo' });
@@ -493,8 +561,10 @@
   }
 
   // "2 days ago" / "today" / "yesterday" for when a sticker was added.
+  // Whole days gone by, the same rule as the server's daysInShelter (the
+  // "60d" next to it), so the two never disagree by one.
   function daysAgoText(iso) {
-    const days = Math.max(0, Math.round((new Date() - new Date(iso)) / 86400000));
+    const days = Math.max(0, Math.floor((new Date() - new Date(iso)) / 86400000));
     if (days === 0) return 'today';
     if (days === 1) return 'yesterday';
     return `${days} days ago`;
@@ -540,7 +610,7 @@
   // the "added" suffix instead of being left off the list.
   function markerBreakdownHtml(dog) {
     const rows = markerBreakdownRows(dog, dog.isHistorical);
-    if (!rows.length) return '<p class="small muted">No behavior markers set.</p>';
+    if (!rows.length) return '<p class="small muted">No behavior stickers set.</p>';
     const dates = dog.stickerDates || {};
     return `<ul class="marker-breakdown-list">${rows.map((r) => {
       const addedAt = r.key && dates[r.key];
@@ -628,11 +698,11 @@
     return !!e.target.closest('.marker-badges-toggle, button, a, .edited-badge, input, select, textarea, label');
   }
 
-  // Names the shelter used before renaming a dog: shown small under the
+  // Names the shelter used before renaming a dog: shown under the
   // current name, and searching for one still finds the dog.
   function akaHtml(dog, extraClass) {
     const names = (dog && dog.previousNames) || [];
-    return names.length ? `<p class="dog-aka${extraClass ? ' ' + extraClass : ''}">aka ${esc(names.join(', '))}</p>` : '';
+    return names.length ? `<p class="dog-aka${extraClass ? ' ' + extraClass : ''}">aka <span class="aka-names">${esc(names.join(', '))}</span></p>` : '';
   }
   // q is already trimmed and lowercased.
   function dogNameMatches(dog, q) {
@@ -713,7 +783,7 @@
       // Your own show their times; anyone else's only the walk window and
       // a length to the nearest 5 minutes (the server sends no more).
       const whenText = (w) => (w.mine
-        ? `${fmtClock(w.startedAt)} – ${fmtClock(w.endedAt)} · ${fmtDuration(w.durationSeconds)}`
+        ? `${fmtClockRange(w.startedAt, w.endedAt)} · ${fmtDuration(w.durationSeconds)}`
         : `${WALK_SLOTS[w.slot] ? fmtSlotLabel(WALK_SLOTS[w.slot].label) : 'Outside walk hours'} · ${roundedLength(w.durationSeconds)}`);
       const daysHtml = Array.from(days.entries()).map(([key, dayWalks]) => `
         <p class="small walk-history-day">${fmtDayHeading(key)}</p>
@@ -766,7 +836,7 @@
     const popup = document.getElementById('markerInfoPopup');
     const content = document.getElementById('markerInfoPopupContent');
     if (!popup || !content) return;
-    const title = `${esc(dog.name)}'s markers`;
+    const title = `${esc(dog.name)}'s stickers`;
     const guideLinkHtml = `<p class="small" style="margin:10px 0 0;"><a href="#" id="markerGuideLink">See what every sticker means in the Guide</a></p>`;
     const wireGuideLink = () => {
       document.getElementById('markerGuideLink').addEventListener('click', async (e) => {
@@ -807,7 +877,7 @@
       `;
       wireGuideLink();
     } catch (err) {
-      content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="small muted">Couldn't load ${esc(dog.name)}'s markers: ${esc(err.message)}</p>`;
+      content.innerHTML = `<h3 style="margin-top:0;">${title}</h3><p class="small muted">Couldn't load ${esc(dog.name)}'s stickers: ${esc(err.message)}</p>`;
     }
   }
   document.getElementById('closeMarkerInfoPopupBtn')?.addEventListener('click', () => {
@@ -944,16 +1014,19 @@
   // the same reason reads the same way everywhere, including the hard
   // too-young block, which has its own badge styling but the same wording.
   function notEligibleReasonText(dog) {
+    return `Not eligible: ${notEligibleWhy(dog)}`;
+  }
+  function notEligibleWhy(dog) {
     let why;
     switch (dog.notEligibleReason) {
       case 'too_young':
         why = `Too young to walk${dog.age ? ` (${fmtAge(dog.age)})` : ''}`;
         break;
       case 'evo_restricted':
-        why = 'Experienced Volunteers Only';
+        why = 'Experienced volunteers only (EVO)';
         break;
       case 'blue_restricted':
-        why = 'Behavior marker not cleared for your level';
+        why = 'Behavior sticker not cleared for your level';
         break;
       case 'pb_restricted':
         why = 'Potty break only (PB), not cleared for your level';
@@ -978,7 +1051,25 @@
       default:
         why = 'cannot walk right now';
     }
-    return `Not eligible: ${why}`;
+    return why;
+  }
+
+  // The eligibility status row, on the Available card and the scan screen:
+  // one solid strip that fits the card (no pill floating on a see-through
+  // card over the stripes). Four looks:
+  //   eligible  green pill, as before;
+  //   block     red tint, "Not eligible" + why (Start is disabled);
+  //   caution   amber tint, listed as in foster: not a block, Start only asks
+  //             to check the kennel card, so it never says "Not eligible";
+  //   hard      solid red, too young (no exceptions).
+  // `eligibleText` is the green pill's wording (shorter on the cards).
+  function eligibilityStatusHtml(dog, { eligibleText = 'Eligible ✓' } = {}) {
+    if (!speciesOf(dog).levelRules) return ''; // any volunteer may visit any of them
+    const row = (kind, icon, title, why) => `<div class="elig-status elig-${kind}"><span class="elig-icon" aria-hidden="true">${icon}</span><span class="elig-text"><strong>${esc(title)}</strong>${why ? `<span class="elig-why">${esc(why)}</span>` : ''}</span></div>`;
+    if (dog.tooYoung) return row('hard', '🚫', 'Not eligible', notEligibleWhy(dog));
+    if (dog.eligible) return `<span class="badge eligible">${esc(eligibleText)}</span>`;
+    if (dog.notEligibleReason === 'in_foster') return row('caution', '⚠️', notEligibleWhy(dog), 'Start asks you to check the kennel card');
+    return row('block', '⛔', 'Not eligible', notEligibleWhy(dog));
   }
 
   // What a volunteer can do with a dog. All of them are timed and count
@@ -989,42 +1080,78 @@
     walk: { emoji: '🚶', label: 'Walk', noun: 'walk', out: 'Currently being walked by' },
     cuddle: { emoji: '🤗', label: 'Cuddle', noun: 'cuddle', out: 'Currently cuddling with' },
     matchmaking: { emoji: '💞', label: 'Matchmaking', noun: 'matchmaking session', out: 'Currently at matchmaking with' },
-    // countNoun: the word when counting ("26 play group sessions", not "26 play groups").
-    playgroup: { emoji: '🥎', label: 'Play group', noun: 'play group', countNoun: 'play group session', out: 'Currently at play group with' },
+    // countNoun: the word when counting ("26 playgroup sessions", not "26 playgroups").
+    playgroup: { emoji: '🥎', label: 'Playgroup', noun: 'playgroup', countNoun: 'playgroup session', out: 'Currently at playgroup with' },
     daycation: { emoji: '🚗', label: 'Daycation', noun: 'daycation', out: 'Currently on a daycation with' }
   };
-  const DAYCATION_HOURS = 12;
   // Longest an activity can be recorded as, in hours, when saying when it ended.
-  const maxActivityHours = (activity) => (activity === 'daycation' ? DAYCATION_HOURS : 3);
-  const usualActivity = () => (ACTIVITIES[state.currentUser.defaultActivity] ? state.currentUser.defaultActivity : 'walk');
-  // "Make this my usual" link shown under an activity picker whenever the
-  // picked activity isn't the walker's usual one (same setting as Settings).
-  function syncMakeUsualBtn(btn, activity) {
-    if (!btn) return;
-    const a = activityInfo(activity);
-    btn.dataset.activity = activity;
-    btn.textContent = `Make ${a.emoji} ${a.label} my usual activity`;
-    btn.classList.toggle('hidden', activity === usualActivity());
+  const maxActivityHours = (activity) => (activity === 'daycation' ? SHARED_CONFIG.daycationMinutes : SHARED_CONFIG.maxTotalMinutes) / 60;
+  // One default per species (audit 3): defaultActivity is the dogs',
+  // defaultActivityCat the cats' (null = the cats' first activity), so a
+  // "both" volunteer's Matchmaking for cats never makes every dog matchmaking.
+  // Any other species uses the dogs' when it can, else its own first one.
+  const DEFAULT_KEY = { dog: 'defaultActivity', cat: 'defaultActivityCat' };
+  const defaultKeyFor = (speciesKey) => DEFAULT_KEY[speciesKey] || 'defaultActivity';
+  function usualActivity(speciesKey = 'dog') {
+    const allowed = speciesInfo(speciesKey).activities || Object.keys(ACTIVITIES);
+    const own = state.currentUser[defaultKeyFor(speciesKey)];
+    if (ACTIVITIES[own] && allowed.includes(own)) return own;
+    return allowed.includes('walk') ? 'walk' : allowed[0];
   }
-  function wireMakeUsualBtn(btn) {
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const activity = btn.dataset.activity;
-      btn.disabled = true;
-      try {
-        const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ defaultActivity: activity }) });
-        state.currentUser.defaultActivity = updated.defaultActivity;
-        const a = activityInfo(updated.defaultActivity);
-        toast(`${a.emoji} ${a.label} is now your usual activity`);
-        syncMakeUsualBtn(btn, activity);
-      } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
+  // Every picker of the CURRENT activity (the start screens, the one in
+  // progress) works the same: tap a chip to switch just this one, tap the
+  // chip that's already picked again (a double tap does both) to also make
+  // it your usual -- the same setting as Settings. The chips say so: the
+  // usual one is labelled "Default", and a picked one that isn't says
+  // "Tap again to set as default" (plus a toast on the tap that picked it).
+  const usualFor = (dog) => (dog ? usualActivityFor(dog) : usualActivity());
+  function syncActivityChips(row, picked, dog) {
+    if (!row) return;
+    const usual = usualFor(dog);
+    row.querySelectorAll('[data-activity]').forEach((chip) => {
+      const a = activityInfo(chip.dataset.activity);
+      const key = chip.dataset.activity;
+      const sub = key === usual ? 'Default' : key === picked ? 'Tap again to set as default' : '';
+      chip.classList.toggle('active', key === picked);
+      chip.innerHTML = `<span class="chip-main">${a.emoji} ${a.label}</span>${sub ? `<span class="chip-sub">${sub}</span>` : ''}`;
     });
+  }
+  // The toast for a tap that picked an activity just for this one.
+  function pickedActivityToast(activity, dog, lead) {
+    const a = activityInfo(activity);
+    toast(activity === usualFor(dog)
+      ? `${lead} ${a.emoji} ${a.label}`
+      : `${lead} ${a.emoji} ${a.label} for this one. Tap it again to set it as your default.`);
+  }
+  async function makeUsualActivity(activity, row, dog) {
+    if (activity === usualFor(dog)) return;
+    // Only this species' default: a cat's chip sets the cats' one.
+    const speciesKey = (dog && dog.species) || 'dog';
+    const field = defaultKeyFor(speciesKey);
+    try {
+      const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ [field]: activity }) });
+      state.currentUser[field] = updated[field];
+      const a = activityInfo(updated[field]);
+      const both = prefSpeciesKeys().length > 1;
+      toast(`${a.emoji} ${a.label} is now your default activity${both ? ` for ${speciesInfo(speciesKey).plural.toLowerCase()}` : ''}`);
+      syncActivityChips(row, activity, dog);
+    } catch (err) { toast(err.message, 'error'); }
   }
   // keys: which activities to offer (an animal's species allows only some).
   function activityChipsHtml(selected, keys = Object.keys(ACTIVITIES)) {
     return keys.filter((key) => ACTIVITIES[key]).map((key) => {
       const a = ACTIVITIES[key];
-      return `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}">${a.emoji} ${a.label}</button>`;
+      return `<button type="button" class="btn small-btn filter-chip ${key === selected ? 'active' : ''}" data-activity="${key}"><span class="chip-main">${a.emoji} ${a.label}</span></button>`;
+    }).join('');
+  }
+  // The default-activity chips (Settings, onboarding): one row per species
+  // the volunteer works with, labelled when there's more than one.
+  function defaultActivityRowsHtml(speciesKeys) {
+    const many = speciesKeys.length > 1;
+    return speciesKeys.map((k) => {
+      const info = speciesInfo(k);
+      const row = `<div class="marker-row activity-chips" data-species="${esc(k)}">${activityChipsHtml(usualActivity(k), info.activities)}</div>`;
+      return many ? `<p class="small muted default-activity-label">${info.emoji || ''} For ${esc(info.plural.toLowerCase())}</p>${row}` : row;
     }).join('');
   }
 
@@ -1038,6 +1165,11 @@
   const speciesTable = () => (state.currentUser && state.currentUser.species) || FALLBACK_SPECIES;
   const speciesInfo = (key) => speciesTable()[key] || speciesTable().dog;
   const speciesOf = (dog) => speciesInfo(dog && dog.species);
+  // Where one lives, in its own words: dogs have a kennel (in a wing), cats a
+  // condo (in a room). The picker label is the place you pick: "Kennel
+  // location" for dogs, the cats' "Room".
+  const kennelWordOf = (dog) => (speciesOf(dog).kennelLabel === 'Room' ? 'condo' : 'kennel');
+  const kennelPickLabel = (kind) => (kind && kind.kennelLabel && kind.kennelLabel !== 'Kennel wing' ? kind.kennelLabel : 'Kennel location');
   // Who this volunteer works with (Settings): 'dog', 'cat' or 'both'.
   const speciesPref = () => (state.currentUser && state.currentUser.speciesPref) || 'dog';
   const prefSpeciesKeys = () => (speciesPref() === 'both' ? Object.keys(speciesTable()) : [speciesPref()]);
@@ -1056,17 +1188,19 @@
     const kinds = [...new Set(keys)];
     return kinds.length === 1 ? (speciesInfo(kinds[0]).terms || DOG_TERMS) : ENGAGE_TERMS;
   }
-  // Labels for counts that cover EVERY activity (walks, cuddles, play
-  // groups...): dogs say "engagement", never "walked"/"walking", since a
+  // Labels for counts that cover EVERY activity (walks, cuddles,
+  // playgroups...): dogs say "engagement", never "walked"/"walking", since a
   // cuddle isn't a walk. Cats keep their own wording (they're never walked).
   // `avg` is for walkOnlyAvgSeconds, which is walks-only whenever there are walks.
-  function statWords(keys) {
+  // `n` (optional): { count, unique } -- the numbers the labels sit under,
+  // so a 1 reads "1 / Engagement", "1 / Cat cuddled", never "1 Cats".
+  function statWords(keys, n = {}) {
     const t = termsFor(keys);
-    const nouns = capFirst(nounFor(keys, true));
+    const nouns = capFirst(nounFor(keys, n.unique !== 1));
     if (t.verb !== 'walk') {
-      return { t, count: `Total ${t.nouns}`, unique: `${nouns} ${t.past}`, time: `Total time ${t.ing}`, avg: `Avg ${t.noun} length`, noun: t.noun, nounsWord: t.nouns };
+      return { t, count: n.count === 1 ? `Total ${t.noun}` : `Total ${t.nouns}`, unique: `${nouns} ${t.past}`, time: `Total time ${t.ing}`, avg: `Avg ${t.noun} length`, noun: t.noun, nounsWord: t.nouns };
     }
-    return { t, count: 'Engagements', unique: `${nouns} spent time with`, time: 'Total time together', avg: 'Avg walk length', noun: 'engagement', nounsWord: 'engagements' };
+    return { t, count: n.count === 1 ? 'Engagement' : 'Engagements', unique: `${nouns} spent time with`, time: 'Total time together', avg: 'Avg walk length', noun: 'engagement', nounsWord: 'engagements' };
   }
   const termsOf = (dog) => termsFor([(dog && dog.species) || 'dog']);
   const myTerms = () => termsFor(state.currentUser ? prefSpeciesKeys() : ['dog']);
@@ -1083,7 +1217,6 @@
   };
   const historyTerms = (rows) => termsFor(historySpeciesKeys(rows));
   const capFirst = (str) => str.charAt(0).toUpperCase() + str.slice(1);
-  const titleCase = (str) => str.split(' ').map(capFirst).join(' ');
   const aNoun = (t) => `${/^[aeiou]/.test(t.noun) ? 'an' : 'a'} ${t.noun}`;
   // Fixed page text (Settings, Privacy) marked data-term="past" etc. follows
   // who the volunteer works with.
@@ -1112,7 +1245,7 @@
   // (a dog walker scanning a cat gets a cuddle).
   function usualActivityFor(dog) {
     const allowed = speciesOf(dog).activities;
-    const usual = usualActivity();
+    const usual = usualActivity((dog && dog.species) || 'dog');
     return allowed.includes(usual) ? usual : allowed[0];
   }
   const kennelsOf = (dog) => speciesOf(dog).kennels || KENNEL_LETTERS;
@@ -1197,7 +1330,7 @@
     ? `<span class="species-tag" title="${esc(speciesOf(dog).label)}">${speciesOf(dog).emoji}</span>`
     : '');
   const activityInfo = (key) => ACTIVITIES[key] || ACTIVITIES.walk;
-  // [singular, plural] for counting an activity: "1 walk", "26 play group sessions".
+  // [singular, plural] for counting an activity: "1 walk", "26 playgroup sessions".
   const activityCountNouns = (info) => { const c = info.countNoun || info.noun; return [c, `${c}s`]; };
   const activityCount = (info, n) => `${n} ${activityCountNouns(info)[n === 1 ? 0 : 1]}`;
   function activityOptionsHtml(selected, keys = Object.keys(ACTIVITIES)) {
@@ -1210,6 +1343,8 @@
   function currentWalkBadge(dog) {
     if (!dog.currentWalk) return '';
     const a = activityInfo(dog.currentWalk.activity);
+    // Your own: never "being walked by a volunteer" (a hidden name) or your own name.
+    if (dog.currentWalk.mine) return `<span class="badge out-now">${a.emoji} You're out with them</span>`;
     return `<span class="badge out-now">${a.emoji} ${a.out} ${esc(dog.currentWalk.userName)}</span>`;
   }
 
@@ -1279,7 +1414,7 @@
   // Someone else's engagement length, which the server rounds to 5 minutes:
   // "about 25 min", or "under 5 min" when it rounds to nothing.
   function roundedLength(seconds) {
-    return seconds >= 300 ? `about ${fmtDuration(seconds)}` : 'under 5 min';
+    return seconds >= SHARED_CONFIG.roundSeconds ? `about ${fmtDuration(seconds)}` : `under ${SHARED_CONFIG.roundSeconds / 60} min`;
   }
   function thumbOf(url) {
     return typeof url === 'string' ? url.replace(/^\/cached-images\/(\d+\.jpg)/, '/cached-images/thumbs/$1') : url;
@@ -1327,6 +1462,11 @@
       document.body.appendChild(el);
     }
     el.textContent = message;
+    // Above the walk's End / Start dock when one is on screen, never on top
+    // of it ("Added 10 minutes" used to cover End).
+    const dock = document.querySelector('#app .action-dock');
+    const dockTop = dock && dock.offsetParent ? dock.getBoundingClientRect().top : null;
+    el.style.bottom = dockTop != null && dockTop < window.innerHeight ? `${Math.max(76, window.innerHeight - dockTop + 8)}px` : '';
     el.className = `toast show${kind === 'error' ? ' error' : ''}`;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 5000 : 2600);
@@ -1356,6 +1496,10 @@
   }
   function closeOverlay(el) {
     if (el.classList.contains('hidden')) return;
+    if (window.PgTags.unsavedNotes(el).length) {
+      okToLeaveNotes(el).then((ok) => { if (ok) closeOverlay(el); });
+      return;
+    }
     el.classList.add('hidden');
     if (overlayEntries.delete(el.id)) history.back();
   }
@@ -1364,9 +1508,11 @@
   // after this one closes; doing both back to back races, and the pending
   // "back" lands on the NEW overlay's history entry instead of this one's.
   async function closeOverlayAwait(el) {
-    if (el.classList.contains('hidden')) return;
+    if (el.classList.contains('hidden')) return true;
+    if (!(await okToLeaveNotes(el))) return false;
     el.classList.add('hidden');
     if (overlayEntries.delete(el.id)) await consumeHistoryEntry();
+    return true;
   }
 
   // ---------- App dialogs (replace native alert/confirm/prompt) ----------
@@ -1386,6 +1532,7 @@
         <input type="text" id="appDialogInput" class="hidden" maxlength="120" />
         <div class="row dialog-actions">
           <button type="button" id="appDialogCancel" class="btn">Cancel</button>
+          <button type="button" id="appDialogAlt" class="btn hidden"></button>
           <button type="button" id="appDialogOk" class="btn primary">OK</button>
         </div>
       </div>`;
@@ -1394,12 +1541,14 @@
   }
   // Resolves true/false for confirm-style dialogs and the typed string (or
   // null) for prompt-style ones. An alert-style dialog (showCancel:false)
-  // resolves true whichever way it's dismissed.
-  function appDialog({ title = '', message = '', confirmText = 'OK', cancelText = 'Cancel', showCancel = true, danger = false, input = null }) {
+  // resolves true whichever way it's dismissed. `altText` adds a third
+  // button between the two, which resolves 'alt'.
+  function appDialog({ title = '', message = '', confirmText = 'OK', cancelText = 'Cancel', showCancel = true, danger = false, input = null, altText = null }) {
     if (dialogCancel) dialogCancel(); // never stack two
     const el = ensureDialogEl();
     const okBtn = el.querySelector('#appDialogOk');
     const cancelBtn = el.querySelector('#appDialogCancel');
+    const altBtn = el.querySelector('#appDialogAlt');
     const inputEl = el.querySelector('#appDialogInput');
     el.querySelector('#appDialogTitle').textContent = title;
     el.querySelector('#appDialogTitle').classList.toggle('hidden', !title);
@@ -1408,6 +1557,8 @@
     okBtn.className = `btn ${danger ? 'danger' : 'primary'}`;
     cancelBtn.textContent = cancelText;
     cancelBtn.classList.toggle('hidden', !showCancel);
+    altBtn.textContent = altText || '';
+    altBtn.classList.toggle('hidden', !altText);
     inputEl.classList.toggle('hidden', input == null);
     if (input != null) inputEl.value = input;
     const cancelValue = input != null ? null : !showCancel;
@@ -1418,13 +1569,14 @@
         done = true;
         el.classList.add('hidden');
         dialogCancel = null;
-        okBtn.onclick = cancelBtn.onclick = el.onclick = inputEl.onkeydown = null;
+        okBtn.onclick = cancelBtn.onclick = altBtn.onclick = el.onclick = inputEl.onkeydown = null;
         if (alreadyPopped) resolve(value);
         else consumeHistoryEntry().then(() => resolve(value));
       };
       dialogCancel = () => finish(cancelValue, true);
       okBtn.onclick = () => finish(input != null ? inputEl.value : true, false);
       cancelBtn.onclick = () => finish(cancelValue, false);
+      altBtn.onclick = () => finish('alt', false);
       el.onclick = (e) => { if (e.target === el && showCancel) finish(cancelValue, false); };
       inputEl.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(inputEl.value, false); } };
       el.classList.remove('hidden');
@@ -1435,6 +1587,31 @@
   const appAlert = (message, title) => appDialog({ title: title || '', message, showCancel: false });
   const appConfirm = (message, opts = {}) => appDialog({ message, ...opts });
   const appPrompt = (message, defaultValue, opts = {}) => appDialog({ message, input: defaultValue || '', confirmText: 'Save', ...opts });
+
+  // Leaving a screen (`within`: what's about to close; the whole page when
+  // left out) with a note typed but not saved asks first: Save, Discard or
+  // Keep editing. Resolves true when it's fine to go on. A box with no save
+  // of its own (part of a bigger form) only offers Discard.
+  async function okToLeaveNotes(within) {
+    const open = window.PgTags.unsavedNotes(within);
+    if (!open.length) return true;
+    const canSave = open.every((g) => g.save);
+    const answer = await appDialog({
+      title: open.length > 1 ? 'Unsaved notes' : 'Unsaved note',
+      message: open.length > 1 ? "You haven't saved what you wrote in these notes." : "You haven't saved what you wrote in this note.",
+      confirmText: canSave ? 'Save' : 'Discard',
+      danger: !canSave,
+      altText: canSave ? 'Discard' : null,
+      cancelText: 'Keep editing'
+    });
+    if (!answer) { open[0].focus(); return false; }
+    if (answer === 'alt' || !canSave) { open.forEach((g) => g.forget()); return true; }
+    for (const g of open) await g.save();
+    // A save that failed has said why (toast) and left its text in place.
+    const left = window.PgTags.unsavedNotes(within);
+    if (left.length) { left[0].focus(); return false; }
+    return true;
+  }
 
   // Escape closes the topmost layer.
   document.addEventListener('keydown', (e) => {
@@ -1450,12 +1627,36 @@
     if (!accountSheetEl.classList.contains('hidden')) return closeSheet(accountSheetEl);
   });
 
+  // Tappable cards and tiles that aren't <button>s (role="button",
+  // tabindex="0"): Enter or Space works them like a click, for keyboard
+  // and screen-reader users. One that handles its own keys (and calls
+  // preventDefault) is left alone. Space waits for keyup, like a button.
+  const keyTarget = (e) => {
+    const el = e.target;
+    if (!el || !el.matches || !el.matches('[role="button"]') || /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(el.tagName)) return null;
+    return el.isContentEditable ? null : el;
+  };
+  let spaceDownOn = null;
+  document.addEventListener('keydown', (e) => {
+    const el = keyTarget(e);
+    spaceDownOn = null;
+    if (!el || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Enter') { e.preventDefault(); el.click(); }
+    else if (e.key === ' ') { e.preventDefault(); spaceDownOn = el; } // no page scroll
+  });
+  document.addEventListener('keyup', (e) => {
+    const el = keyTarget(e);
+    if (!el || e.key !== ' ' || spaceDownOn !== el) return;
+    spaceDownOn = null;
+    el.click();
+  });
+
   // A failed load gets a message and a retry button, not a dead end.
   function showLoadError(what, err, retry) {
     appEl.innerHTML = `
       <div class="card error-card" role="alert">
         <p class="error-card-title">Couldn't load ${esc(what)}.</p>
-        <p class="small muted">${esc(friendlyError(err, 'load it'))}</p>
+        <p class="small muted">${esc(navigator.onLine ? friendlyError(err, 'load it') : "You're offline, and this screen isn't saved on this phone. It loads once you're back online.")}</p>
         <button type="button" id="retryLoadBtn" class="btn primary">Try again</button>
       </div>`;
     document.getElementById('retryLoadBtn').addEventListener('click', retry);
@@ -1497,7 +1698,7 @@
     // Before onboarding the name is only the sign-in placeholder (made from
     // the email); it shows once the volunteer has typed their own.
     if (nameEl) nameEl.textContent = user.onboardingCompleted ? user.name : '';
-    // The play group desk is a computer page: phones only offer it to staff.
+    // The playgroup desk is a computer page: phones only offer it to staff.
     const deskRow = document.getElementById('playgroupDeskRow');
     if (deskRow) deskRow.classList.toggle('hidden', onSmallDevice() && !user.isStaff);
     // Audit Mode is a per-user permission, not tied to being privileged —
@@ -1633,7 +1834,9 @@
   // the person has actively acknowledged each specific consequence rather
   // than clicking through a stack of yes/no dialogs.
   let dangerConfirmAction = null;
-  function showDangerConfirm({ title, intro, checks, confirmLabel, action }) {
+  let dangerConfirmCancel = null;
+  function showDangerConfirm({ title, intro, checks, confirmLabel, action, onCancel = null }) {
+    dangerConfirmCancel = onCancel;
     const popup = document.getElementById('dangerConfirmPopup');
     document.getElementById('dangerConfirmTitle').textContent = title;
     document.getElementById('dangerConfirmIntro').innerHTML = intro.map((p) => `<p class="small">${p}</p>`).join('');
@@ -1659,9 +1862,15 @@
     input.oninput = update;
     openOverlay(popup);
   }
-  document.getElementById('dangerConfirmCancelBtn').addEventListener('click', () => {
-    closeOverlay(document.getElementById('dangerConfirmPopup'));
+  // Cancel goes back to where it was opened from (Privacy & data), not out
+  // of My account altogether (audit 3).
+  document.getElementById('dangerConfirmCancelBtn').addEventListener('click', async () => {
+    const back = dangerConfirmCancel;
+    dangerConfirmCancel = null;
+    await closeOverlayAwait(document.getElementById('dangerConfirmPopup'));
+    if (back) back();
   });
+  const reopenPrivacyPage = () => { openAccountSheet(); showAccountPage('privacy'); };
   document.getElementById('dangerConfirmBtn').addEventListener('click', async () => {
     const btn = document.getElementById('dangerConfirmBtn');
     const status = document.getElementById('dangerConfirmStatus');
@@ -1696,7 +1905,7 @@
         </ul>
 
         <h4>What we collect</h4>
-        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown to other volunteers only while you're out with an animal, unless you turn that off above. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
+        <p>Your name and email address are the only personal information Shelter Walk collects. Your email signs you in; your name is shown to other volunteers only while you're out with an animal, unless you turn that off above. Messages you send in walker chat (when the shelter has it on) always show your name. We don't collect payment information, addresses, phone numbers, or anything else about you.</p>
 
         <h4>Feedback and bug reports</h4>
         <p>Reports sent from My Account are saved without your name or account, so nobody can tell who sent one. If you tick "Include my phone and browser type", your browser's standard identification line is saved with the report (it names the kind of phone and browser, like iPhone and Safari, nothing about you) to help fix bugs. Only staff can read reports, and they can delete them.</p>
@@ -1795,6 +2004,7 @@
         'I understand I will be signed out right away, and will need a brand-new invite to use Shelter Walk again.'
       ],
       confirmLabel: 'Delete my account forever',
+      onCancel: reopenPrivacyPage,
       action: async () => {
         await api('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
         showAccountDeletedScreen();
@@ -1819,6 +2029,7 @@
         `I understand my personal stats and ${nounFor(prefSpeciesKeys())} history will reset to zero, even though the ${myTerms().nouns} themselves stay in the shelter's overall totals.`
       ],
       confirmLabel: `Delete my ${myTerms().noun} data`,
+      onCancel: reopenPrivacyPage,
       action: async () => {
         await api('/api/me/data', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }), timeout: 45000 });
         toast(`Your ${myTerms().noun} data has been deleted.`);
@@ -1926,7 +2137,14 @@
 
   function pushHistory(overrides) {
     if (syncingFromHistory) return;
-    const entry = { tab: state.tab, sheet: currentSheetName(), ...overrides, depth: historyDepth() + 1 };
+    // On Stats, every step remembers the drill-down under it (statsNav), so
+    // closing a popup opened there never resets that screen.
+    const nav = state.tab === 'stats' ? { statsNav: statsNavState() } : {};
+    // Every popup open at this step, not just the top one, so coming back to
+    // it (e.g. from a dialog over the playgroup editor over the playgroup
+    // notes) leaves the ones underneath open too.
+    const overlays = [...document.querySelectorAll('.popup-overlay:not(.hidden)')].map((el) => el.id);
+    const entry = { tab: state.tab, sheet: currentSheetName(), ...nav, overlays, ...overrides, depth: historyDepth() + 1 };
     history.pushState(entry, '');
   }
 
@@ -1945,7 +2163,37 @@
     else history.replaceState({ tab, sheet: null, depth }, '');
   }
 
+  // What a Back (or Forward) to history step `hs` would close: popups and
+  // sheets that step doesn't have, and the main screen if the tab or the
+  // dog on it changes. Only the parts with an unsaved note in them.
+  function unsavedLeftBehind(hs) {
+    const keep = (el) => el.id === hs.overlay || (hs.overlays || []).includes(el.id);
+    const leaving = [...document.querySelectorAll('.popup-overlay:not(.hidden)')].filter((el) => !keep(el));
+    [[settingsSheet, 'settings'], [profileSheet, 'profile'], [document.getElementById('accountSheet'), 'account']].forEach(([el, name]) => {
+      if (!el.classList.contains('hidden') && hs.sheet !== name) leaving.push(el);
+    });
+    const guideStep = state.tab === 'guide' && hs.tab === 'guide' && (hs.guideSection || null) !== (state.guide.sectionId || null);
+    if ((hs.tab && hs.tab !== state.tab) || guideStep || (onOpenedDogStep && hs.walkStep !== 'opened') || (onScannedStep && hs.walkStep !== 'scanned')) leaving.push(appEl);
+    return leaving.filter((el) => window.PgTags.unsavedNotes(el).length);
+  }
+  // Set while Back is being undone (see below): the step that undo lands on
+  // is the screen already showing, so there's nothing to redo for it.
+  let undoingBack = null;
+
   window.addEventListener('popstate', (event) => {
+    if (undoingBack) { const done = undoingBack; undoingBack = null; done(); return; }
+    // Back with an unsaved note on what it would close: step forward again
+    // (nothing on screen has changed yet), ask, and only then go back for
+    // real -- by then the note is saved or dropped, so it goes through.
+    if (!(event.state && event.state.guard)) {
+      const leaving = unsavedLeftBehind(event.state || { tab: HOME_TAB, sheet: null });
+      if (leaving.length) {
+        new Promise((resolve) => { undoingBack = resolve; history.forward(); })
+          .then(() => okToLeaveNotes(leaving))
+          .then((ok) => { if (ok) history.back(); });
+        return;
+      }
+    }
     syncingFromHistory = true;
     dogLookupSeq++;
     let hs = event.state || { tab: HOME_TAB, sheet: null };
@@ -1958,7 +2206,7 @@
     // Back pressed while a dialog was up: that's a cancel.
     if (dialogCancel && overlayId !== 'appDialog') dialogCancel();
     document.querySelectorAll('.popup-overlay, .image-lightbox').forEach((el) => {
-      if (el.id === overlayId) return;
+      if (el.id === overlayId || (hs.overlays || []).includes(el.id)) return;
       el.classList.add('hidden');
       overlayEntries.delete(el.id);
     });
@@ -1973,6 +2221,14 @@
       backFromDog = true;
       if (!activeWalkDogId()) state.walk.phase = 'idle';
     }
+    // Back (or forward) through Stats drill-downs: show the one this step
+    // was (none: the top of Stats).
+    let statsNavChanged = false;
+    if (state.tab === 'stats' && hs.tab && hs.tab !== 'stats') applyStatsNav(null);
+    if (hs.tab === 'stats' && !sameStatsNav(hs.statsNav || null)) {
+      applyStatsNav(hs.statsNav || null);
+      statsNavChanged = true;
+    }
     if (hs.tab && hs.tab !== state.tab) {
       if ((state.tab === 'walk' || state.tab === 'audit') && hs.tab !== state.tab) stopQrScanner();
       state.tab = hs.tab;
@@ -1980,6 +2236,14 @@
       topbarTitle.textContent = TAB_TITLES[hs.tab];
       if (backFromDog && hs.tab === 'updates') restoreUpdates();
       else render();
+    } else if (statsNavChanged && state.tab === 'stats') {
+      renderStats();
+    } else if (hs.tab === 'guide' && state.tab === 'guide' && (hs.guideSection || null) !== (state.guide.sectionId || null)) {
+      // Back (or forward) between a Guide section and the list.
+      state.guide.sectionId = hs.guideSection || null;
+      state.guide.editing = null;
+      appEl.scrollTop = 0;
+      renderGuide();
     } else if (onScannedStep && hs.walkStep !== 'scanned' && hs.tab === 'walk' && !activeWalkDogId()) {
       // Back from a scanned dog (not out walking): scan again.
       state.walk.phase = 'scanning';
@@ -2017,16 +2281,21 @@
   // Like closeSheet, but waits for its "back" to actually land before
   // returning -- needed whenever another overlay is about to open right
   // after this sheet closes (same reasoning as closeOverlayAwait).
+  // Resolves false when it stayed open (a note left unsaved, kept).
   async function closeSheetAwait(el) {
-    if (el.classList.contains('hidden')) return;
+    if (el.classList.contains('hidden')) return true;
+    if (!(await okToLeaveNotes(el))) return false;
     await consumeHistoryEntry();
+    return true;
   }
 
   // ---------- Tabs ----------
+  // A note typed but not saved on the screen being left asks first.
+  const switchTabWithNotes = async (tab) => { if (await okToLeaveNotes()) switchTab(tab); };
   tabButtons.forEach((btn) => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    btn.addEventListener('click', () => switchTabWithNotes(btn.dataset.tab));
   });
-  document.getElementById('auditModeBtn').addEventListener('click', () => switchTab('audit'));
+  document.getElementById('auditModeBtn').addEventListener('click', () => switchTabWithNotes('audit'));
 
   function switchTab(tab) {
     if ((state.tab === 'walk' || state.tab === 'audit') && tab !== state.tab) {
@@ -2043,6 +2312,9 @@
       stopQrScanner();
       state.walk.phase = 'scanning';
     }
+    // Leaving Stats drops its drill-down (its history steps are gone too), so
+    // coming back shows the top of Stats, not a stale chart.
+    if (state.tab === 'stats' && tab !== 'stats') applyStatsNav(null);
     state.tab = tab;
     tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
     topbarTitle.textContent = TAB_TITLES[tab];
@@ -2128,9 +2400,9 @@
     const stickers = speciesOf(dog).stickers;
     content.innerHTML = `
       <h3 style="margin-top:0;">✎ ${esc(dog.name)}</h3>
-      <p class="small muted" style="margin-top:-6px;">You're still out with ${esc(state.walk.dog.name)} — this only edits ${esc(dog.name)}.</p>
+      ${state.walk.dog && String(state.walk.dog.id) !== String(dog.id) ? `<p class="small muted" style="margin-top:-6px;">You're still out with ${esc(state.walk.dog.name)} — this only edits ${esc(dog.name)}.</p>` : ''}
       ${stickers ? markerPickerHtml(dog) : ''}
-      <label style="display:block;${stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
+      <label style="display:block;${stickers ? 'margin-top:14px;' : ''}">${esc(kennelPickLabel(speciesOf(dog)))}</label>
       ${kennelLetterPickerHtml('editPopupLocationPicker', dog.kennelLocation || '', { letters: kennelsOf(dog) })}
       <div class="row" style="margin-top:10px;">
         <button type="button" id="editPopupSaveBtn" class="btn primary">Save changes</button>
@@ -2145,7 +2417,7 @@
       const location = kennelLetterPickerValue('editPopupLocationPicker');
       statusEl.textContent = 'Saving…';
       try {
-        if (stickers) await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(pending) });
+        if (stickers) await saveMarkerChanges(dog, pending);
         if (location && location !== dog.kennelLocation) {
           await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location }) });
         }
@@ -2154,6 +2426,7 @@
         // The walk screen doesn't show other dogs; everywhere else might.
         if (state.tab !== 'walk') render();
       } catch (err) {
+        if (err.staleMarkers) { await showDogEditPopup(dogId); appAlert(err.serverMessage || err.message, 'Stickers changed'); return; }
         statusEl.textContent = `Failed: ${err.message}`;
       }
     });
@@ -2295,14 +2568,14 @@
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
         <h2>Welcome to Shelter Walk 🐾</h2>
-        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? It's never shown on your past engagements with the animals, and you choose below whether other volunteers see it while you're out with a dog.</p>
+        <p class="muted small">Let's get you set up. It takes about a minute. First, what's your name? It's never shown on your past engagements with the animals, and you choose below whether other volunteers see it while you're out with an animal.</p>
         <label for="onboardingNameInput" class="small">Name</label>
         <input type="text" id="onboardingNameInput" maxlength="60" autocomplete="name" value="${esc(looksReal ? existing : '')}" />
         <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
           <input type="checkbox" id="onboardingHideName" ${state.currentUser.hideNameWhileWalking ? 'checked' : ''} />
-          Keep my name private while I'm out with a dog
+          Keep my name private while I'm out with an animal
         </label>
-        <p class="small muted" style="margin:10px 0 4px;">While you're walking a dog, other volunteers see it on the Available list like this:</p>
+        <p class="small muted" style="margin:10px 0 4px;">While you're with an animal (here, walking a dog), other volunteers see it on the Available list like this:</p>
         <div class="card compact name-preview" aria-hidden="true">
           <div class="dog-card">
             <img class="dog-photo small" src="/dog-silhouettes/7.svg?v=1" alt="" />
@@ -2404,7 +2677,7 @@
         ${onboardingProgressHtml(step)}
         <h2>What kind of ${worksWithBoth() ? 'dog ' : ''}volunteer are you?</h2>
         <p class="muted small">This decides which dogs the app shows you as ready to walk. Pick the one that fits you today. Not sure? Choose Beginner. You can change it any time in Settings.</p>
-        ${worksWithBoth() ? '<p class="muted small">Levels are only for dogs. Any volunteer can play with any cat, with no hours needed.</p>' : ''}
+        ${worksWithBoth() ? '<p class="muted small">Levels are only for dogs. Any volunteer can cuddle any cat, with no hours needed.</p>' : ''}
         <div id="onboardingLevelList" class="stack"></div>
         <p id="onboardingLevelStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingLevelNext" class="btn primary" ${selected ? '' : 'disabled'}>Continue</button>
@@ -2441,14 +2714,17 @@
     }
 
     if (step === 'activity') {
-      const keys = activityKeysForPref(speciesPref());
-      let selected = keys.includes(usualActivity()) ? usualActivity() : keys[0];
-      const prevStep = prefSpeciesKeys().some((k) => speciesInfo(k).levelRules) ? 'level' : 'species';
+      // One default per species: a "both" volunteer picks one for dogs and
+      // one for cats (audit 3), each in its own labelled row.
+      const speciesKeys = prefSpeciesKeys();
+      const selected = {};
+      speciesKeys.forEach((k) => { selected[k] = usualActivity(k); });
+      const prevStep = speciesKeys.some((k) => speciesInfo(k).levelRules) ? 'level' : 'species';
       inner.innerHTML = `
         ${onboardingProgressHtml(step)}
-        <h2>What do you usually do with the ${esc(nounFor(prefSpeciesKeys(), true))}?</h2>
-        <p class="muted small">When you scan a kennel, the start button will offer this first. You can still pick something else each time, and change your usual one in Settings.</p>
-        <div id="onboardingActivityList" class="marker-row activity-chips">${activityChipsHtml(selected, keys)}</div>
+        <h2>What do you usually do with the ${esc(nounFor(speciesKeys, true))}?</h2>
+        <p class="muted small">This is your default activity: when you scan an animal, the Start button offers it first. You can still change it each time, when you scan or while you're with the animal, and change your default in Settings.</p>
+        <div id="onboardingActivityList">${defaultActivityRowsHtml(speciesKeys)}</div>
         <p id="onboardingActivityStatus" class="small" style="margin-top:6px;color:var(--red);min-height:1.2em;"></p>
         <button type="button" id="onboardingActivityNext" class="btn primary">Continue</button>
         ${backBtn(prevStep)}`;
@@ -2456,19 +2732,22 @@
       const list = document.getElementById('onboardingActivityList');
       list.addEventListener('click', (e) => {
         const chip = e.target.closest('[data-activity]');
-        if (!chip) return;
-        selected = chip.dataset.activity;
-        list.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+        const row = chip && chip.closest('[data-species]');
+        if (!row) return;
+        selected[row.dataset.species] = chip.dataset.activity;
+        row.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
       });
       document.getElementById('onboardingActivityNext').addEventListener('click', async () => {
         const nextBtn = document.getElementById('onboardingActivityNext');
         nextBtn.disabled = true;
+        const body = {};
+        speciesKeys.forEach((k) => { body[defaultKeyFor(k)] = selected[k]; });
         try {
           const updated = await api(`/api/users/${state.currentUser.id}/settings`, {
             method: 'PUT',
-            body: JSON.stringify({ defaultActivity: selected })
+            body: JSON.stringify(body)
           });
-          state.currentUser.defaultActivity = updated.defaultActivity;
+          Object.keys(body).forEach((field) => { state.currentUser[field] = updated[field]; });
           runOnboardingStep('passkey');
         } catch (err) {
           document.getElementById('onboardingActivityStatus').textContent = err.message;
@@ -2625,16 +2904,10 @@
     return { minutes };
   }
   const speciesPrefPicker = document.getElementById('speciesPrefPicker');
-  // The usual-activity chips follow the species picked: a cat-only volunteer
-  // is offered only what cats can do.
-  const activityKeysForPref = (pref) => [...new Set((pref === 'both' ? Object.keys(speciesTable()) : [pref])
-    .flatMap((k) => speciesInfo(k).activities))];
+  // The default-activity chips follow the species picked: one row per
+  // species, each offering only what that species can do.
   function fillDefaultActivityPicker(pref) {
-    const keys = activityKeysForPref(pref);
-    const current = defaultActivityPicker.dataset.selected || usualActivity();
-    const usual = keys.includes(current) ? current : keys[0];
-    defaultActivityPicker.innerHTML = activityChipsHtml(usual, keys);
-    defaultActivityPicker.dataset.selected = usual;
+    defaultActivityPicker.innerHTML = defaultActivityRowsHtml(pref === 'both' ? Object.keys(speciesTable()) : [pref]);
   }
   // Levels only decide dogs: hidden for cats only, marked "(dogs)" for both.
   function syncLevelSection(pref) {
@@ -2663,12 +2936,13 @@
   const defaultActivityPicker = document.getElementById('defaultActivityPicker');
   defaultActivityPicker.addEventListener('click', async (e) => {
     const chip = e.target.closest('[data-activity]');
-    if (!chip) return;
-    defaultActivityPicker.dataset.selected = chip.dataset.activity;
-    defaultActivityPicker.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+    const row = chip && chip.closest('[data-species]');
+    if (!row) return;
+    row.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
+    const field = defaultKeyFor(row.dataset.species);
     try {
-      const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ defaultActivity: chip.dataset.activity }) });
-      state.currentUser.defaultActivity = updated.defaultActivity;
+      const updated = await api(`/api/users/${state.currentUser.id}/settings`, { method: 'PUT', body: JSON.stringify({ [field]: chip.dataset.activity }) });
+      state.currentUser[field] = updated[field];
     } catch (err) { toast(err.message, 'error'); }
   });
   document.getElementById('desktopViewSelect').addEventListener('change', async (e) => {
@@ -2732,7 +3006,6 @@
     speciesPrefPicker.innerHTML = speciesPrefPickerHtml(speciesPref());
     speciesPrefPicker.dataset.selected = speciesPref();
     syncLevelSection(speciesPref());
-    defaultActivityPicker.dataset.selected = usualActivity();
     fillDefaultActivityPicker(speciesPref());
     document.getElementById('experienceLevelPicker').querySelectorAll('.level-pick-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -2760,7 +3033,7 @@
     const buildEl = document.getElementById('buildInfo');
     if (buildEl) {
       const stamp = Number((document.querySelector('meta[name="build"]') || {}).content);
-      buildEl.textContent = stamp ? `Shelter Walk, updated ${new Date(stamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '';
+      buildEl.textContent = stamp ? `Shelter Walk, updated ${new Date(stamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHELTER_TZ })}, ${fmtClock(stamp)}` : '';
     }
     document.getElementById('refreshStatus').textContent = '';
     document.getElementById('refreshDataSection').classList.toggle('hidden', !(state.currentUser.isStaff || state.currentUser.isPrivileged));
@@ -2802,8 +3075,10 @@
     select.innerHTML = desk.views.map((v) => `<option value="${esc(v.key)}"${v.key === desk.start ? ' selected' : ''}>${esc(v.label)}</option>`).join('');
   }
   // Book icon in the top bar. Already in the Guide? Just go back to its list.
-  document.getElementById('guideBtn').addEventListener('click', () => {
+  document.getElementById('guideBtn').addEventListener('click', async () => {
     if (state.tab === 'guide') {
+      // An edit not saved yet asks first (audit 3).
+      if (!(await okToLeaveNotes(appEl))) return;
       state.guide.sectionId = null;
       state.guide.editing = null;
       state.guide.query = '';
@@ -2837,6 +3112,13 @@
   // ---------- Profile sheet ----------
   const profileSheet = document.getElementById('profileSheet');
   const profileSheetInner = document.getElementById('profileSheetInner');
+  // Once scrolled, the ✕ sits on a bar of its own (style.css
+  // .sheet-close-bar.scrolled), so it never covers Start / Edit or a tip's
+  // buttons scrolling under it.
+  profileSheetInner.addEventListener('scroll', () => {
+    const bar = profileSheetInner.querySelector('.sheet-close-bar');
+    if (bar) bar.classList.toggle('scrolled', profileSheetInner.scrollTop > 8);
+  }, { passive: true });
 
   // Tapping the dimmed backdrop closes the sheet, same as the X/Done button.
   // Settings has no discard-on-close behavior to worry about: every control
@@ -2859,7 +3141,7 @@
 
   // ---------- "@" tags in everyday notes ----------
   // Shared tips, private notes and the note left at the end of a walk or
-  // play session can tag other animals, the same way play group notes do
+  // play session can tag other animals, the same way playgroup notes do
   // (pg-tags.js): typed as "@Name", saved as "@[id]", shown as the animal's
   // current name and tappable to open them. Cats share condos and rooms far
   // more than dogs share kennels, so a note on one often matters to the
@@ -2867,8 +3149,8 @@
   let taggablePromise = null;
   function taggableAnimals() {
     if (!taggablePromise) {
-      taggablePromise = api('/api/dogs?all=true')
-        .then((d) => d.dogs.filter((a) => a.stillListed || a.location === 'In Foster'))
+      taggablePromise = api('/api/dogs?all=true&fields=names')
+        .then((d) => window.PgTags.taggableFrom(d.dogs))
         .catch(() => { taggablePromise = null; return []; });
     }
     return taggablePromise;
@@ -2904,11 +3186,14 @@
   // Wires the @ picker on one noteTagBoxHtml. `body` (stored text, tags as
   // @[id]) starts the box with that note in it; `tagged` names its tags.
   // Ctrl/Cmd+Enter calls onSubmit, Escape (with no suggestions open) onCancel.
+  // Leaving with text in it that wasn't saved asks first (okToLeaveNotes),
+  // offering onSubmit as the Save; `guard: false` for a box that keeps its
+  // own draft.
   // Shared notes (tips, the note left at the end of a walk) are capped at
   // this many characters by the server.
   const NOTE_MAX_CHARS = 1000;
   const PRIVATE_NOTE_MAX_CHARS = 4000;
-  function wireNoteTagBox(wrap, { ownId = null, body = '', tagged = {}, onSubmit, onCancel, maxLength = NOTE_MAX_CHARS } = {}) {
+  function wireNoteTagBox(wrap, { ownId = null, body = '', tagged = {}, onSubmit, onCancel, maxLength = NOTE_MAX_CHARS, guard = true } = {}) {
     const el = wrap.querySelector('.pg-text');
     const start = body ? window.PgTags.toEditable(body, tagged) : { text: '', picks: new Map() };
     if (body) el.textContent = start.text;
@@ -2932,8 +3217,9 @@
     }
     const tags = window.PgTags.wireTagPicker(el, wrap.querySelector('.pg-suggest'), { getDogs: taggableAnimals, picks: start.picks, ownId });
     // A name typed without "@" gets the same tap-to-tag suggestion as in
-    // play group notes.
+    // playgroup notes.
     window.PgTags.wireAutoTagger(el, { getDogs: taggableAnimals, ownId, picks: start.picks, declineLabel: "Don't tag" });
+    if (guard) window.PgTags.guardNote(el, { body: () => tags.body(), save: onSubmit ? async () => { await onSubmit(); } : null });
     el.addEventListener('keydown', (e) => {
       if (e.defaultPrevented) return;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && onSubmit) { e.preventDefault(); onSubmit(); }
@@ -2962,7 +3248,7 @@
     const kindOf = (m) => {
       if (m.kind === 'tip') return 'tips';
       if (m.kind === 'private') return 'your private note';
-      if (m.kind === 'playgroup') return 'play group';
+      if (m.kind === 'playgroup') return 'playgroup';
       return `${termsOf(m.from).noun} notes`;
     };
     return `<label class="small muted notes-label">Tagged in other notes <span class="badge neutral">${mentions.length}</span></label>
@@ -2984,8 +3270,8 @@
     const reload = () => mountDogNotes(container, dog, walks);
     const tagged = { ...(data.tagged || {}), [dog.id]: dog };
     // A note left at the end of a session is tagged by what the session
-    // actually was -- play group gets its own label instead of being folded
-    // into "walk", which was confusing next to the dog's separate play group
+    // actually was -- playgroup gets its own label instead of being folded
+    // into "walk", which was confusing next to the dog's separate playgroup
     // notes. Walk notes are their own list from the server (data.walkNotes):
     // an opaque id, the text, the shelter date and the activity, never tied
     // to a walk. Sorted by day only (then text), like the server sends them.
@@ -3015,7 +3301,7 @@
         ${noteTagBoxHtml({ placeholder: `Add a tip about ${dog.name}… ${tagHint()}`, cls: 'tip-input' })}
         <button type="button" class="btn small-btn primary tip-add-btn">Add</button>
       </div>
-      <p class="small muted tip-help">Anonymous - can be edited or deleted by anyone.</p>
+      <p class="small muted tip-help">Your name isn't shown with a tip.</p>
       <label class="small muted notes-label">My private notes <span class="badge neutral">Only you can see this</span></label>
       <ul class="tip-list">
         ${data.privateNote ? `<li class="tip-item" data-private="1">
@@ -3041,7 +3327,7 @@
       try {
         await api(`/api/dogs/${dog.id}/notes`, { method: 'POST', body: JSON.stringify({ body }) });
         toast('Tip added');
-        reload();
+        await reload();
       } catch (err) { toast(err.message, 'error'); }
     };
     container.querySelector('.tip-add-btn').addEventListener('click', addTip);
@@ -3068,7 +3354,7 @@
           const next = box.body();
           if (!next) { toast('Use the ✕ next to a tip to delete it.', 'error'); return; }
           if (next === current) { reload(); return; }
-          try { await api(url, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); reload(); }
+          try { await api(url, { method: 'PUT', body: JSON.stringify({ body: next }) }); toast('Tip updated'); await reload(); }
           catch (err) { toast(err.message, 'error'); }
         };
         li.querySelector('[data-act="save"]').addEventListener('click', () => save());
@@ -3085,14 +3371,14 @@
     const savePrivate = async (body) => {
       try {
         await api(`/api/dogs/${dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body }) });
-        reload();
+        await reload();
       } catch (err) { toast(err.message, 'error'); }
     };
     const addBtn = container.querySelector('.private-note-add-btn');
     if (addBtn) {
       let doAdd = null;
       const addBox = wireNoteTagBox(container.querySelector('.private-note-add-row'), { ownId: dog.id, onSubmit: () => doAdd(), maxLength: PRIVATE_NOTE_MAX_CHARS });
-      doAdd = () => { const body = addBox.body(); if (!body) { addBox.focus(); return; } savePrivate(body); };
+      doAdd = () => { const body = addBox.body(); if (!body) { addBox.focus(); return null; } return savePrivate(body); };
       addBtn.addEventListener('click', doAdd);
     }
 
@@ -3114,8 +3400,8 @@
         save = () => {
           const next = box.body();
           if (!next) { toast('Use the ✕ next to your note to delete it.', 'error'); return; }
-          if (next === current) { reload(); return; }
-          savePrivate(next);
+          if (next === current) return reload();
+          return savePrivate(next);
         };
         privateLi.querySelector('[data-act="save"]').addEventListener('click', () => save());
         privateLi.querySelector('[data-act="cancel"]').addEventListener('click', reload);
@@ -3138,7 +3424,7 @@
     const editBtn = document.getElementById('profileEditBtn');
     if (editBtn) {
       editBtn.addEventListener('click', async () => {
-        await closeSheetAwait(profileSheet);
+        if (!(await closeSheetAwait(profileSheet))) return;
         // Opened from this dog's own Walk/Edit screen: just go back to it,
         // keeping any markers already toggled there.
         if (onConfirmScreenFor(dog.id)) return;
@@ -3176,21 +3462,21 @@
     const tags = (dog.tags || []).map((t) => `<span class="tag-chip">${esc(t)}</span>`).join(' ');
     const hasMarkers = markerBreakdownRows(dog).length > 0;
     return `
-      <button id="closeProfileBtn" class="sheet-close-btn" aria-label="Close">✕</button>
+      <div class="sheet-close-bar"><button id="closeProfileBtn" class="sheet-close-btn" aria-label="Close">✕</button></div>
       ${dog.photoUrl ? `<img class="profile-photo photo-lightbox-trigger${/\/dog-silhouettes\//.test(dog.photoUrl) ? ' photo-fallback' : ''}" src="${esc(dog.photoUrl)}" alt="${esc(dog.name)}" data-dog-id="${dog.id}" data-species="${esc(dog.species || 'dog')}" />` : ''}
       <h2>${esc(dog.name)} ${sexIcon(dog.sex)} ${favButtonHtml(dog)}
         <span id="profileMarkerBadges" class="${hasMarkers ? 'marker-badges-toggle' : ''}">${markerBadges(dog)}</span>
       </h2>
       ${akaHtml(dog, 'profile-aka')}
       ${hasMarkers ? `<div id="profileMarkerBreakdown" class="marker-breakdown">${markerBreakdownHtml(dog)}</div>` : ''}
-      <p class="muted small nowrap" style="margin-top:-6px;">ID ${dog.id}</p>
+      <p class="nowrap dog-id" style="margin-top:-6px;">ID ${dog.id}</p>
       ${profileEditButtonHtml(dog)}
       ${currentWalkBadge(dog)}
       ${dog.stillListed === false ? `<span class="badge neutral">Adopted/Removed${dog.removedAt ? ' on ' + fmtDate(dog.removedAt) : ''}</span>` : ''}
       <span class="badge neutral">${walksTogetherText(dog)}</span>
       <p class="muted">${esc(dog.breed || 'Unknown breed')} · ${esc(dog.sex || '?')} · ${esc(fmtAge(dog.age) || '?')} · ${esc(dog.weight || '?')}</p>
       <p class="small">In shelter since ${fmtDate(dog.dateInShelter)} (${shelterDaysHtml(dog)}) · ${esc(dog.location || '')}</p>
-      ${dog.stillListed === false ? '' : `<p class="small">Current kennel spot: <span class="nowrap">🏠 ${esc(dog.kennelLocation || 'Unknown')}</span></p>`}
+      ${dog.stillListed === false ? '' : `<p class="small">${kennelWordOf(dog) === 'condo' ? 'Room' : 'Current kennel spot'}: <span class="nowrap">🏠 ${esc(dog.kennelLocation || 'Unknown')}</span></p>`}
       <div>${tags}</div>
       ${dog.summary ? `<div class="dog-summary">${sanitizeHtml(dog.summary)}</div>` : ''}
       <p class="small" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -3204,7 +3490,7 @@
       </div>
       ${showsPlaygroup(dog) ? `<div class="row" style="margin-top:6px;">${playgroupButtonHtml(dog)}</div>` : ''}
       <div class="dog-notes-mount">${dogNotesShellHtml()}</div>
-      ${speciesOf(dog).stickers ? '<p class="small muted">Behavior markers are set on the Scan screen when checking a dog out.</p>' : ''}
+      ${speciesOf(dog).stickers ? '<p class="small muted">Behavior stickers are set on the Scan screen when checking a dog out.</p>' : ''}
       ${(window.ShelterWalkModules.profileSections || []).map((fn) => { try { return fn(dog) || ''; } catch (err) { console.error('[modules] profile section failed:', err); return ''; } }).join('')}
     `;
   }
@@ -3226,18 +3512,18 @@
     }
   }
 
-  // ---------- Play group notes ----------
-  // Dated entries on how a dog does in play group (playgroupNotes.js). They
+  // ---------- Playgroup notes ----------
+  // Dated entries on how a dog does in playgroup (playgroupNotes.js). They
   // run a few sentences each, so they get their own roomy popup instead of a
-  // spot on the profile: walkers who don't run play group only ever see one
+  // spot on the profile: walkers who don't run playgroup only ever see one
   // button. Typing "@" in the editor tags another dog; it's saved as @[id],
   // shown as the dog's current name, and the note also lists under
   // "Mentioned in other dogs' notes" on the tagged dog.
 
   // On every dog (owner, 2026-11-06), not just the ones who can join.
   const showsPlaygroup = (dog) => speciesOf(dog).activities.includes('playgroup');
-  const playgroupButtonLabel = (n, short) => `🥎 ${short ? 'Play group' : 'Play group notes'}${n ? ` (${n})` : ''}`;
-  // The prominent action on the live walk screen while a play group session
+  const playgroupButtonLabel = (n, short) => `🥎 ${short ? 'Playgroup' : 'Playgroup notes'}${n ? ` (${n})` : ''}`;
+  // The prominent action on the live walk screen while a playgroup session
   // is running: not "browse notes" but "write one for what's happening right
   // now" -- same editor (showPlaygroupNotes), defaulting to today's date.
   const playgroupSessionButtonLabel = (n) => `📝 Take notes for this session${n ? ` (${n} already)` : ''}`;
@@ -3246,16 +3532,16 @@
     return `<button type="button" class="btn small-btn playgroup-notes-btn" data-dog-id="${dog.id}">${playgroupButtonLabel((dog.playgroupCounts || {}).notes)}</button>`;
   }
 
-  // Dogs that can be tagged: every dog that can go to play group, including
+  // Dogs that can be tagged: every dog that can go to playgroup, including
   // ones currently in foster -- even once the shelter's own listing drops
-  // them, volunteers still write play group notes about a foster dog (an
+  // them, volunteers still write playgroup notes about a foster dog (an
   // earlier session, a meet-up). `all=true` is the only way to see those;
   // a delisted dog that's NOT in foster (adopted, transferred) is left out.
   let pgDogsPromise = null;
   function playgroupDogList() {
-    const canTag = (d) => speciesOf(d).activities.includes('playgroup') && (d.stillListed || d.location === 'In Foster');
+    const canPlay = (d) => speciesOf(d).activities.includes('playgroup');
     if (!pgDogsPromise) {
-      pgDogsPromise = api('/api/dogs?all=true').then((d) => d.dogs.filter(canTag))
+      pgDogsPromise = api('/api/dogs?all=true&fields=names').then((d) => window.PgTags.taggableFrom(d.dogs, canPlay))
         .catch(() => { pgDogsPromise = null; return []; });
     }
     return pgDogsPromise;
@@ -3270,7 +3556,7 @@
   let pgLastDate = null;
   const pgDefaultDate = () => (pgLastDate && Date.now() - pgLastDate.at < 3600000 ? pgLastDate.key : todayKey());
 
-  function pgEditorHtml({ text = '', date = pgDefaultDate(), signed = false, showDate = true, showSign = true, placeholder = 'How did play group go? Type @ to tag another dog.' } = {}) {
+  function pgEditorHtml({ text = '', date = pgDefaultDate(), signed = false, showDate = true, showSign = true, placeholder = 'How did playgroup go? Type @ to tag another dog.' } = {}) {
     return `<div class="pg-editor">
       ${showDate ? window.PgTags.dateRowHtml(date) : ''}
       ${window.PgTags.mdToolbarHtml()}
@@ -3279,7 +3565,7 @@
         <div class="pg-suggest hidden" role="listbox" aria-label="Dogs to tag"></div>
       </div>
       <div class="pg-preview"></div>
-      <p class="small muted pg-hint">Type @ and a name to tag a dog, or just type their name and tap the highlighted suggestion. The note shows on their play group notes too. Use the buttons above for bold, italic or a list.</p>
+      <p class="small muted pg-hint">Type @ and a name to tag a dog, or just type their name and tap the highlighted suggestion. The note shows on their playgroup notes too. Use the buttons above for bold, italic or a list.</p>
       ${showSign ? `<label class="pg-sign"><input type="checkbox" class="pg-signed"${signed ? ' checked' : ''} /> Sign with my name <span class="small muted">(otherwise anonymous)</span></label>` : ''}
     </div>`;
   }
@@ -3334,16 +3620,16 @@
     }
     openOverlay(pgEditorOverlay);
     editor.focus();
-    const close = async () => { if (pgEditorUnfit) pgEditorUnfit(); await closeOverlayAwait(pgEditorOverlay); };
-    pgEditorInner.querySelector('[data-act="cancel"]').addEventListener('click', close);
-    pgEditorInner.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
+    // Cancel (or Back) with unsaved text asks first, offering this same Save.
+    const saveBtn = pgEditorInner.querySelector('[data-act="save"]');
+    const doSave = async () => {
       const body = editor.body();
       if (!body) {
         if (emptyError) toast(emptyError, 'error');
         editor.focus();
-        return;
+        return false;
       }
-      e.currentTarget.disabled = true;
+      saveBtn.disabled = true;
       try {
         const v = { body, noteDate: editor.date() };
         if (v.noteDate && v.noteDate !== todayKey()) pgLastDate = { key: v.noteDate, at: Date.now() };
@@ -3351,12 +3637,18 @@
         const sig = editor.signed();
         if (sig !== undefined) v.signed = sig;
         await save(v);
-        await close();
+        guard.forget();
+        return true;
       } catch (err) {
         toast(err.message, 'error');
-        e.currentTarget.disabled = false;
+        saveBtn.disabled = false;
+        return false;
       }
-    });
+    };
+    const guard = window.PgTags.guardNote(pgEditorInner.querySelector('.pg-text'), { body: editor.body, save: doSave });
+    const close = async () => { if (await closeOverlayAwait(pgEditorOverlay) && pgEditorUnfit) pgEditorUnfit(); };
+    pgEditorInner.querySelector('[data-act="cancel"]').addEventListener('click', close);
+    saveBtn.addEventListener('click', async () => { if (await doSave()) await close(); });
   }
 
   const pgPopup = document.getElementById('playgroupPopup');
@@ -3365,13 +3657,13 @@
   let pgTrail = [];
   async function showPlaygroupNotes(dogId, { keepTrail = false } = {}) {
     if (!keepTrail) pgTrail = [];
-    pgContent.innerHTML = '<h3 style="margin-top:0;">🥎 Play group notes</h3><p class="muted small center loading-line" role="status">Loading…</p>';
+    pgContent.innerHTML = '<h3 style="margin-top:0;">🥎 Playgroup notes</h3><p class="muted small center loading-line" role="status">Loading…</p>';
     openOverlay(pgPopup);
     pgPopup.querySelector('.popup-card').scrollTop = 0;
     try {
       renderPlaygroupNotes(String(dogId), await api(`/api/dogs/${dogId}/playgroup-notes`));
     } catch (err) {
-      pgContent.innerHTML = `<h3 style="margin-top:0;">🥎 Play group notes</h3><p class="small muted">Couldn't load the notes: ${esc(err.message)}</p>`;
+      pgContent.innerHTML = `<h3 style="margin-top:0;">🥎 Playgroup notes</h3><p class="small muted">Couldn't load the notes: ${esc(err.message)}</p>`;
     }
   }
 
@@ -3411,13 +3703,13 @@
       ${back ? `<button type="button" class="link-btn pg-back">← Back to ${esc(back.name)}</button>` : ''}
       <div class="row" style="align-items:center;gap:8px;margin-top:0;">
         ${dog.photoUrl ? `<img loading="lazy" decoding="async" class="dog-photo small" src="${esc(thumbOf(dog.photoUrl))}" alt="" />` : ''}
-        <h3 style="margin:0;">🥎 ${esc(dog.name)}'s play group notes</h3>
+        <h3 style="margin:0;">🥎 ${esc(dog.name)}'s playgroup notes</h3>
       </div>
       ${dog.stillListed === false ? '<p class="small muted" style="margin-top:-6px;">No longer listed at the shelter.</p>' : ''}
       <button type="button" class="btn primary pg-add-btn">＋ Add a note</button>
       ${data.notes.length ? `<ul class="pg-list">${data.notes.map((n, i) => entryHtml(n, null, i > 0)).join('')}</ul>`
-        : '<p class="small muted">No play group notes yet. Paste in earlier notes or add one after play group.</p>'}
-      <p class="small muted pg-desk-link">On a computer? <a href="/playgroup?dog=${dogId}" target="_blank" rel="noopener">Open the play group desk</a> to type up and export notes.</p>
+        : '<p class="small muted">No playgroup notes yet. Paste in earlier notes or add one after playgroup.</p>'}
+      <p class="small muted pg-desk-link">On a computer? <a href="/playgroup?dog=${dogId}" target="_blank" rel="noopener">Open the playgroup desk</a> to type up and export notes.</p>
       ${data.mentions.length ? `<h4 class="pg-section">Mentioned in other dogs' notes (${data.mentions.length})</h4>
         <ul class="pg-list">${data.mentions.map((n) => entryHtml(n, data.dogs[n.dogId] || { id: n.dogId, name: 'another dog' }, true)).join('')}</ul>` : ''}`;
 
@@ -3455,7 +3747,7 @@
       placeholder: `How did ${dog.name} do? Type @ to tag a dog they played with.`,
       save: async (v) => {
         await api(`/api/dogs/${dogId}/playgroup-notes`, { method: 'POST', body: JSON.stringify(v) });
-        toast('Play group note saved');
+        toast('Playgroup note saved');
         reload();
       }
     }));
@@ -3480,7 +3772,9 @@
         const { text, picks } = pgToEditable(n.body, data.dogs);
         openPgEditor({
           title: `${dog.name}: edit note`,
-          text, picks, ownId: dogId, date: n.noteDate, signed: n.signed, showSign: n.mine,
+          // No "Sign with my name" once someone else has edited it (the
+          // server refuses that, canSign false): it would only lead to a 409.
+          text, picks, ownId: dogId, date: n.noteDate, signed: n.signed, showSign: n.mine && n.canSign !== false,
           emptyError: "A note can't be empty. Delete it instead.",
           save: async (v) => {
             await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'PUT', body: JSON.stringify(v) });
@@ -3490,7 +3784,7 @@
         });
       });
       li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
-        if (!(await appConfirm(`Delete this play group note from ${fmtPgDate(n.noteDate)}?`, { title: 'Delete note', confirmText: 'Delete', danger: true }))) return;
+        if (!(await appConfirm(`Delete this playgroup note from ${fmtPgDate(n.noteDate)}?`, { title: 'Delete note', confirmText: 'Delete', danger: true }))) return;
         try { await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'DELETE' }); toast('Note deleted'); reload(); }
         catch (err) { toast(err.message, 'error'); }
       });
@@ -3524,15 +3818,15 @@
         <h3 style="margin-top:0;">🐾 You &amp; ${esc(dogName)}</h3>
         <div class="stat-grid">
           ${mine.count ? `
-          <div class="stat-tile stats-drilldown-tile" id="dogStatsVisitsTile" style="cursor:pointer;"><div class="value">${mine.count}</div><div class="label">${capFirst(t.nouns)} together ›</div></div>
-          <div class="stat-tile stats-drilldown-tile" id="dogStatsTimeTile" style="cursor:pointer;"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together ›</div></div>`
+          <div class="stat-tile stats-drilldown-tile" id="dogStatsVisitsTile" role="button" tabindex="0" style="cursor:pointer;"><div class="value">${mine.count}</div><div class="label">${capFirst(statWords([species || 'dog']).nounsWord)} together ›</div></div>
+          <div class="stat-tile stats-drilldown-tile" id="dogStatsTimeTile" role="button" tabindex="0" style="cursor:pointer;"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together ›</div></div>`
     : `
-          <div class="stat-tile"><div class="value">${mine.count}</div><div class="label">${capFirst(t.nouns)} together</div></div>
+          <div class="stat-tile"><div class="value">${mine.count}</div><div class="label">${capFirst(statWords([species || 'dog']).nounsWord)} together</div></div>
           <div class="stat-tile"><div class="value">${fmtDuration(mine.totalSeconds)}</div><div class="label">Time together</div></div>`}
         </div>
         ${mine.count ? `
         <p class="small">First together ${fmtDate(mine.firstWalkedAt)} · most recently ${fmtDate(mine.lastWalkedAt)}</p>
-        <p class="small">Longest ${t.noun} together: ${fmtDuration(mine.longestSeconds)}</p>` : ''}
+        <p class="small">Longest ${statWords([species || 'dog']).noun} together: ${fmtDuration(mine.longestSeconds)}</p>` : ''}
         ${happyLine}
         <hr />
         <p class="small muted">${capFirst(t.nouns)} logged in Shelter Walk by everyone: ${everyone.count} (${fmtDuration(everyone.totalSeconds)} total). ${esc(dogName)} also gets ${t.nouns} from people who don't use the app, so the real number is likely higher.</p>
@@ -3556,35 +3850,41 @@
     const content = document.getElementById('markerInfoPopupContent');
     if (!content) return;
     const backBtnHtml = `<button type="button" id="backToDogStatsBtn" class="btn back-btn">← Back</button>`;
-    content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3><p class="muted small center loading-line" role="status">Loading…</p>`;
+    content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(statWords([species || 'dog']).nounsWord)} with ${esc(dogName)}</h3><p class="muted small center loading-line" role="status">Loading…</p>`;
     try {
       const history = await api(`/api/dogs/${dogId}/walk-history`);
       const mine = history.walks.filter((w) => w.mine)
-        .map((w) => ({ activity: w.activity, duration_seconds: w.durationSeconds, started_at: w.startedAt }))
+        .map((w) => ({ activity: w.activity, duration_seconds: w.durationSeconds, started_at: w.startedAt, ended_at: w.endedAt || (w.durationSeconds != null ? w.startedAt : null), species }))
         .sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
-      const totalSeconds = mine.reduce((s, w) => s + (w.duration_seconds || 0), 0);
-      const avgSeconds = mine.length ? totalSeconds / mine.length : 0;
+      // Same rule as every other average (avgPick): walks of a minute or
+      // more when there are any, and the bars are exactly those rows.
+      const pick = avgPick(mine);
+      const avgSeconds = walkOnlyAvgSeconds(mine);
       const byActivity = byActivityOf(mine);
       const activityRows = byActivity.length > 1 ? `<div class="stack tight" style="margin-bottom:8px;">${byActivity.map((a) => {
         const info = activityInfo(a.activity);
         return `<div class="card compact"><div class="dog-info"><p class="dog-name">${info.emoji} ${info.label}</p><p class="dog-meta">${activityCount(info, a.count)} · ${fmtDuration(a.totalSeconds)} total</p></div></div>`;
       }).join('')}</div>` : '';
-      const items = mine.map((w) => ({ label: activityInfo(w.activity).label, seconds: w.duration_seconds || 0, sub: fmtDate(w.started_at) }));
+      const items = pick.rows.map((w) => ({ label: activityInfo(w.activity).label, seconds: w.duration_seconds || 0, sub: fmtDate(w.started_at) }));
+      const sw = statWords([species || 'dog']);
       content.innerHTML = `
         ${backBtnHtml}
-        <h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3>
-        <p class="small muted" style="margin-top:-6px;">${mine.length} ${mine.length === 1 ? t.noun : t.nouns} · avg ${fmtDuration(avgSeconds)}, oldest to newest</p>
+        <h3 style="margin-top:0;">🐾 Your ${esc(statWords([species || 'dog']).nounsWord)} with ${esc(dogName)}</h3>
+        <p class="small muted" style="margin-top:-6px;">${plural(mine.length, sw.noun, sw.nounsWord)} · ${avgLabelFor(mine).replace('Average', 'avg')} ${fmtDuration(avgSeconds)}${skippedNote(pick.skipped)}, oldest to newest</p>
         ${activityRows}
         <div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>
       `;
       wireBarChart(content);
     } catch (err) {
-      content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(t.nouns)} with ${esc(dogName)}</h3><p class="small muted">Couldn't load: ${esc(err.message)}</p>`;
+      content.innerHTML = `${backBtnHtml}<h3 style="margin-top:0;">🐾 Your ${esc(statWords([species || 'dog']).nounsWord)} with ${esc(dogName)}</h3><p class="small muted">Couldn't load: ${esc(err.message)}</p>`;
     }
     document.getElementById('backToDogStatsBtn').addEventListener('click', () => showDogStatsPopup(dogId, dogName, species));
   }
 
   const dayWord = (n) => `${n} day${n === 1 ? '' : 's'}`;
+  // The stay counts from the shelter's intake date, which can be before the
+  // dog first showed on the floor (the timeline's dates): say which.
+  const stayText = (dog) => `${dayWord(dog.daysInShelter)} in the shelter this stay${dog.dateInShelter ? `, since ${fmtShortDate(dog.dateInShelter)}` : ''}`;
   const dayKey = (iso) => dateKey(iso);
   // Lays out a most-recent-first list of {occurredAt, label} items as a
   // vertical timeline: same-day items grouped under one date, with the gap
@@ -3664,10 +3964,10 @@
         // 'pending_adoption' event never gets logged for them at all.
         if (dog.isPendingAdoption) {
           if (!establishedToday(['pending_adoption'])) {
-            items.push({ occurredAt: new Date().toISOString(), label: `⏳ Currently pending adoption (${dayWord(dog.daysInShelter)} this stay)` });
+            items.push({ occurredAt: new Date().toISOString(), label: `⏳ Currently pending adoption (${stayText(dog)})` });
           }
         } else if (dog.stillListed && !establishedToday(['new_dog', 'returned'])) {
-          items.push({ occurredAt: new Date().toISOString(), label: `📍 On the floor now (${dayWord(dog.daysInShelter)} this stay)` });
+          items.push({ occurredAt: new Date().toISOString(), label: `📍 On the floor now (${stayText(dog)})` });
         }
         items.push(...sourceEvents.slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)).reverse()
           .map((e) => ({ occurredAt: e.occurredAt, label: timelineEventLabel(e) })));
@@ -3716,7 +4016,7 @@
     state.tab = 'guide';
     tabButtons.forEach((b) => b.classList.remove('active'));
     topbarTitle.textContent = TAB_TITLES.guide;
-    if (alreadyInGuide) history.replaceState({ ...(history.state || {}), tab: 'guide' }, '');
+    if (alreadyInGuide) history.replaceState({ ...(history.state || {}), tab: 'guide', guideSection: null }, '');
     else pushHistory();
     render();
   }
@@ -3877,7 +4177,9 @@
           </button>`).join('')
         : `<p class="empty-state">${g.sections.length ? 'Nothing matches that search.' : 'No sections yet.'}</p>`;
       document.querySelectorAll('.guide-card').forEach((card) => {
-        card.addEventListener('click', () => { g.sectionId = Number(card.dataset.id); appEl.scrollTop = 0; renderGuide(); });
+        // A section is a history step of its own: the phone's Back returns
+        // to the list, not out of the Guide (audit 3).
+        card.addEventListener('click', () => { g.sectionId = Number(card.dataset.id); pushHistory({ guideSection: g.sectionId }); appEl.scrollTop = 0; renderGuide(); });
       });
     };
     drawList();
@@ -3896,7 +4198,7 @@
         <article class="card guide-article">
           <h2>${esc(section.icon || '')} ${esc(section.title)}</h2>
           <div class="guide-body">${renderMarkdown(section.body)}</div>
-          <p class="small muted" style="margin-bottom:0;">Updated ${fmtDate(section.updatedAt)}${section.updatedBy && section.updatedBy !== 'demo' ? ` by ${esc(section.updatedBy)}` : ''}</p>
+          <p class="small muted" style="margin-bottom:0;">Updated ${fmtDate(section.updatedAt)}${section.updatedBy && !['demo', 'app update'].includes(section.updatedBy) ? ` by ${esc(section.updatedBy)}` : ''}</p>
         </article>
         ${g.canEdit ? `
         <div class="card compact stack tight">
@@ -3909,7 +4211,11 @@
           <button type="button" id="guideDelete" class="btn danger">Delete section</button>
         </div>` : ''}
       </div>`;
-    document.getElementById('guideAll').addEventListener('click', () => { g.sectionId = null; appEl.scrollTop = 0; renderGuide(); });
+    document.getElementById('guideAll').addEventListener('click', () => {
+      // Opened from the list: step back through its history entry.
+      if (history.state && history.state.guideSection === section.id) { history.back(); return; }
+      g.sectionId = null; appEl.scrollTop = 0; renderGuide();
+    });
     if (!g.canEdit) return;
     document.getElementById('guideEdit').addEventListener('click', () => {
       g.editing = { id: section.id, icon: section.icon || '', title: section.title, body: section.body };
@@ -3969,7 +4275,7 @@
           <div class="row" style="gap:8px;align-items:flex-end;">
             <div style="flex:0 0 76px;">
               <label for="guideIcon" class="small muted">Icon</label>
-              <input type="text" id="guideIcon" maxlength="4" placeholder="📄" value="${esc(draft.icon)}" style="text-align:center;" />
+              <input type="text" id="guideIcon" maxlength="32" placeholder="📄" value="${esc(draft.icon)}" style="text-align:center;" />
             </div>
             <div style="flex:1;">
               <label for="guideTitle" class="small muted">Title</label>
@@ -4004,6 +4310,9 @@
     const $ = (id) => document.getElementById(id);
     const body = $('guideBody');
     const current = () => ({ ...draft, icon: $('guideIcon').value.trim(), title: $('guideTitle').value.trim(), body: body.value });
+    // Unsaved edits ask before a tab switch, Back out of the Guide or a
+    // reload, like an unsaved note (audit 3): Discard or Keep editing.
+    window.PgTags.guardNote(body, { body: () => JSON.stringify(current()) });
 
     const surround = (before, after, placeholder) => {
       const { selectionStart: a, selectionEnd: b, value } = body;
@@ -4038,6 +4347,8 @@
       toast('Uploading picture…');
       try {
         const blob = await downscaleImage(file);
+        // Same limit as the server (wiki.js MAX_IMAGE_BYTES), said up front.
+        if (blob.size > 6 * 1024 * 1024) { toast('That picture is too large (max 6 MB).', 'error'); return; }
         const res = await fetch('/api/wiki/images', { method: 'POST', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
         const out = await res.json().catch(() => ({}));
         if (!res.ok) throw Object.assign(new Error(httpErrorMessage(res.status, out)), { fromApi: true });
@@ -4098,16 +4409,13 @@
   }
 
   // ---------- Available tab ----------
-  // Four fixed daily walk windows. The last one is internally 4pm-8pm (to
-  // catch a walk that runs a bit long) but always labeled "4-7pm".
-  const WALK_SLOTS = [
-    { label: '7-10a', from: 7, to: 10 },
-    { label: '10-1p', from: 10, to: 13 },
-    { label: '1-4p', from: 13, to: 16 },
-    { label: '4-7p', from: 16, to: 20 }
-  ];
+  // Four fixed daily walk windows (constants.js WALK_SLOTS, via SHARED_CONFIG).
+  // The last one is called 4-7 but counts anything started before the 7:15
+  // stop time (to: 19.25); the label deliberately never says 7:15.
+  const WALK_SLOTS = SHARED_CONFIG.slots;
   function slotIndexForIso(iso) {
-    const hour = shelterHour(iso);
+    const p = shelterParts(iso);
+    const hour = p.hh + p.mm / 60;
     return WALK_SLOTS.findIndex((s) => hour >= s.from && hour < s.to);
   }
 
@@ -4257,7 +4565,7 @@
   }
 
   // PB-only dogs, dogs best without other dogs, and adopted dogs can't
-  // join play group.
+  // join playgroup.
   function playgroupEligible(dog) {
     return !dog.pbFlag && !dog.isPendingAdoption && !(dog.tags || []).includes('Best in Home without Dogs');
   }
@@ -4367,14 +4675,14 @@
     {
       key: '__adult_cats',
       species: 'cat',
-      name: 'Adult Cats',
-      description: 'No kittens: play with as many adult cats as you like',
+      name: 'Adult cats',
+      description: 'No kittens: cuddle as many adult cats as you like',
       filter: { markerFilters: { young: 'hide' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__long_stay_cats',
       species: 'cat',
-      name: 'Long-stay Cats',
+      name: 'Long-stay cats',
       description: 'In the shelter 30 days or more: they wait longest and need the company',
       filter: { markerFilters: {}, locationFilter: [], minDaysAtLeast: null, minShelterDays: 30 }
     },
@@ -4394,7 +4702,7 @@
     {
       key: '__avoid_beginner',
       species: 'dog',
-      name: 'Avoid Beginner Dogs',
+      name: 'Avoid beginner dogs',
       description: 'Targets dogs with behavior issues, so beginners aren’t drawn to them and easier dogs stay available',
       filter: {
         // Target (not exclude) blue-marker dogs, since those are exactly
@@ -4413,14 +4721,14 @@
     {
       key: '__walkable',
       species: 'dog',
-      name: 'Eligible to Walk',
+      name: 'Eligible to walk',
       description: 'Only dogs cleared for your level right now',
       filter: { markerFilters: { walkable: 'only' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__poo',
       species: 'dog',
-      name: 'POO Dogs',
+      name: 'POO dogs',
       description: 'For mornings and evenings (before 11 and after 4)',
       suggestedNow: () => !nonPooHours(),
       filter: { markerFilters: { poo: 'only', poo_priority: 'only' }, locationFilter: [], minDaysAtLeast: null }
@@ -4428,7 +4736,7 @@
     {
       key: '__non_poo',
       species: 'dog',
-      name: 'Non-POO Dogs',
+      name: 'Non-POO dogs',
       description: 'For the middle of the day (11 to 4)',
       suggestedNow: () => nonPooHours(),
       filter: { markerFilters: { poo: 'hide', poo_priority: 'hide' }, locationFilter: [], minDaysAtLeast: null }
@@ -4436,14 +4744,14 @@
     {
       key: '__playgroup',
       species: 'dog',
-      name: 'Playgroup Eligible',
+      name: 'Playgroup eligible',
       description: 'Hides dogs who are PB only, best without other dogs, or adopted',
       filter: { markerFilters: { playgroup: 'only' }, locationFilter: [], minDaysAtLeast: null }
     },
     {
       key: '__not_playgroup',
       species: 'dog',
-      name: 'Not Playgroup Eligible',
+      name: 'Not playgroup eligible',
       description: 'Only dogs who are PB only, best without other dogs, or adopted',
       filter: { markerFilters: { playgroup: 'hide' }, locationFilter: [], minDaysAtLeast: null }
     }
@@ -4532,7 +4840,7 @@
     const noun = nounFor(viewKeys);
     const nouns = nounFor(viewKeys, true);
     // Filters that only mean something for some species (stickers, levels,
-    // play group) show only when the list has one of those.
+    // playgroup) show only when the list has one of those.
     const viewHasStickers = viewKeys.some((k) => speciesInfo(k).stickers);
     const viewHasLevels = viewKeys.some((k) => speciesInfo(k).levelRules);
     const viewHasPlaygroup = viewKeys.some((k) => speciesInfo(k).activities.includes('playgroup'));
@@ -4726,20 +5034,37 @@
       </div>`;
 
     // How many dogs this search/filter returns, against everyone listed.
-    const resultCount = `<p class="muted small result-count" style="margin:0 0 6px;">Showing <strong>${visibleDogs.length}</strong> of ${allDogs.length} ${allDogs.length === 1 ? noun : nouns}</p>`;
+    // A search the filters are hiding matches from: say how many, and offer
+    // to clear the filters (they'd otherwise read as "nobody by that name").
+    let searchHiddenNote = '';
+    if (search) {
+      const listedPool = state.showFoster ? allDogs : allDogs.filter((d) => d.location !== 'In Foster');
+      const hiddenByFilters = listedPool.filter((d) => dogNameMatches(d, search)).length - visibleDogs.length;
+      const inFoster = state.showFoster ? 0 : allDogs.filter((d) => d.location === 'In Foster' && dogNameMatches(d, search)).length;
+      const parts = [];
+      const more = visibleDogs.length ? 'more ' : '';
+      if (hiddenByFilters > 0) parts.push(`${hiddenByFilters} ${hiddenByFilters === 1 ? `${more}${noun} matches` : `${more}${nouns} match`} "${esc(state.availableSearch.trim())}" but ${hiddenByFilters === 1 ? 'is' : 'are'} hidden by your filters.`);
+      if (inFoster > 0) parts.push(`${inFoster} ${inFoster === 1 ? `${noun} matching it is` : `${nouns} matching it are`} in foster.`);
+      if (parts.length) {
+        searchHiddenNote = `<div class="card compact search-hidden-note" role="status" style="margin-bottom:8px;">
+          <p class="small" style="margin:0;">${parts.join(' ')}</p>
+          <div class="row" style="gap:6px;margin-top:6px;">
+            ${hiddenByFilters > 0 ? '<button type="button" class="btn small-btn" id="searchClearFiltersBtn" style="width:auto;">Clear filters</button>' : ''}
+            ${inFoster > 0 ? `<button type="button" class="btn small-btn" id="searchShowFosterBtn" style="width:auto;">Show ${nouns} in foster</button>` : ''}
+          </div>
+        </div>`;
+      }
+    }
+    const resultCount = `<p class="muted small result-count" style="margin:0 0 6px;">Showing <strong>${visibleDogs.length}</strong> of ${allDogs.length} ${allDogs.length === 1 ? noun : nouns}</p>` + searchHiddenNote;
     if (!visibleDogs.length) {
       const searching = !!state.availableSearch.trim();
-      appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<p class="empty-state">${searching ? `No ${nouns} match "${esc(state.availableSearch.trim())}".` : `No ${nouns} match these filters.`}</p>`;
+      appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<p class="empty-state">${searching ? `No ${nouns}${searchHiddenNote ? ' in this list' : ''} match "${esc(state.availableSearch.trim())}".` : `No ${nouns} match these filters.`}</p>`;
       restoreScroll(state.availableScrollTop);
       wireAvailableFilters();
       return;
     }
-    const cards = visibleDogs.map((dog) => {
-      const badge = !speciesOf(dog).levelRules ? '' : dog.tooYoung
-        ? `<span class="badge blocked"><span class="badge-icon" aria-hidden="true">🚫</span> ${esc(notEligibleReasonText(dog))}</span>`
-        : dog.eligible
-        ? `<span class="badge eligible">Eligible ✓</span>`
-        : `<span class="badge not-eligible">${esc(notEligibleReasonText(dog))}</span>`;
+    const cardHtml = (dog) => {
+      const badge = eligibilityStatusHtml(dog);
       return `
         <div class="card compact avail-card${(dog.blueMarkers || []).includes('blue_evo') ? ' evo-caution' : ''}" data-id="${dog.id}">
           <div class="dog-card ${dog.checkedOffToday ? 'checked-off' : ''}">
@@ -4747,7 +5072,7 @@
             <div class="dog-info">
               <p class="dog-name">${esc(dog.name)} ${speciesTagHtml(dog)} ${favButtonHtml(dog)} ${markerBadges(dog)}</p>
               ${akaHtml(dog)}
-              <div class="dog-meta meta-wrap"><p class="meta-list"><span class="meta-item">${esc(dog.breed || 'Unknown breed')}</span><span class="meta-item nowrap">${shelterDaysHtml(dog)}</span><span class="meta-item nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span><span class="meta-item nowrap">ID ${dog.id}</span></p></div>
+              <div class="dog-meta meta-wrap"><p class="meta-list"><span class="meta-item">${esc(dog.breed || 'Unknown breed')}</span><span class="meta-item nowrap">${shelterDaysHtml(dog)}</span><span class="meta-item nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span><span class="meta-item nowrap dog-id">ID ${dog.id}</span></p></div>
               ${slotGridHtml(dog.id, dog.species)}
               ${currentWalkBadge(dog)}
               ${badge}${youngBadgeHtml(dog)}
@@ -4759,12 +5084,40 @@
           </div>
           ${dogActionButtons(dog.id, dog.tooYoung || dog.eligible === false, dog.species)}
         </div>`;
-    }).join('');
-    appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<div class="stack tight">${cards}</div>`;
+    };
+    // eng (audit2): a long list draws its first AVAIL_FIRST_CARDS cards at
+    // once and the rest in chunks after (300 cards took 0.5-1.6 s before the
+    // first one showed). Coming back scrolled down draws them all at once,
+    // so the scroll position can be restored.
+    const AVAIL_FIRST_CARDS = 30;
+    const AVAIL_CHUNK = 40;
+    const chunked = !(state.availableScrollTop > 0) && visibleDogs.length > AVAIL_FIRST_CARDS;
+    const firstDogs = chunked ? visibleDogs.slice(0, AVAIL_FIRST_CARDS) : visibleDogs;
+    appEl.innerHTML = lastUpdatedLine + filterRow + resultCount + `<div class="stack tight" id="availCards">${firstDogs.map(cardHtml).join('')}</div>`;
     restoreScroll(state.availableScrollTop);
     wireAvailableFilters();
-    wireDogActionButtons(appEl);
-    appEl.querySelectorAll('.checkoff-check').forEach((cb) => {
+    wireAvailCards(appEl);
+    const token = (availRenderToken += 1);
+    const list = document.getElementById('availCards');
+    let next = firstDogs.length;
+    const drawMore = () => {
+      // A redraw, another tab or another list since: this one is gone.
+      if (token !== availRenderToken || !list.isConnected || next >= visibleDogs.length) return;
+      const tmp = document.createElement('div');
+      tmp.innerHTML = visibleDogs.slice(next, next + AVAIL_CHUNK).map(cardHtml).join('');
+      next += AVAIL_CHUNK;
+      wireAvailCards(tmp);
+      list.append(...tmp.children);
+      setTimeout(drawMore, 0);
+    };
+    if (chunked) setTimeout(drawMore, 0);
+  }
+  let availRenderToken = 0;
+
+  // The buttons and "Out" checkboxes on Available cards under scope.
+  function wireAvailCards(scope) {
+    wireDogActionButtons(scope);
+    scope.querySelectorAll('.checkoff-check').forEach((cb) => {
       cb.addEventListener('click', (e) => e.stopPropagation());
       cb.addEventListener('change', async (e) => {
         e.stopPropagation();
@@ -4873,6 +5226,11 @@
     wireSpeciesSwitch(redrawAvailableList);
     const clearBtn = document.getElementById('clearFiltersBtn');
     if (clearBtn) clearBtn.addEventListener('click', () => clearAllFilters());
+    // From the "hidden by your filters" note under a search (the search stays).
+    const searchClearBtn = document.getElementById('searchClearFiltersBtn');
+    if (searchClearBtn) searchClearBtn.addEventListener('click', () => { const foster = state.showFoster; clearAllFilters(); if (foster) { state.showFoster = true; redrawAvailableList(); } });
+    const searchFosterBtn = document.getElementById('searchShowFosterBtn');
+    if (searchFosterBtn) searchFosterBtn.addEventListener('click', () => { state.showFoster = true; redrawAvailableList(); });
 
     // ---- Presets tab ----
     document.querySelectorAll('.preset-apply-btn').forEach((btn) => {
@@ -5051,7 +5409,7 @@
     const cancelBtn = document.getElementById('auditCancelScanBtn');
     // Names for the recent list without a network round trip per scan.
     const namesById = new Map();
-    api('/api/dogs?all=true').then((data) => data.dogs.forEach((d) => namesById.set(String(d.id), d.name))).catch(() => {});
+    api('/api/dogs?all=true&fields=names').then((data) => data.dogs.forEach((d) => namesById.set(String(d.id), d.name))).catch(() => {});
     // The camera reports the same code many times a second while it's in
     // view, so the same card again within a couple of seconds is ignored.
     let lastId = null;
@@ -5165,7 +5523,7 @@
           <div class="dog-info">
             <p class="dog-name">${esc(dog.name)} ${sexIcon(dog.sex)} ${markerBadges(dog)}</p>
             ${akaHtml(dog)}
-            <p class="dog-meta">${esc(dog.breed || '')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · ID ${dog.id}</p>
+            <p class="dog-meta">${esc(dog.breed || '')} · ${shelterDaysHtml(dog)} · <span class="nowrap">🏠 ${esc(dog.kennelLocation || '?')}</span> · <span class="nowrap dog-id">ID ${dog.id}</span></p>
           </div>
         </div>
       </div>
@@ -5173,7 +5531,7 @@
         ${stickers ? markerPickerHtml(dog) : `<p class="small muted" style="margin:0;">${esc(speciesOf(dog).plural)} don't have kennel card stickers.</p>`}
         <div class="row" style="margin-top:10px;">
           <button id="auditSaveBtn" class="btn primary" ${!stickers && !state.audit.location ? 'disabled' : ''}>${stickers
-            ? (state.audit.location ? `Save markers &amp; location ${esc(state.audit.location)}` : 'Save markers')
+            ? (state.audit.location ? `Save stickers &amp; location ${esc(state.audit.location)}` : 'Save stickers')
             : `Save location ${esc(state.audit.location || '')}`}</button>
         </div>
         <p id="auditSaveStatus" class="small muted" style="margin:6px 0 0;"></p>
@@ -5190,13 +5548,17 @@
       const letter = state.audit.location;
       statusEl.textContent = 'Saving…';
       try {
-        if (stickers) await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.audit.pendingMarkers) });
+        if (stickers) {
+          const updated = await saveMarkerChanges(dog, state.audit.pendingMarkers);
+          if (updated) Object.assign(dog, { ...markersOfDog(updated), markersVersion: updated.version });
+        }
         if (letter) {
           const locRes = await api(`/api/dogs/${dog.id}/location`, { method: 'PUT', body: JSON.stringify({ location: letter }) });
           dog.kennelLocation = locRes.location;
         }
         statusEl.textContent = 'Saved ✓';
       } catch (err) {
+        if (err.staleMarkers) { await loadAuditDog(dog.id, { quiet: true }); appAlert(err.serverMessage || err.message, 'Stickers changed'); return; }
         statusEl.textContent = `Failed: ${err.message}`;
       }
     });
@@ -5237,14 +5599,17 @@
   // otherwise switching tabs away and back would keep showing stale data.
   // Two views live under the Stats tab: your own numbers, and "Together" --
   // everyone's walks combined, with no names or individual figures anywhere.
+  // Playgroup is a dog activity: a cat-only volunteer gets no tab for it.
+  const showsPlaygroupTab = () => prefSpeciesKeys().some((k) => (speciesInfo(k).activities || []).includes('playgroup'));
   function statsScopeSwitchHtml() {
+    if (state.statsScope === 'playgroup' && !showsPlaygroupTab()) state.statsScope = 'mine';
     return `
       <div class="seg seg-scroll" role="tablist" aria-label="Stats view">
         <button type="button" class="seg-btn ${state.statsScope === 'mine' ? 'on' : ''}" data-scope="mine" role="tab" aria-selected="${state.statsScope === 'mine'}">My stats</button>
         <button type="button" class="seg-btn ${state.statsScope === 'together' ? 'on' : ''}" data-scope="together" role="tab" aria-selected="${state.statsScope === 'together'}">Together</button>
         <button type="button" class="seg-btn ${state.statsScope === 'shelter' ? 'on' : ''}" data-scope="shelter" role="tab" aria-selected="${state.statsScope === 'shelter'}">Shelter</button>
         <button type="button" class="seg-btn ${state.statsScope === 'notes' ? 'on' : ''}" data-scope="notes" role="tab" aria-selected="${state.statsScope === 'notes'}">Notes</button>
-        <button type="button" class="seg-btn ${state.statsScope === 'playgroup' ? 'on' : ''}" data-scope="playgroup" role="tab" aria-selected="${state.statsScope === 'playgroup'}">Play group</button>
+        ${showsPlaygroupTab() ? `<button type="button" class="seg-btn ${state.statsScope === 'playgroup' ? 'on' : ''}" data-scope="playgroup" role="tab" aria-selected="${state.statsScope === 'playgroup'}">Playgroup</button>` : ''}
       </div>${['mine', 'together', 'shelter', 'notes'].includes(state.statsScope) ? statsSpeciesSwitchHtml() : ''}`;
   }
   function wireStatsScopeSwitch() {
@@ -5253,7 +5618,7 @@
     const bar = appEl.querySelector('.seg-scroll');
     const on = bar && bar.querySelector('.seg-btn.on');
     if (on && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2);
-    // Fade whichever edge still has tabs past it, so "Play group" off-screen
+    // Fade whichever edge still has tabs past it, so "Playgroup" off-screen
     // doesn't look like the bar simply ends at "Notes".
     if (bar) {
       const edges = () => {
@@ -5291,21 +5656,25 @@
     // walks whenever there were any, else the one activity there was (a
     // matchmaking-only day is never an "average walk"), else engagements.
     const avgWordOf = (x) => averageWordFor(x && x.avgActivity, termsFor(statsSpeciesKeys()));
-    const tile = (value, label, sub, id) => `<div class="stat-tile${id ? ' stats-drilldown-tile' : ''}"${id ? ` id="${id}" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    const tile = (value, label, sub, id) => `<div class="stat-tile${id ? ' stats-drilldown-tile' : ''}"${id ? ` id="${id}" role="button" tabindex="0" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
     // "Walks" and "dogs" are the same number on most days, so they're one tile;
     // the distinct-dog count only appears when a dog was walked more than once.
     const dogsNote = (walks, dogs) => (dogs && dogs !== walks ? `${dogs} different ${nounFor(statsSpeciesKeys(), dogs !== 1)}` : '');
-    const avg = (x) => fmtDuration(x.avgSeconds || 0);
+    // Nothing a minute or longer to average: a dash and why, never "0 min".
+    const allShort = (x) => x.walks > 0 && !x.avgSeconds;
+    const avg = (x) => (allShort(x) ? '–' : fmtDuration(x.avgSeconds || 0));
+    const avgSub = (x) => (allShort(x) ? 'All under a minute' : null);
+    const engagementsLabel = (n) => (n === 1 ? 'Engagement' : 'Engagements');
     const t = data.today;
     const todayHtml = t
-      ? `<div class="stat-grid three">${tile(t.walks, 'Engagements today ›', dogsNote(t.walks, t.dogs), 'togetherTodayActivityTile')}${tile(hours(t.seconds), 'Collective time ›', null, 'togetherTodayTimeTile')}${tile(avg(t), `${avgWordOf(t)} ›`, null, 'togetherAvgChartTile')}</div>
+      ? `<div class="stat-grid three">${tile(t.walks, `${engagementsLabel(t.walks)} today ›`, dogsNote(t.walks, t.dogs), 'togetherTodayActivityTile')}${tile(hours(t.seconds), 'Collective time ›', null, 'togetherTodayTimeTile')}${tile(avg(t), `${avgWordOf(t)} ›`, avgSub(t), 'togetherAvgChartTile')}</div>
          ${t.sessions.length ? `<div class="stat-grid" style="margin-top:10px;">${t.sessions.map((s) => tile(s.walks, `Engagements ${esc(fmtSlotLabel(s.label))}`, `avg ${avg(s)}`)).join('')}</div>` : ''}`
       : `<div class="card compact center"><p class="muted" style="margin:0;">Today's combined engagements show up here as the day goes on. 🐾</p></div>`;
     const dayRow = (d) => `
       <div class="card compact together-day" data-date="${esc(d.dateKey)}" role="button" tabindex="0">
         <div class="together-day-head">
           <strong>${fmtDayHeading(d.dateKey)}</strong>
-          <span class="muted small">${plural(d.walks, 'engagement', 'engagements')}${d.dogs !== d.walks ? ` (${d.dogs} ${nounFor(statsSpeciesKeys(), true)})` : ''} · ${hours(d.seconds)} · ${avgWordOf(d).toLowerCase()} ${avg(d)} · tap for details ›</span>
+          <span class="muted small">${plural(d.walks, 'engagement', 'engagements')}${d.dogs !== d.walks ? ` (${d.dogs} ${nounFor(statsSpeciesKeys(), d.dogs !== 1)})` : ''} · ${hours(d.seconds)} · ${avgWordOf(d).toLowerCase()} ${avg(d)} · tap for details ›</span>
         </div>
         ${d.sessions.length ? `<div class="together-sessions">${d.sessions.map((s) => `<span class="badge neutral">${esc(fmtSlotLabel(s.label))}: ${s.walks}</span>`).join(' ')}</div>` : ''}
       </div>`;
@@ -5315,9 +5684,9 @@
       'togetherOpenMonths');
     const a = data.allTime;
     // Same breakdowns as My stats, minus any drill-down by dog (see
-    // renderTogetherByActivity), each slice held to the same minimum.
-    const todayBreakdowns = t ? statsBreakdownsHtml({ byActivity: t.byActivity, byPoo: t.byPoo, byAge: t.byAge }, { mine: false, total: t.walks }) : '';
-    const allTimeBreakdowns = statsBreakdownsHtml({ byActivity: a.byActivity, byPoo: a.byPoo, byAge: a.byAge }, { mine: false, total: a.walks });
+    // renderTogetherByActivity).
+    const todayBreakdowns = t ? statsBreakdownsHtml({ byActivity: t.byActivity, byPoo: t.byPoo, byAge: t.byAge }, { mine: false }) : '';
+    const allTimeBreakdowns = statsBreakdownsHtml({ byActivity: a.byActivity, byPoo: a.byPoo, byAge: a.byAge }, { mine: false });
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
       <h2 class="section-heading" style="margin-top:0;">Together today</h2>
@@ -5326,29 +5695,29 @@
       ${t ? `<button type="button" class="btn together-open" data-date="${esc(t.dateKey)}" style="margin-top:10px;">See today's ${termsFor(statsSpeciesKeys([])).nouns} in order ›</button>` : ''}
       ${dayRows ? `<h2 class="section-heading">Past days</h2><div class="stack tight">${dayRows}</div>` : ''}
       <h2 class="section-heading">${a.since ? `Since ${fmtDate(a.since)}` : 'Since we started tracking'}</h2>
-      <div class="stat-grid three">${tile(a.walks, 'Engagements ›', dogsNote(a.walks, a.dogs), 'togetherAllTimeActivityTile')}${tile(hours(a.seconds), 'Collective time ›', null, 'togetherAllTimeTimeTile')}${tile(avg(a), avgWordOf(a))}</div>
+      <div class="stat-grid three">${tile(a.walks, `${engagementsLabel(a.walks)} ›`, dogsNote(a.walks, a.dogs), 'togetherAllTimeActivityTile')}${tile(hours(a.seconds), 'Collective time ›', null, 'togetherAllTimeTimeTile')}${tile(avg(a), avgWordOf(a), avgSub(a))}</div>
       ${allTimeBreakdowns ? `<div class="card compact bd-card" style="margin-top:10px;">${allTimeBreakdowns}</div>` : ''}
-      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. No names or individual numbers are shown or stored here, ever. Days, sessions and breakdown slices with fewer than ${data.minCell} engagements are left out (they still count in the totals).</p>`;
+      <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. No names or individual numbers are shown or stored here, ever. Days and sessions with fewer than ${data.minCell} engagements aren't listed on their own (they still count in the totals).</p>`;
     wireStatsScopeSwitch();
     wireStatsBreakdowns('together');
     wireVisitMonths('togetherOpenMonths');
     appEl.querySelectorAll('[data-date]').forEach((el) => {
-      const open = () => { state.togetherDay = el.dataset.date; renderTogetherDay(); };
+      const open = () => statsDrill(() => { state.togetherDay = el.dataset.date; });
       el.addEventListener('click', open);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
     const todayActivityTile = document.getElementById('togetherTodayActivityTile');
-    if (todayActivityTile) todayActivityTile.addEventListener('click', () => { state.togetherByActivity = 'today'; renderStats(); });
+    if (todayActivityTile) todayActivityTile.addEventListener('click', () => statsDrill(() => { state.togetherByActivity = 'today'; }));
     const allTimeActivityTile = document.getElementById('togetherAllTimeActivityTile');
-    if (allTimeActivityTile) allTimeActivityTile.addEventListener('click', () => { state.togetherByActivity = 'allTime'; renderStats(); });
+    if (allTimeActivityTile) allTimeActivityTile.addEventListener('click', () => statsDrill(() => { state.togetherByActivity = 'allTime'; }));
     const todayTimeTile = document.getElementById('togetherTodayTimeTile');
-    if (todayTimeTile) todayTimeTile.addEventListener('click', () => { state.togetherByActivity = 'today'; renderStats(); });
+    if (todayTimeTile) todayTimeTile.addEventListener('click', () => statsDrill(() => { state.togetherByActivity = 'today'; }));
     const allTimeTimeTile = document.getElementById('togetherAllTimeTimeTile');
-    if (allTimeTimeTile) allTimeTimeTile.addEventListener('click', () => { state.togetherByActivity = 'allTime'; renderStats(); });
+    if (allTimeTimeTile) allTimeTimeTile.addEventListener('click', () => statsDrill(() => { state.togetherByActivity = 'allTime'; }));
     // Only today's average is charted (per-dog, anonymous) -- charting every
     // engagement ever would be hundreds of bars with no real use.
     const avgChartTile = document.getElementById('togetherAvgChartTile');
-    if (avgChartTile && t) avgChartTile.addEventListener('click', () => { state.togetherAvgChart = t.dateKey; renderStats(); });
+    if (avgChartTile && t) avgChartTile.addEventListener('click', () => statsDrill(() => { state.togetherAvgChart = t.dateKey; }));
   }
 
   // Someone else's engagement on a Together day: only its session (the
@@ -5376,24 +5745,26 @@
     // The average itself is walk-only with an all-activities fallback (see
     // impact.js's avgOf), so the chart matches: only walks when there are
     // any today, otherwise every engagement.
-    const walkOnly = data.walks.filter((w) => (w.activity || 'walk') === 'walk');
-    const chartWalks = walkOnly.length ? walkOnly : data.walks;
+    // Misscans under a minute get no bar and aren't in the average (avgPick,
+    // same rule as the tile); the caption says how many were left out.
+    const pick = avgPick(data.walks);
     // Already in order (by session; only your own carry clock times).
-    const ordered = [...chartWalks].sort((a, b) => a.order - b.order);
+    const ordered = [...pick.rows].sort((a, b) => a.order - b.order);
     // The day's exact average (others' bars are to the nearest 5 minutes).
     const avgSeconds = data.totals ? data.totals.avgSeconds
       : (ordered.length ? ordered.reduce((s, w) => s + (w.durationSeconds || 0), 0) / ordered.length : 0);
     const items = ordered.map((w) => ({ label: w.dogName, seconds: w.durationSeconds || 0, sub: w.mine ? `${fmtClock(w.startedAt)} · you` : togetherSlotText(w) }));
+    // The server's own name for it (impact.js avgActivity, which won't name
+    // a rare activity on its own); else what avgPick saw.
+    const avgActivity = data.totals ? data.totals.avgActivity : pick.activity;
+    const word = averageWordFor(avgActivity, termsFor(statsSpeciesKeys())).replace(/^Average /, '');
     appEl.innerHTML = `
       <button id="togetherAvgChartBack" class="btn back-btn">← Back to Together</button>
-      <h2 class="section-heading" style="margin-top:0;">Today's engagement length, oldest to newest</h2>
-      <p class="small muted" style="margin-top:-6px;">${ordered.length} engagement${ordered.length === 1 ? '' : 's'} · avg ${fmtDuration(avgSeconds)} · tap a bar for details</p>
+      <h2 class="section-heading" style="margin-top:0;">Today's ${esc(word)} length, oldest to newest</h2>
+      <p class="small muted" style="margin-top:-6px;">${ordered.length ? `${plural(ordered.length, word, `${word}s`)} · avg ${fmtDuration(avgSeconds)}${skippedNote(pick.skipped)} · tap a bar for details` : 'avg –'}</p>
       <div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>
       <p class="small muted center" style="margin-top:14px;">Everyone's engagements, combined. Names are never shown; only your own are marked "you", and only you see that.</p>`;
-    document.getElementById('togetherAvgChartBack').addEventListener('click', () => {
-      state.togetherAvgChart = null;
-      renderStats();
-    });
+    document.getElementById('togetherAvgChartBack').addEventListener('click', () => statsBack(() => { state.togetherAvgChart = null; }));
     wireBarChart();
   }
 
@@ -5430,12 +5801,9 @@
     }).join('');
     appEl.innerHTML = heading +
       (byActivity.length ? `<div class="stack tight">${rows}</div>`
-        : `<p class="empty-state">Not enough of any one activity yet to break down -- it's still combined into the totals.</p>`) +
-      `<p class="small muted center" style="margin-top:14px;">Everyone's engagements, combined. An activity type with fewer than ${data.minCell} engagements isn't shown separately, so a rare one can't be pinned on whoever did it (it still counts in the totals above).</p>`;
-    document.getElementById('togetherActivityBack').addEventListener('click', () => {
-      state.togetherByActivity = false;
-      renderStats();
-    });
+        : `<p class="empty-state">No engagements to break down yet.</p>`) +
+      `<p class="small muted center" style="margin-top:14px;">Everyone's engagements, combined.</p>`;
+    document.getElementById('togetherActivityBack').addEventListener('click', () => statsBack(() => { state.togetherByActivity = false; }));
   }
 
   // Everyone's walks for one day, in order: which dog, when, how long. No
@@ -5461,27 +5829,28 @@
     const totalSeconds = data.totals ? data.totals.seconds : data.walks.reduce((sum, w) => sum + (w.durationSeconds || 0), 0);
     const dayAvgSeconds = data.totals ? data.totals.avgSeconds : walkOnlyAvgSeconds(data.walks);
     const dogs = new Set(data.walks.map((w) => w.dogId)).size;
+    const dayPick = avgPick(data.walks);
     const rowsHtml = data.walks.map((w) => `
       <div class="card compact dog-card together-walk" data-dogid="${w.dogId}">
         <div class="together-order">${w.order}</div>
         <img loading="lazy" decoding="async" class="dog-photo small" src="${w.photoUrl ? esc(thumbOf(w.photoUrl)) : '/icons/icon-192.png'}" alt="" />
         <div class="dog-info">
           <p class="dog-name">${esc(w.dogName)} ${markerBadges({ id: w.dogId, blueMarkers: w.blueMarkers ? JSON.parse(w.blueMarkers) : [], pooStatus: w.pooStatus || 'none', starFlag: w.starFlag, pbFlag: w.pbFlag, name: w.dogName })}${w.mine ? ' <span class="badge eligible">You</span>' : ''}</p>
-          <p class="dog-meta">${w.mine ? `${fmtClock(w.startedAt)} – ${fmtClock(w.endedAt)} · ${fmtDuration(w.durationSeconds)}` : `${togetherSlotText(w)} · ${roundedLength(w.durationSeconds)}`}</p>
+          <p class="dog-meta">${w.mine ? `${fmtClockRange(w.startedAt, w.endedAt)} · ${fmtDuration(w.durationSeconds)}` : `${togetherSlotText(w)} · ${roundedLength(w.durationSeconds)}`}</p>
         </div>
       </div>`).join('');
     appEl.innerHTML = `
       <button id="togetherBack" class="btn back-btn">← Back to Together</button>
       <h2 class="section-heading">${fmtDayHeading(date)}</h2>
       <div class="stat-grid three">
-        <div class="stat-tile"><div class="value">${data.walks.length}</div><div class="label">Engagements</div>${dogs !== data.walks.length ? `<div class="label sub">${dogs} different animal${dogs === 1 ? '' : 's'}</div>` : ''}</div>
+        <div class="stat-tile"><div class="value">${data.walks.length}</div><div class="label">${data.walks.length === 1 ? 'Engagement' : 'Engagements'}</div>${dogs !== data.walks.length ? `<div class="label sub">${dogs} different ${nounFor(statsSpeciesKeys(), dogs !== 1)}</div>` : ''}</div>
         <div class="stat-tile"><div class="value">${fmtDuration(totalSeconds)}</div><div class="label">Collective time</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(dayAvgSeconds)}</div><div class="label">${avgLabelFor(data.walks.map((w) => ({ ...w, species: statsSpecies() })))}</div></div>
+        <div class="stat-tile"><div class="value">${dayPick.rows.length ? fmtDuration(dayAvgSeconds) : '–'}</div><div class="label">${data.totals ? averageWordFor(data.totals.avgActivity, termsFor(statsSpeciesKeys())) : avgLabelFor(data.walks.map((w) => ({ ...w, species: statsSpecies() })))}</div>${dayPick.skipped ? `<div class="label sub">${dayPick.rows.length ? `Not counting ${dayPick.skipped} under a minute` : 'All under a minute'}</div>` : ''}</div>
       </div>
       <h2 class="section-heading">In order</h2>
       <div class="stack tight">${rowsHtml}</div>
       <p class="small muted center" style="margin-top:14px;">Everyone's engagements with the animals, combined. Names are never shown; only your own are marked "You", and only you see that.</p>`;
-    document.getElementById('togetherBack').addEventListener('click', () => { state.togetherDay = null; renderStats(); });
+    document.getElementById('togetherBack').addEventListener('click', () => statsBack(() => { state.togetherDay = null; }));
     appEl.querySelectorAll('.together-walk').forEach((card) => card.addEventListener('click', async () => {
       try {
         const { dog, walks } = await api(`/api/dogs/${card.dataset.dogid}?userId=${state.currentUser.id}`);
@@ -5500,6 +5869,14 @@
   // home now (owner, 2026-11-10). Foster has its own tile and chart; nothing
   // else counts the animals in foster (owner, 2026-11-09).
   const SHELTER_RANGES = [{ days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 0, label: 'All' }];
+  // " Tracking starts Nov 7." -- the first day on record, else the server's
+  // `since` (a species' first day, before it has a day to show); never a
+  // bare "Tracking starts .".
+  function trackingStartText(data) {
+    const key = (data.days && data.days[0] && data.days[0].dateKey) || data.since;
+    if (!key) return '';
+    return key > todayKey() ? ` Tracking starts ${esc(fmtShortDate(key))}.` : ` Tracking started ${esc(fmtShortDate(key))}.`;
+  }
   async function renderShelterTrends() {
     const myTab = state.tab;
     let data;
@@ -5518,13 +5895,23 @@
     const nouns = info.plural.toLowerCase();
     const days = state.shelterRange ? data.days.slice(-state.shelterRange) : data.days;
     const sum = (k) => days.reduce((n, d) => n + d[k], 0);
-    const perDay = (k) => (days.length ? Math.round((sum(k) / days.length) * 10) / 10 : 0);
+    // A day with no scrape on record (no count, no events) is a gap, not a
+    // day where nothing came in or went out: it's left out of the in/out
+    // chart and the per-day averages.
+    // Only once daily counts are being kept (the first day with one): from
+    // then on a day without one had no good scrape.
+    const firstCounted = (days.find((d) => d.floor != null) || {}).dateKey;
+    const noData = (d) => !!firstCounted && d.dateKey > firstCounted && d.floor == null && d.foster == null
+      && !d.newDogs && !d.returned && !d.adopted && !d.otherExits;
+    const knownDays = days.filter((d) => !noData(d));
+    const perDay = (k) => (knownDays.length ? Math.round((sum(k) / knownDays.length) * 10) / 10 : 0);
+    const inoutDays = days.map((d) => (noData(d) ? { ...d, broughtIn: null, adopted: null } : d));
     // These tiles' "drill-down" is the chart (and table) already below them
     // -- a line over time is the right shape for a count that moves day to
     // day, not another per-interaction bar chart, so a tap jumps to and
     // opens that detail instead of building a second chart that says the
     // same thing. target: which chart answers this tile ('floor', 'foster' or 'inout').
-    const tile = (value, label, sub, target) => `<div class="stat-tile${target ? ' stats-drilldown-tile' : ''}"${target ? ` data-trend-target="${target}" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}${target ? ' ›' : ''}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+    const tile = (value, label, sub, target) => `<div class="stat-tile${target ? ' stats-drilldown-tile' : ''}"${target ? ` data-trend-target="${target}" role="button" tabindex="0" style="cursor:pointer;"` : ''}><div class="value">${value}</div><div class="label">${label}${target ? ' ›' : ''}</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
     const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
     const shortDate = (key) => fmtShortDate(key);
     // Change since the first day in range that has a count on record.
@@ -5550,7 +5937,7 @@
       <h2 class="section-heading" id="trendFloorHeading">${esc(info.plural)} at the shelter</h2>
       <div class="card compact trend-card">${trendChartHtml(days, [{ key: 'floor', label: 'At the shelter', cls: 'floor' }], { zoom: true })}</div>
       <h2 class="section-heading" id="trendInoutHeading">In and out each day</h2>
-      <div class="card compact trend-card">${trendChartHtml(days, [
+      <div class="card compact trend-card">${trendChartHtml(inoutDays, [
         { key: 'broughtIn', label: 'Brought in', cls: 'in' },
         { key: 'adopted', label: 'Adopted', cls: 'out' }
       ])}</div>
@@ -5565,13 +5952,14 @@
           </table>
         </div>
       </details>
-      <p class="small muted center" style="margin-top:14px;">From the shelter's public listing, checked through the day. "At the shelter" is the ${esc(nouns)} on the listing at day's end, leaving out the ones in foster, which are counted on their own. Gaps are days with no foster count on record. "Brought in" is new ${esc(nouns)} plus ${esc(nouns)} returned. "Other exits" are ${esc(nouns)} that left the listing without showing as adopted (transfers, returned to owner and so on). Tracking starts ${esc(shortDate(data.days[0] ? data.days[0].dateKey : ''))}.</p>`;
+      <p class="small muted center" style="margin-top:14px;">From the shelter's public listing, checked through the day. "At the shelter" is the ${esc(nouns)} on the listing at day's end, leaving out the ones in foster, which are counted on their own. Gaps are days with nothing on record. "Brought in" is new ${esc(nouns)} plus ${esc(nouns)} returned. "Other exits" are ${esc(nouns)} that left the listing without showing as adopted (transfers, returned to owner and so on).${trackingStartText(data)}</p>`;
     wireStatsScopeSwitch();
     appEl.querySelectorAll('[data-shelter-range]').forEach((b) => b.addEventListener('click', () => {
       state.shelterRange = Number(b.dataset.shelterRange);
       renderShelterTrends();
     }));
-    wireTrendCharts(days, shortDate);
+    // inoutDays: the same days, with no-data days' in/out as gaps (tooltips).
+    wireTrendCharts(inoutDays, shortDate);
     appEl.querySelectorAll('[data-trend-target]').forEach((t2) => {
       t2.addEventListener('click', () => {
         const heading = document.getElementById({ floor: 'trendFloorHeading', foster: 'trendFosterHeading' }[t2.dataset.trendTarget] || 'trendInoutHeading');
@@ -5661,7 +6049,7 @@
         dots.forEach((dot, k) => { dot.setAttribute('cx', g.xs[i]); dot.setAttribute('cy', g.ys[i][k] ?? 0); dot.classList.toggle('hidden', g.ys[i][k] == null); });
         const d = days[i];
         tip.innerHTML = `<strong>${esc(fmtDay(d.dateKey))}</strong>${g.series.map((s) => `<div><i class="trend-swatch ${s.cls}"></i>${esc(s.label)}: <strong>${d[s.key] == null ? '–' : d[s.key]}</strong></div>`).join('')}`
-          + (g.series.some((s) => s.key === 'broughtIn') ? `<div class="muted">${d.newDogs} new · ${d.returned} returned</div>` : '');
+          + (g.series.some((s) => s.key === 'broughtIn') && d.broughtIn != null ? `<div class="muted">${d.newDogs} new · ${d.returned} returned</div>` : '');
         tip.classList.remove('hidden');
         const px = (g.xs[i] / g.W) * r.width;
         const tw = tip.offsetWidth;
@@ -5682,11 +6070,18 @@
   // seconds }], already in the order to display.
   function durationBarChartHtml(items, avgSeconds) {
     if (!items.length) return `<p class="small muted" style="margin:0;">Nothing to show yet.</p>`;
-    const BAR_W = 14, GAP = 10, padL = 36, padR = 10, padT = 10, padB = 10, H = 160;
+    // A long history gets thinner bars, so it isn't thousands of pixels wide.
+    // (Up to about 1200px; past that every bar shares the space, down to 1px.)
+    const barStep = Math.max(1.5, Math.min(24, 1200 / Math.max(1, items.length)));
+    const BAR_W = barStep >= 24 ? 14 : Math.max(1, barStep * 0.7), GAP = barStep - BAR_W, padR = 10, padT = 10, padB = 10, H = 160;
     const plotH = H - padT - padB;
     const maxSeconds = Math.max(avgSeconds, ...items.map((it) => it.seconds), 60);
     const step = niceStep(maxSeconds / 4 || 1);
     const yMax = Math.ceil(maxSeconds / step) * step || step;
+    // Room for the widest axis label ("2h 30m"), so none is clipped.
+    let widest = 0;
+    for (let v = 0; v <= yMax + 1e-9; v += step) widest = Math.max(widest, fmtDuration(v).length);
+    const padL = Math.max(36, Math.ceil(widest * 7.8) + 10);
     const W = Math.max(padL + padR + items.length * (BAR_W + GAP) - GAP, 240);
     const y = (secs) => padT + plotH * (1 - secs / yMax);
     const grid = [];
@@ -5756,7 +6151,7 @@
     // dog's own species, not whoever's looking, decides the wording.
     const kindLabelFor = (dog, kind) => {
       if (kind === 'tip') return 'Tip';
-      if (kind === 'playgroup') return state.notesMine ? 'From your play group' : 'From play group';
+      if (kind === 'playgroup') return state.notesMine ? 'From your playgroup' : 'From playgroup';
       if (kind === 'private') return 'Private · only you';
       const t = termsOf(dog);
       return state.notesMine ? `From your ${t.noun}` : `From ${aNoun(t)}`;
@@ -5832,37 +6227,57 @@
     if (search) search.addEventListener('input', () => { state.notesQuery = search.value; draw(); });
   }
 
-  // Every dog's play group notes in one place, grouped by dog, newest
+  // Every dog's playgroup notes in one place, grouped by dog, newest
   // activity first. Reuses the desk's own /api/playgroup-notes -- unlike
   // /api/notes above, it isn't limited to dogs still at the shelter (the
   // desk already relies on seeing history for dogs who've since left), so a
   // dog here may show a "left" badge and still list its past sessions.
-  // Tapping a dog opens the same play group popup the profile button does.
+  // Tapping a dog opens the same playgroup popup the profile button does.
   async function renderPlaygroupStats() {
     const myTab = state.tab;
     let data;
+    // eng (audit2): paged, PG_STATS_PAGE notes at a time (it was every note,
+    // 672 KB); "Show older notes" and searching fetch the rest.
+    const PG_STATS_PAGE = 150;
     try {
-      data = await api('/api/playgroup-notes');
+      data = await api(`/api/playgroup-notes?limit=${PG_STATS_PAGE}`);
     } catch (err) {
-      if (state.tab === myTab) showLoadError('the play group notes', err, renderStats);
+      if (state.tab === myTab) showLoadError('the playgroup notes', err, renderStats);
       return;
     }
     if (state.tab !== myTab || state.statsScope !== 'playgroup') return;
-    const byDog = new Map();
-    for (const n of data.notes) {
-      if (!byDog.has(n.dogId)) byDog.set(n.dogId, { dog: data.dogs[n.dogId] || { id: n.dogId, name: n.dogName, kennelLocation: n.kennelLocation }, notes: [] });
-      byDog.get(n.dogId).notes.push(n);
-    }
-    // allNotes() already sorts each dog's own notes newest-first; sort the
-    // dogs themselves by their most recent note.
-    const groups = [...byDog.values()].sort((a, b) => (b.notes[0].noteDate || '').localeCompare(a.notes[0].noteDate || ''));
+    // One fetch at a time (a search typed fast asks on every key).
+    let loadingMore = null;
+    const loadMore = (all) => {
+      if (!loadingMore) {
+        loadingMore = api(`/api/playgroup-notes?offset=${data.nextOffset}&limit=${all ? 1000 : PG_STATS_PAGE}`).then((next) => {
+          data = { ...next, notes: [...data.notes, ...next.notes], dogs: { ...data.dogs, ...next.dogs }, dogTotals: { ...data.dogTotals, ...next.dogTotals } };
+          regroup();
+        }).finally(() => { loadingMore = null; });
+      }
+      return loadingMore;
+    };
+    let groups = [];
+    const regroup = () => {
+      const byDog = new Map();
+      for (const n of data.notes) {
+        if (!byDog.has(n.dogId)) byDog.set(n.dogId, { dog: data.dogs[n.dogId] || { id: n.dogId, name: n.dogName, kennelLocation: n.kennelLocation }, notes: [] });
+        byDog.get(n.dogId).notes.push(n);
+      }
+      // allNotes() already sorts each dog's own notes newest-first; sort the
+      // dogs themselves by their most recent note.
+      groups = [...byDog.values()].sort((a, b) => (b.notes[0].noteDate || '').localeCompare(a.notes[0].noteDate || ''));
+    };
+    regroup();
+    // A dog's notes in all, even when older ones are on a later page.
+    const noteCount = (g) => (data.dogTotals || {})[g.dog.id] || g.notes.length;
     const groupHtml = (g) => `
       <div class="card compact all-notes-dog" data-dogid="${g.dog.id}">
         <div class="all-notes-head" role="button" tabindex="0">
           <img loading="lazy" decoding="async" class="dog-photo small" src="${g.dog.photoUrl ? esc(thumbOf(g.dog.photoUrl)) : '/icons/icon-192.png'}" alt="" />
           <div class="dog-info">
             <p class="dog-name">${esc(g.dog.name)}${g.dog.stillListed === false ? ` <span class="badge neutral">${g.dog.adopted ? 'Adopted' : 'Left shelter'}</span>` : ''}</p>
-            <p class="dog-meta">${g.notes.length} note${g.notes.length === 1 ? '' : 's'}${g.dog.kennelLocation ? ` · 🏠 ${esc(g.dog.kennelLocation)}` : ''} · tap to open ›</p>
+            <p class="dog-meta">${noteCount(g)} note${noteCount(g) === 1 ? '' : 's'}${g.dog.kennelLocation ? ` · 🏠 ${esc(g.dog.kennelLocation)}` : ''} · tap to open ›</p>
           </div>
         </div>
         <ul class="pg-list">
@@ -5878,23 +6293,36 @@
     const matches = (g, q) => !q || dogNameMatches(g.dog, q) || g.notes.some((n) => n.text.toLowerCase().includes(q) || (n.author || '').toLowerCase().includes(q));
     appEl.innerHTML = `
       ${statsScopeSwitchHtml()}
-      <h2 class="section-heading" style="margin-top:0;">Play group notes</h2>
-      ${data.notes.length ? `<input type="search" id="pgStatsSearch" class="all-notes-search" aria-label="Search play group notes by dog or word" placeholder="Search by dog or word…" value="${esc(state.pgStatsQuery)}" />` : ''}
+      <h2 class="section-heading" style="margin-top:0;">Playgroup notes</h2>
+      ${data.notes.length ? `<input type="search" id="pgStatsSearch" class="all-notes-search" aria-label="Search playgroup notes by dog or word" placeholder="Search by dog or word…" value="${esc(state.pgStatsQuery)}" />` : ''}
       <div class="stack tight" id="pgStatsList"></div>
-      <p class="small muted center" style="margin-top:14px;">Every play group note on record, including dogs who've since left the shelter. Tap a dog to open their notes and add one.</p>`;
+      <p class="small muted center" style="margin-top:14px;">Every playgroup note on record, including dogs who've since left the shelter. Tap a dog to open their notes and add one.</p>`;
     wireStatsScopeSwitch();
     const list = document.getElementById('pgStatsList');
     const draw = () => {
       const q = state.pgStatsQuery.trim().toLowerCase();
+      // A search covers every note, so it fetches the pages not loaded yet.
+      if (q && data.nextOffset != null) {
+        loadMore(true).then(() => { if (state.tab === myTab && state.statsScope === 'playgroup') draw(); }).catch((err) => toast(err.message, 'error'));
+        return;
+      }
       const shown = groups.filter((g) => matches(g, q));
-      list.innerHTML = shown.length
+      list.innerHTML = (shown.length
         ? shown.map(groupHtml).join('')
-        : `<div class="card compact center"><p class="muted" style="margin:0;">${groups.length ? 'No notes match that search.' : 'No play group notes yet. 🥎'}</p></div>`;
+        : `<div class="card compact center"><p class="muted" style="margin:0;">${groups.length ? 'No notes match that search.' : 'No playgroup notes yet. 🥎'}</p></div>`)
+        + (data.nextOffset != null ? '<button type="button" class="btn" id="pgStatsMore" data-testid="pg-stats-more">Show older notes</button>' : '');
       list.querySelectorAll('.all-notes-head').forEach((head) => {
         const open = () => showPlaygroupNotes(head.parentElement.dataset.dogid);
         head.addEventListener('click', open);
         head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
       });
+      const more = document.getElementById('pgStatsMore');
+      if (more) {
+        more.addEventListener('click', async () => {
+          more.disabled = true;
+          try { await loadMore(false); draw(); } catch (err) { more.disabled = false; toast(err.message, 'error'); }
+        });
+      }
     };
     draw();
     const search = document.getElementById('pgStatsSearch');
@@ -5937,19 +6365,23 @@
       const map = new Map();
       for (const w of rows) {
         const key = keyOf(w);
-        if (!map.has(key)) map.set(key, { [keyName]: key, count: 0, totalSeconds: 0, ids: new Set() });
+        if (!map.has(key)) map.set(key, { [keyName]: key, count: 0, totalSeconds: 0, avgCount: 0, avgTotal: 0, ids: new Set() });
         const e = map.get(key);
         e.count += 1;
         e.totalSeconds += w.duration_seconds || 0;
+        // The average leaves out mis-scans under a minute, like /api/stats
+        // (avgCount); avgText() then says how many were left out.
+        if ((w.duration_seconds || 0) >= SHARED_CONFIG.minAvgSeconds) { e.avgCount += 1; e.avgTotal += w.duration_seconds; }
         e.ids.add(w.dog_id);
       }
       const list = (order ? order.filter((k) => map.has(k)).map((k) => map.get(k)) : [...map.values()].sort((a, b) => b.count - a.count));
-      return list.map(({ ids, ...e }) => ({ ...e, animals: ids.size, avgSeconds: e.count ? e.totalSeconds / e.count : 0 }));
+      return list.map(({ ids, avgTotal, ...e }) => ({ ...e, animals: ids.size, avgSeconds: e.avgCount ? avgTotal / e.avgCount : 0 }));
     };
     const done = walks.filter((w) => w.ended_at);
     return {
       byActivity: group(done, 'activity', (w) => w.activity || 'walk'),
-      byPoo: group(done.filter((w) => w.poo_then), 'status', (w) => w.poo_then, ['priority', 'poo', 'none']),
+      // Walks only: POO doesn't apply to a cuddle or playgroup.
+      byPoo: group(done.filter((w) => w.poo_then && (w.activity || 'walk') === 'walk'), 'status', (w) => w.poo_then, ['priority', 'poo', 'none']),
       byAge: group(done.filter((w) => speciesOf(w).youngFirst), 'group', (w) => (w.is_young ? 'young' : 'adult'), ['young', 'adult'])
     };
   }
@@ -5963,30 +6395,31 @@
   // A slice's share: a small one that rounds to nothing still reads as there.
   const pctLabel = (n, total) => {
     const pct = Math.round((n / total) * 100);
-    return pct === 0 && n > 0 ? '<1%' : `${pct}%`;
+    if (pct === 0 && n > 0) return '<1%';
+    // Next to other slices, never "100%" (99.6% rounds up): ">99%".
+    if (pct === 100 && n < total) return '>99%';
+    return `${pct}%`;
   };
   // "avg 26 min", and when engagements under a minute were left out of it
   // (avgCount, from the server), how many: the count and total cover them,
   // so without this the numbers don't add up.
   const avgText = (r) => {
     const skipped = r.avgCount != null ? r.count - r.avgCount : 0;
+    // Nothing left to average: say so, never "avg 0 min".
+    if (r.avgCount === 0 && r.count > 0) return 'all under a minute';
     return `avg ${fmtDuration(r.avgSeconds)}${skipped > 0 ? `, not counting ${skipped} under a minute` : ''}`;
   };
   // One breakdown as rows with a bar for each slice's share of the count.
   // `tap`: the data attribute that makes a row open something (or null).
-  // `fullTotal`: the count before small slices were left out (Together), so
-  // percentages are of everything and the hidden rest shows as "Other".
-  function breakdownRowsHtml(rows, { title, note, labelOf, nounOf, animalNoun, tap, fullTotal }) {
+  // `note`: a line under the title, given the slices' total. `sub`: drawn
+  // indented under the breakdown before it, as a split of those same
+  // engagements rather than a separate stat. `after(r)`: extra html right
+  // under one row (the POO split under Walk).
+  function breakdownRowsHtml(rows, { title, note, labelOf, nounOf, animalNoun, tap, sub, after }) {
     if (!rows || !rows.length) return '';
-    const shown = rows.reduce((n, r) => n + r.count, 0);
-    const total = Math.max(shown, fullTotal || 0) || 1;
-    const otherPct = Math.round(((total - shown) / total) * 100);
-    const otherRow = total > shown ? `<div class="bd-row bd-other">
-          <div class="bd-head"><span class="bd-label">Other</span><span class="bd-pct">${pctLabel(total - shown, total)}</span></div>
-          <div class="bd-bar"><span style="width:${Math.max(otherPct, 2)}%"></span></div>
-          <p class="bd-meta">${plural(total - shown, 'engagement', 'engagements')} in slices too small to show</p>
-        </div>` : '';
-    return `<h3 class="bd-title">${title}</h3>${note ? `<p class="small muted bd-note">${note}</p>` : ''}
+    const sum = rows.reduce((n, r) => n + r.count, 0);
+    const total = sum || 1;
+    const html = `<h3 class="bd-title">${title}</h3>${note ? `<p class="small muted bd-note">${note(sum)}</p>` : ''}
       <div class="bd-list">${rows.map((r) => {
         const pct = Math.round((r.count / total) * 100);
         const attr = tap ? ` ${tap(r)} role="button" tabindex="0"` : '';
@@ -5994,44 +6427,50 @@
           <div class="bd-head"><span class="bd-label">${labelOf(r)}</span><span class="bd-pct">${pctLabel(r.count, total)}</span></div>
           <div class="bd-bar"><span style="width:${Math.max(pct, 2)}%"></span></div>
           <p class="bd-meta">${plural(r.count, ...nounOf(r))}${r.animals != null ? ` · ${plural(r.animals, ...animalNoun(r))}` : ''} · ${fmtDuration(r.totalSeconds)} total · ${avgText(r)}${tap ? ' ›' : ''}</p>
-        </div>`;
-      }).join('')}${otherRow}</div>`;
+        </div>${after ? after(r) : ''}`;
+      }).join('')}</div>`;
+    return sub ? `<div class="bd-sub">${html}</div>` : html;
   }
   // Every breakdown that applies to what's on screen. `mine`: rows open the
   // personal drill-downs (Together has none, see renderTogetherByActivity).
-  // `total`: every engagement in scope, when small slices were left out.
-  function statsBreakdownsHtml(b, { mine, total }) {
+  function statsBreakdownsHtml(b, { mine }) {
     const animalNoun = (kind) => () => [speciesInfo(kind).noun, speciesInfo(kind).plural.toLowerCase()];
     const anyNoun = animalNoun(statsSpecies());
     const engagements = () => ['engagement', 'engagements'];
+    // POO only means something for a walk, so its split sits right under
+    // the Walk row (and counts walks only), never after the whole list.
+    const pooHtml = breakdownRowsHtml(b.byPoo, {
+      title: '↳ POO vs non-POO dogs',
+      note: (n) => `${n === 1 ? 'The 1 walk above' : `All ${n} walks above`}, split by the POO sticker the dog had at the time.`,
+      labelOf: (r) => `${POO_GROUPS[r.status].icon} ${POO_GROUPS[r.status].label}`,
+      nounOf: () => ['walk', 'walks'], animalNoun: animalNoun('dog'), sub: true
+    });
+    const walkRow = (b.byActivity || []).some((r) => r.activity === 'walk');
     return [
       breakdownRowsHtml(b.byActivity, {
-        title: 'By engagement type',
+        title: 'By activity',
         labelOf: (r) => `${activityInfo(r.activity).emoji} ${activityInfo(r.activity).label}`,
         nounOf: (r) => activityCountNouns(activityInfo(r.activity)), animalNoun: anyNoun,
-        tap: mine ? (r) => `data-bd-activity="${esc(r.activity)}"` : null, fullTotal: total
+        tap: mine ? (r) => `data-bd-activity="${esc(r.activity)}"` : null,
+        after: (r) => (r.activity === 'walk' ? pooHtml : '')
       }),
-      breakdownRowsHtml(b.byPoo, {
-        title: 'POO vs non-POO dogs',
-        note: 'By the POO sticker the dog had at the time.',
-        labelOf: (r) => `${POO_GROUPS[r.status].icon} ${POO_GROUPS[r.status].label}`,
-        nounOf: engagements, animalNoun: animalNoun('dog'), fullTotal: total
-      }),
+      walkRow ? '' : pooHtml,
       breakdownRowsHtml(b.byAge, {
-        title: 'Kittens vs adult cats',
+        title: '↳ Kittens vs adult cats',
+        note: (n) => `${n === 1 ? 'The 1 cat engagement above' : `All ${n} cat engagements above`}, split by age.`,
         labelOf: (r) => (r.group === 'young' ? '🍼 Kittens' : '🐈 Adult cats'),
-        nounOf: engagements, animalNoun: animalNoun('cat'), fullTotal: total
+        nounOf: engagements, animalNoun: animalNoun('cat'), sub: true
       })
     ].join('');
   }
   function wireStatsBreakdowns(scope) {
     appEl.querySelectorAll('.bd-row[data-bd-activity]').forEach((row) => {
-      const open = () => {
+      const open = () => statsDrill(() => {
         state.statsBreakdownScope = scope;
         state.statsActivityFilter = row.dataset.bdActivity;
+        state.statsActivityShowAll = false;
         state.statsView = 'byActivityDog';
-        renderStats();
-      };
+      });
       row.addEventListener('click', open);
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
@@ -6088,7 +6527,24 @@
     });
   }
 
+  // Every one of this volunteer's engagements, a page of 1000 at a time:
+  // a long history (Lifetime's visits, the avg chart) must not stop at the
+  // first page and disagree with the server's totals.
+  const MY_WALKS_PAGE = 1000;
+  async function fetchMyWalks() {
+    const walks = [];
+    const tagged = {};
+    for (let offset = 0; ; offset += MY_WALKS_PAGE) {
+      const page = await api(`/api/walks?limit=${MY_WALKS_PAGE}&offset=${offset}&userId=${state.currentUser.id}`);
+      walks.push(...(page.walks || []));
+      Object.assign(tagged, page.tagged || {});
+      if (!page.walks || page.walks.length < MY_WALKS_PAGE || offset >= 50 * MY_WALKS_PAGE) break;
+    }
+    return { walks, tagged };
+  }
+
   async function renderStats() {
+    if (state.statsScope === 'playgroup' && !showsPlaygroupTab()) state.statsScope = 'mine';
     if (state.statsScope === 'notes') {
       appEl.innerHTML = `<p class="muted small center loading-line" role="status">Loading…</p>`;
       return renderAllNotes();
@@ -6115,7 +6571,7 @@
     try {
       [data, walksData] = await Promise.all([
         api(`/api/stats?userId=${state.currentUser.id}&species=${statsSpecies()}`),
-        api(`/api/walks?limit=1000&userId=${state.currentUser.id}`)
+        fetchMyWalks()
       ]);
     } catch (err) {
       if (state.tab === myTab) showLoadError('your stats', err, renderStats);
@@ -6152,8 +6608,7 @@
     // never the volunteer's current Settings preference -- see
     // historySpeciesKeys above.
     const lifetimeKeys = statsSpeciesKeys(data.perDog);
-    const lifetimeTerms = termsFor(lifetimeKeys);
-    const lw = statWords(lifetimeKeys);
+    const lw = statWords(lifetimeKeys, { count: t.totalWalks, unique: t.uniqueDogs });
     const heading = statsScopeSwitchHtml() + `<h2 class="section-heading" style="margin-top:0;">Lifetime stats</h2>`;
     const rangeToggle = `<button type="button" id="statsRangeToggle" class="btn primary" style="margin-bottom:10px;">View today's stats</button>`;
     const tiles = `
@@ -6161,7 +6616,9 @@
         ${statDrillTile(t.totalWalks, lw.count, 'byActivity')}
         ${statDrillTile(t.uniqueDogs, lw.unique, 'byDogSection')}
         ${statDrillTile(fmtDuration(t.totalSeconds), lw.time, 'byActivity')}
-        ${statDrillTile(fmtDuration(t.avgSeconds), lw.avg, 'avgChart')}
+        ${t.totalWalks && !t.avgSeconds
+    ? statDrillTile('–', lifetimeAvgLabel(data.byActivity, lifetimeKeys), 'avgChart', 'All under a minute')
+    : statDrillTile(fmtDuration(t.avgSeconds), lifetimeAvgLabel(data.byActivity, lifetimeKeys), 'avgChart')}
       </div>`;
     const lifetimeBreakdowns = statsBreakdownsHtml({ byActivity: data.byActivity, byPoo: data.byPoo, byAge: data.byAge }, { mine: true });
     if (!data.perDog.length) {
@@ -6176,11 +6633,11 @@
       const dKeys = historySpeciesKeys(day.walks);
       const dw = statWords(dKeys);
       return `
-      <div class="card dog-card" data-daykey="${esc(day.key)}">
+      <div class="card dog-card" data-daykey="${esc(day.key)}" role="button" tabindex="0">
         <div class="dog-info">
           <p class="dog-name">${fmtDayHeading(day.key)}</p>
           <p class="dog-meta">${day.dogCount} ${nounFor(dKeys, day.dogCount !== 1)} · ${plural(day.walkCount, dw.noun, dw.nounsWord)}</p>
-          <p class="dog-meta">${fmtClock(day.firstStart)} – ${fmtClock(day.lastEnd)}</p>
+          <p class="dog-meta">${fmtClockRange(day.firstStart, day.lastEnd)}</p>
         </div>
         <span class="muted">›</span>
       </div>`;
@@ -6219,13 +6676,17 @@
       document.getElementById('byDogList').innerHTML = renderByDogRows(state.statsPerDogRaw);
       wireByDogList();
     });
+    // Back from a visit day lands on the same spot in the list (audit 3).
+    if (state.statsReturnScroll != null) { restoreScroll(state.statsReturnScroll); state.statsReturnScroll = null; }
     appEl.querySelectorAll('[data-daykey]').forEach((card) => {
-      card.addEventListener('click', () => {
+      const open = () => statsDrill(() => {
+        state.statsReturnScroll = appEl.scrollTop;
         state.selectedDateKey = card.dataset.daykey;
         state.selectedShiftIndex = null;
         state.statsView = 'day';
-        renderStats();
       });
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
   }
 
@@ -6234,8 +6695,53 @@
   // doesn't navigate, it scrolls the already-visible By Dog list into view
   // (only Lifetime has one on the same page; Today/Day get their own
   // 'byDogScope' screen instead, wired the normal way).
-  function statDrillTile(value, label, drill) {
-    return `<div class="stat-tile stats-drilldown-tile" data-drill="${drill}" style="cursor:pointer;"><div class="value">${value}</div><div class="label">${label} ›</div></div>`;
+  function statDrillTile(value, label, drill, sub) {
+    return `<div class="stat-tile stats-drilldown-tile" data-drill="${drill}" role="button" tabindex="0" style="cursor:pointer;"><div class="value">${value}</div><div class="label">${label} ›</div>${sub ? `<div class="label sub">${sub}</div>` : ''}</div>`;
+  }
+  // An average tile over these rows: "–" and "All under a minute" when every
+  // one was a mis-scan, never "0 min".
+  function avgDrillTile(walks, label) {
+    const pick = avgPick(walks);
+    if (!pick.rows.length && pick.skipped) return statDrillTile('–', label, 'avgChart', 'All under a minute');
+    return statDrillTile(fmtDuration(walkOnlyAvgSeconds(walks)), label, 'avgChart');
+  }
+
+  // ---- Stats drill-downs and the Back button ----
+  // Every drill-down (a day, a breakdown, a chart, a Together day...) is a
+  // history step, like a scanned dog: the phone's Back closes it and lands
+  // on the Stats screen it came from, never on Available. Each step carries
+  // the drill state it shows (statsNav); the popstate handler puts it back.
+  // (Function declarations, not consts: pushHistory, near the top, calls them.)
+  function statsNavState() {
+    const nav = {};
+    for (const k of ['statsView', 'statsBreakdownScope', 'statsActivityFilter', 'selectedDateKey', 'selectedShiftIndex', 'togetherDay', 'togetherAvgChart', 'togetherByActivity']) {
+      nav[k] = state[k] === undefined ? null : state[k];
+    }
+    return nav;
+  }
+  // nav null: the top of Stats (whichever scope tab is on).
+  function applyStatsNav(nav) {
+    Object.assign(state, { statsView: 'summary', statsActivityFilter: null, selectedShiftIndex: null, togetherDay: null, togetherAvgChart: null, togetherByActivity: false }, nav || {});
+  }
+  function sameStatsNav(nav) {
+    const now = statsNavState();
+    applyStatsNav(nav);
+    const next = statsNavState();
+    Object.assign(state, now);
+    return JSON.stringify(now) === JSON.stringify(next);
+  }
+  // Open a drill-down: change the state, add the history step, show it.
+  function statsDrill(change) {
+    change();
+    pushHistory({ statsNav: statsNavState(), statsDrill: true });
+    renderStats();
+  }
+  // An on-screen "← Back": the same as the phone's Back when this screen is
+  // a step of its own, else (an older entry) just go up a level.
+  function statsBack(fallback) {
+    if (history.state && history.state.statsDrill && state.tab === 'stats') { history.back(); return; }
+    fallback();
+    renderStats();
   }
   function wireStatDrillTiles(scope) {
     appEl.querySelectorAll('.stat-tile[data-drill]').forEach((tile) => {
@@ -6245,16 +6751,16 @@
           if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
           return;
         }
-        state.statsBreakdownScope = scope;
-        state.statsView = tile.dataset.drill;
-        renderStats();
+        statsDrill(() => {
+          state.statsBreakdownScope = scope;
+          state.statsView = tile.dataset.drill;
+        });
       });
     });
   }
   // Today/Day's breakdown, chart and by-dog screens are computed client-side
   // from the walks already on the page (no extra round-trip, and these
-  // scopes are small enough that the shared /api/walks?limit=1000 fetch
-  // always has every one of them); Lifetime keeps using the server's
+  // shared fetchMyWalks() has every one of them); Lifetime keeps using the server's
   // accurate, unbounded totals. Returns null for 'lifetime' so callers know
   // to fall back to the server data they already have.
   function statsBreakdownSourceWalks(allWalks) {
@@ -6266,19 +6772,20 @@
     return null;
   }
   function backFromStatsBreakdown() {
-    state.statsView = state.statsBreakdownScope === 'day' ? 'day' : 'summary';
-    renderStats();
+    statsBack(() => { state.statsView = state.statsBreakdownScope === 'day' ? 'day' : 'summary'; });
   }
   function byActivityOf(walks) {
     const map = new Map();
     for (const w of walks) {
       const key = w.activity || 'walk';
-      if (!map.has(key)) map.set(key, { activity: key, count: 0, totalSeconds: 0 });
+      if (!map.has(key)) map.set(key, { activity: key, count: 0, totalSeconds: 0, avgCount: 0, avgTotal: 0 });
       const e = map.get(key);
       e.count += 1;
       e.totalSeconds += w.duration_seconds || 0;
+      // Mis-scans under a minute stay out of the average (avgText says so).
+      if ((w.duration_seconds || 0) >= SHARED_CONFIG.minAvgSeconds) { e.avgCount += 1; e.avgTotal += w.duration_seconds; }
     }
-    return [...map.values()].map((e) => ({ ...e, avgSeconds: e.count ? e.totalSeconds / e.count : 0 })).sort((a, b) => b.count - a.count);
+    return [...map.values()].map(({ avgTotal, ...e }) => ({ ...e, avgSeconds: e.avgCount ? avgTotal / e.avgCount : 0 })).sort((a, b) => b.count - a.count);
   }
   // Shaped like /api/stats's perDog, for renderByDogRows -- still_listed
   // isn't on a walk row, so these always read as present (fine: Today/Day
@@ -6314,10 +6821,10 @@
     const rows = byActivity.map((a) => {
       const info = activityInfo(a.activity);
       return `
-      <div class="card dog-card" data-activity="${esc(a.activity)}">
+      <div class="card dog-card" data-activity="${esc(a.activity)}" role="button" tabindex="0">
         <div class="dog-info">
           <p class="dog-name">${info.emoji} ${info.label}</p>
-          <p class="dog-meta">${activityCount(info, a.count)} · ${fmtDuration(a.totalSeconds)} total · avg ${fmtDuration(a.avgSeconds)}</p>
+          <p class="dog-meta">${activityCount(info, a.count)} · ${fmtDuration(a.totalSeconds)} total · ${avgText(a)}</p>
         </div>
         <span class="muted">›</span>
       </div>`;
@@ -6326,11 +6833,13 @@
       (byActivity.length ? `<div class="stack tight">${rows}</div>` : `<p class="empty-state">No completed engagements yet.</p>`);
     document.getElementById('backToStatsBtn').addEventListener('click', backFromStatsBreakdown);
     appEl.querySelectorAll('[data-activity]').forEach((card) => {
-      card.addEventListener('click', () => {
+      const open = () => statsDrill(() => {
         state.statsActivityFilter = card.dataset.activity;
+        state.statsActivityShowAll = false;
         state.statsView = 'byActivityDog';
-        renderStats();
       });
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
   }
 
@@ -6338,6 +6847,8 @@
   // By Activity -- same By Dog card list, scoped to just that activity.
   // Lifetime fetches the server's accurate totals; Today/Day compute from
   // the walks already on the page.
+  // How many of your sessions the activity drill-down lists before "Show all".
+  const ACTIVITY_SESSIONS_SHOWN = 20;
   async function renderStatsByActivityDog(data, allWalks) {
     const myTab = state.tab;
     const activity = state.statsActivityFilter;
@@ -6349,7 +6860,13 @@
       const filtered = scopeWalks.filter((w) => (w.activity || 'walk') === activity);
       perDog = byDogOf(filtered);
       const totalSeconds = filtered.reduce((s, w) => s + (w.duration_seconds || 0), 0);
-      totals = { totalWalks: filtered.length, uniqueDogs: perDog.length, totalSeconds, avgSeconds: filtered.length ? totalSeconds / filtered.length : 0 };
+      // The average leaves out mis-scans under a minute, as everywhere else.
+      const counted = filtered.filter((w) => (w.duration_seconds || 0) >= SHARED_CONFIG.minAvgSeconds);
+      totals = {
+        totalWalks: filtered.length, uniqueDogs: perDog.length, totalSeconds,
+        avgSeconds: counted.length ? counted.reduce((s, w) => s + w.duration_seconds, 0) / counted.length : 0,
+        avgCount: counted.length
+      };
     } else {
       appEl.innerHTML = `<p class="muted small center loading-line" role="status">Loading…</p>`;
       let apiData;
@@ -6366,22 +6883,101 @@
     const heading = `<button id="backToActivityBtn" class="btn back-btn">← Back to By activity</button><h2 class="section-heading" style="margin-top:0;">${info.emoji} ${info.label}</h2>`;
     const tiles = `
       <div class="stat-grid">
-        <div class="stat-tile"><div class="value">${totals.totalWalks}</div><div class="label">${capFirst(info.noun)}${totals.totalWalks === 1 ? '' : 's'}</div></div>
-        <div class="stat-tile"><div class="value">${totals.uniqueDogs}</div><div class="label">${capFirst(nounFor(statsSpeciesKeys(perDog), true))}</div></div>
+        <div class="stat-tile"><div class="value">${totals.totalWalks}</div><div class="label">${capFirst(activityCountNouns(info)[totals.totalWalks === 1 ? 0 : 1])}</div></div>
+        <div class="stat-tile"><div class="value">${totals.uniqueDogs}</div><div class="label">${capFirst(nounFor(statsSpeciesKeys(perDog), totals.uniqueDogs !== 1))}</div></div>
         <div class="stat-tile"><div class="value">${fmtDuration(totals.totalSeconds)}</div><div class="label">Total time</div></div>
-        <div class="stat-tile"><div class="value">${fmtDuration(totals.avgSeconds)}</div><div class="label">Avg length</div></div>
+        <div class="stat-tile"><div class="value">${totals.avgCount === 0 && totals.totalWalks ? '–' : fmtDuration(totals.avgSeconds)}</div><div class="label">Avg ${esc(info.noun)} length</div>${totals.avgCount != null && totals.totalWalks > totals.avgCount ? `<div class="label sub">${totals.avgCount === 0 ? 'All under a minute' : `Not counting ${totals.totalWalks - totals.avgCount} under a minute`}</div>` : ''}</div>
       </div>`;
     state.statsPerDogRaw = perDog;
-    const byDogRows = renderByDogRows(perDog, info);
+    // One list of your own sessions of this activity, grouped by animal or
+    // by date (the switch shows only when there's more than one animal, as
+    // otherwise both are the same list). Each session edits only itself --
+    // activity, times, delete -- so one logged as the wrong activity (a
+    // cuddle that was really a walk) can be fixed right here.
+    const sessions = (scopeWalks || allWalks)
+      .filter((w) => (w.activity || 'walk') === activity && w.ended_at)
+      .sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+    const animalWord = nounFor(statsSpeciesKeys(perDog));
+    const groupKey = perDog.length > 1 && state.statsActivityGroup === 'date' ? 'date' : 'dog';
+    const limit = state.statsActivityShowAll ? Infinity : ACTIVITY_SESSIONS_SHOWN;
+    const shown = sessions.slice(0, limit);
+    const datePrefix = (w) => `<span class="small muted">${fmtDate(w.started_at)}</span> `;
+    let listHtml;
+    if (groupKey === 'date') {
+      listHtml = shown.map((w) => statsWalkCardHtml(w, datePrefix(w), { sessionOnly: true })).join('');
+    } else {
+      // Animals in the same order as before (most engaged first); sessions
+      // newest first under each, up to the same overall limit.
+      let left = limit;
+      listHtml = perDog.map((d) => {
+        if (left <= 0) return '';
+        const own = sessions.filter((w) => String(w.dog_id) === String(d.id)).slice(0, left);
+        if (!own.length) return '';
+        left -= own.length;
+        return activityDogGroupHtml(d, info, own.map((w) => statsWalkCardHtml(w, datePrefix(w), { sessionOnly: true, underDog: true })).join(''));
+      }).join('');
+    }
+    const groupSwitch = perDog.length > 1 ? `
+      <div class="seg seg-small" role="radiogroup" aria-label="Group by" style="margin:0 0 8px;">
+        <button type="button" class="seg-btn ${groupKey === 'dog' ? 'on' : ''}" data-activity-group="dog" role="radio" aria-checked="${groupKey === 'dog'}">By ${esc(animalWord)}</button>
+        <button type="button" class="seg-btn ${groupKey === 'date' ? 'on' : ''}" data-activity-group="date" role="radio" aria-checked="${groupKey === 'date'}">By date</button>
+      </div>` : '';
     appEl.innerHTML = heading + tiles +
-      (perDog.length
-        ? `<h2 class="section-heading">By ${capFirst(nounFor(statsSpeciesKeys(perDog)))}</h2><div class="stack" id="byDogList">${byDogRows}</div>`
+      (sessions.length
+        ? `<h2 class="section-heading">Your ${esc(activityCountNouns(info)[1])}</h2>
+           <p class="small muted" style="margin-top:-6px;">Tap a ${esc(info.noun)}'s ✎ to fix its times or change the activity.</p>
+           ${groupSwitch}
+           <div class="stack" id="byDogList">${listHtml}</div>
+           ${sessions.length > shown.length ? `<button id="showAllSessionsBtn" class="btn" style="margin-top:8px;">Show all ${sessions.length}</button>` : ''}`
         : `<p class="empty-state">No completed ${activityCountNouns(info)[1]} yet.</p>`);
-    document.getElementById('backToActivityBtn').addEventListener('click', () => {
-      state.statsView = 'byActivity';
-      renderStats();
-    });
-    if (perDog.length) wireByDogList();
+    document.getElementById('backToActivityBtn').addEventListener('click', () => statsBack(() => { state.statsActivityShowAll = false; state.statsView = 'byActivity'; }));
+    const rerender = () => renderStatsByActivityDog(data, allWalks);
+    appEl.querySelectorAll('[data-activity-group]').forEach((btn) => btn.addEventListener('click', () => {
+      state.statsActivityGroup = btn.dataset.activityGroup;
+      rerender();
+    }));
+    const showAllBtn = document.getElementById('showAllSessionsBtn');
+    if (showAllBtn) showAllBtn.addEventListener('click', () => { state.statsActivityShowAll = true; rerender(); });
+    if (sessions.length) {
+      wireStatsWalkCards(null, () => renderStats());
+      wireByDogList();
+      appEl.querySelectorAll('.animal-edit-btn').forEach((btn) => btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showDogEditPopup(btn.dataset.id);
+      }));
+    }
+  }
+
+  // One animal's heading on the activity drill-down (photo, name, its
+  // count and total) with its sessions under it. Editing the animal
+  // (stickers, kennel) is its own button, apart from each session's ✎, and
+  // never starts anything.
+  function activityDogGroupHtml(d, info, sessionsHtml) {
+    const markerDog = {
+      id: d.id,
+      blueMarkers: d.blue_markers ? JSON.parse(d.blue_markers) : [],
+      pooStatus: d.poo_status || 'none',
+      starFlag: !!d.star_flag,
+      pbFlag: !!d.pb_flag
+    };
+    const nouns = activityCountNouns(info);
+    const t = termsOf({ species: d.species });
+    return `
+      <div class="card compact" data-id="${d.id}">
+        <div class="dog-card">
+          <img loading="lazy" decoding="async" class="dog-photo" src="${d.photo_url ? esc(thumbOf(d.photo_url)) : '/icons/icon-192.png'}" alt="" />
+          <div class="dog-info">
+            <p class="dog-name">${esc(d.name)} ${markerBadges({ ...markerDog, name: d.name })}${d.stillListed ? '' : ` <span class="badge neutral">Adopted/Removed${d.removedAt ? ' ' + fmtDate(d.removedAt) : ''}</span>`}</p>
+            <p class="dog-meta">${d.walkCount} ${d.walkCount === 1 ? nouns[0] : nouns[1]} · ${fmtDuration(d.totalSeconds)} total</p>
+            <div class="row" style="margin-top:6px;">
+              <button class="btn small-btn view-profile-btn" data-id="${d.id}">View info</button>
+              <button class="btn small-btn walk-history-btn" data-dog-id="${d.id}" title="${capFirst(t.noun)} history" aria-label="${capFirst(t.noun)} history" style="flex:0 0 auto;width:auto;">🕘</button>
+              <button class="btn small-btn animal-edit-btn" data-id="${d.id}">${speciesOf(d).emoji} Edit ${esc(speciesOf(d).noun)}</button>
+            </div>
+          </div>
+        </div>
+        ${sessionsHtml}
+      </div>`;
   }
 
   // The drill-down behind "Avg length": a bar per interaction, oldest to
@@ -6395,15 +6991,23 @@
     // same rows as the tile's walkOnlyAvgSeconds: walks of a minute or more,
     // else every engagement.
     const scopeWalks = (statsBreakdownSourceWalks(allWalks) || allWalks).filter(rowEnded);
-    const walkRows = scopeWalks.filter((w) => (w.activity || 'walk') === 'walk' && rowSeconds(w) >= 60);
-    const sourceWalks = walkRows.length ? walkRows : scopeWalks;
-    const ordered = [...sourceWalks].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+    // Exactly the rows the tile averaged (avgPick): mis-scans under a
+    // minute get no bar, and the caption says how many were left out.
+    const pick = avgPick(scopeWalks);
+    const ordered = [...pick.rows].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
     const avgSeconds = walkOnlyAvgSeconds(scopeWalks);
     const items = ordered.map((w) => ({ label: w.dog_name, seconds: w.duration_seconds || 0, sub: `${fmtDate(w.started_at)} · ${fmtClock(w.started_at)}` }));
-    const terms = termsFor(statsSpeciesKeys(ordered));
-    const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(terms.noun)} length, oldest to newest</h2>`;
+    // Named after what it's of: "Walk length" only when it's walks.
+    const word = avgLabelFor(scopeWalks).replace(/^Average /, '');
+    const countWords = [word, `${word}s`];
+    const heading = `<button id="backToStatsBtn" class="btn back-btn">← Back to Stats</button><h2 class="section-heading" style="margin-top:0;">${capFirst(word)} length, oldest to newest</h2>`;
+    // Nothing averaged (no walks today, or only mis-scans): a dash, and no
+    // "tap a bar" with no bars (audit 3).
+    const caption = ordered.length
+      ? `${ordered.length} ${ordered.length === 1 ? countWords[0] : countWords[1]} · avg ${fmtDuration(avgSeconds)}${skippedNote(pick.skipped)} · tap a bar for details`
+      : (pick.skipped ? `All ${pick.skipped} under a minute, so there's no average` : `Nothing finished yet · avg –`);
     appEl.innerHTML = heading +
-      `<p class="small muted" style="margin-top:-6px;">${ordered.length} ${ordered.length === 1 ? terms.noun : terms.nouns} · avg ${fmtDuration(avgSeconds)} · tap a bar for details</p>` +
+      `<p class="small muted" style="margin-top:-6px;">${caption}</p>` +
       `<div class="card compact">${durationBarChartHtml(items, avgSeconds)}</div>`;
     document.getElementById('backToStatsBtn').addEventListener('click', backFromStatsBreakdown);
     wireBarChart();
@@ -6439,31 +7043,37 @@
   // out with the next dog.
   // Shared by the Today view and the per-day view so editing works the same
   // from either -- no need to detour through lifetime stats.
-  function statsWalkCardHtml(w, prefix) {
+  // opts.sessionOnly: the session's own edits (activity, times, delete) plus
+  // a separate "Edit dog" (stickers, kennel), instead of the notes shortcut. opts.underDog: listed under the
+  // dog's own heading, so no photo or name again either.
+  function statsWalkCardHtml(w, prefix, opts = {}) {
+    const dogPart = opts.underDog ? '' : ` ${esc(w.dog_name)} ${markerBadges({ id: w.dog_id, blueMarkers: w.blue_markers ? JSON.parse(w.blue_markers) : [], pooStatus: w.poo_status || 'none', starFlag: !!w.star_flag, pbFlag: !!w.pb_flag, name: w.dog_name })}`;
     return `
-      <div class="card dog-card" data-dogid="${w.dog_id}">
-        <img loading="lazy" decoding="async" class="dog-photo" src="${w.photo_url ? esc(thumbOf(w.photo_url)) : '/icons/icon-192.png'}" alt="" />
+      <div class="${opts.underDog ? 'session-row' : 'card dog-card'}" data-dogid="${w.dog_id}">
+        ${opts.underDog ? '' : `<img loading="lazy" decoding="async" class="dog-photo" src="${w.photo_url ? esc(thumbOf(w.photo_url)) : '/icons/icon-192.png'}" alt="" />`}
         <div class="dog-info">
-          <p class="dog-name">${prefix}<span title="${activityInfo(w.activity).label}">${activityInfo(w.activity).emoji}</span> ${esc(w.dog_name)} ${markerBadges({ id: w.dog_id, blueMarkers: w.blue_markers ? JSON.parse(w.blue_markers) : [], pooStatus: w.poo_status || 'none', starFlag: !!w.star_flag, pbFlag: !!w.pb_flag, name: w.dog_name })} ${w.manual_entry ? '<span class="badge neutral">Manually added</span>' : ''}${w.auto_stopped ? '<span class="badge auto-stopped" title="This walk hit the time limit and was ended automatically. Edit the time if it ran longer.">Auto-stopped</span>' : ''}${!w.manual_entry && w.edited ? '<span class="badge neutral edited-badge" data-id="' + w.id + '" style="cursor:pointer;" title="Tap to see the original scanned times">Edited ✎</span>' : ''}</p>
-          <p class="dog-meta walk-times-display" data-id="${w.id}">${fmtClock(w.started_at)} – ${fmtClock(w.ended_at)} · ${fmtDuration(w.duration_seconds)}</p>
+          <p class="dog-name">${prefix}<span title="${activityInfo(w.activity).label}">${activityInfo(w.activity).emoji}</span>${dogPart} ${w.manual_entry ? '<span class="badge neutral">Manually added</span>' : ''}${w.auto_stopped ? '<span class="badge auto-stopped" title="This walk hit the time limit and was ended automatically. Edit the time if it ran longer.">Auto-stopped</span>' : ''}${!w.manual_entry && w.edited ? '<span class="badge neutral edited-badge" data-id="' + w.id + '" style="cursor:pointer;" title="Tap to see the original scanned times">Edited ✎</span>' : ''}</p>
+          <p class="dog-meta walk-times-display" data-id="${w.id}">${fmtClockRange(w.started_at, w.ended_at)} · ${fmtDuration(w.duration_seconds)}</p>
           ${w.edited && (w.original_started_at || w.original_ended_at) ? `<p class="small muted original-times-display hidden" data-id="${w.id}">Originally scanned: ${fmtClock(w.original_started_at)} – ${w.original_ended_at ? fmtClock(w.original_ended_at) : '-'}</p>` : ''}
-          <div class="edit-times-row hidden" data-id="${w.id}" style="margin:4px 0;">
+          <div class="edit-times-row hidden" data-id="${w.id}" data-daykey="${dateKey(w.started_at)}" style="margin:4px 0;">
             <select class="edit-activity" aria-label="Activity">${activityOptionsHtml(w.activity, speciesOf(w).activities)}</select>
             <label class="small edit-time-line">Start <input type="time" class="edit-start-time" value="${toLocalTimeInput(w.started_at)}" /></label>
             <label class="small edit-time-line">End <input type="time" class="edit-end-time" value="${w.ended_at ? toLocalTimeInput(w.ended_at) : ''}" /></label>
             <button class="btn primary small-btn save-times-btn" data-id="${w.id}" style="margin-top:4px;">Save</button>
           </div>
-          <p class="dog-meta nowrap">🏠 ${esc(w.location || '-')}</p>
+          ${w.location ? `<p class="dog-meta nowrap">🏠 ${esc(w.location)}</p>` : ''}
           <p class="small">${w.notes ? noteBodyHtml(w.notes, state.statsTagged) : '<span class="muted">No notes</span>'}</p>
           <div class="row" style="margin-top:6px;align-items:center;justify-content:flex-end;">
-            <button class="btn small-btn walk-action-btn dog-notes-btn" data-dog-id="${w.dog_id}" title="${esc(w.dog_name)}'s tips and your private note" aria-label="${esc(w.dog_name)}'s notes">📝 Dog notes</button>
-            <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit walk (times, activity)" aria-label="Edit walk">✎</button>
-            <button class="btn danger walk-action-btn delete-walk-btn" data-id="${w.id}" data-name="${esc(w.dog_name)}" data-species="${esc(w.species || '')}" title="Delete walk" aria-label="Delete walk">🗑</button>
+            ${opts.sessionOnly ? (opts.underDog ? '' : `<button class="btn small-btn walk-action-btn animal-edit-btn" data-id="${w.dog_id}">${speciesOf(w).emoji} Edit ${esc(speciesOf(w).noun)}</button>`) : `<button class="btn small-btn walk-action-btn dog-notes-btn" data-dog-id="${w.dog_id}" title="${esc(w.dog_name)}'s tips and your private note" aria-label="${esc(w.dog_name)}'s notes">📝 ${esc(capFirst(speciesOf(w).noun))} notes</button>`}
+            <button class="btn small-btn walk-action-btn edit-times-btn" data-id="${w.id}" title="Edit ${esc(activityInfo(w.activity).noun)} (times, activity)" aria-label="Edit ${esc(activityInfo(w.activity).noun)}">✎</button>
+            <button class="btn danger walk-action-btn delete-walk-btn" data-id="${w.id}" data-name="${esc(w.dog_name)}" data-species="${esc(w.species || '')}" title="Delete ${esc(activityInfo(w.activity).noun)}" aria-label="Delete ${esc(activityInfo(w.activity).noun)}">🗑</button>
           </div>
         </div>
       </div>`;
   }
 
+  // dayKey: the day the time boxes are on, or null when the cards span
+  // several days (each card then uses its own walk's day).
   function wireStatsWalkCards(dayKey, refresh) {
     // Photo / name taps on these cards: the app-wide card handler.
     document.querySelectorAll('.delete-walk-btn').forEach((btn) => {
@@ -6511,17 +7121,22 @@
         const startTime = startInput.value;
         const endTime = endInput.value;
         const activity = row.querySelector('.edit-activity').value;
+        const rowDayKey = dayKey || row.dataset.daykey;
         // Untouched times aren't re-sent: the boxes only hold whole minutes,
         // so re-sending them would shift the times and mark the walk edited.
         const timesTouched = startTime !== startInput.defaultValue || endTime !== endInput.defaultValue;
+        // A daycation can run past midnight (6:30 pm to 1:30 am): an end
+        // earlier than the start is the next morning, as on the wrap-up
+        // screen (audit 3). Anything else still has to end after it starts.
+        const overnight = activity === 'daycation' && endTime && endTime <= startTime;
         if (timesTouched) {
           if (!startTime) { appAlert('Start time is required.'); return; }
-          if (endTime && endTime <= startTime) { appAlert('The end time has to be after the start time.'); return; }
+          if (endTime && endTime <= startTime && !overnight) { appAlert('The end time has to be after the start time.'); return; }
         }
         try {
           const body = timesTouched ? {
-            startedAt: localTimeToIso(dayKey, startTime),
-            endedAt: endTime ? localTimeToIso(dayKey, endTime) : null,
+            startedAt: localTimeToIso(rowDayKey, startTime),
+            endedAt: endTime ? localTimeToIso(overnight ? addDaysToKey(rowDayKey, 1) : rowDayKey, endTime) : null,
             activity
           } : { activity };
           await api(`/api/walks/${btn.dataset.id}`, { method: 'PUT', body: JSON.stringify(body) });
@@ -6533,23 +7148,23 @@
 
   function addWalkSectionHtml() {
     return `
-      <button id="showAddWalkFormBtn" class="btn" style="margin-bottom:10px;">＋ Add a walk that wasn't scanned in</button>
+      <button id="showAddWalkFormBtn" class="btn" style="margin-bottom:10px;">＋ Add ${esc(aNoun(myTerms()))} that wasn't scanned in</button>
       <div id="addWalkForm" class="card compact hidden" style="margin-bottom:10px;">
-        <label class="small">${esc(speciesInfo(prefSpeciesKeys()[0]).label)}${worksWithBoth() ? ' or cat' : ''}</label>
+        <label class="small" for="addWalkDogSearch">${esc(capFirst(nounFor(prefSpeciesKeys())))}</label>
         <input type="text" id="addWalkDogSearch" placeholder="Start typing a name…" autocomplete="off" />
         <div id="addWalkDogResults" style="max-height:150px;overflow-y:auto;margin-bottom:8px;"></div>
         <p id="addWalkSelectedDog" class="small muted"></p>
         <label class="small" for="addWalkActivity">Activity</label>
-        <select id="addWalkActivity">${activityOptionsHtml('walk')}</select>
-        <div class="row" style="align-items:center;margin-top:8px;">
-          <input type="time" id="addWalkStart" />
-          <span class="muted">–</span>
-          <input type="time" id="addWalkEnd" />
+        <select id="addWalkActivity">${activityOptionsHtml(speciesInfo(prefSpeciesKeys()[0]).activities ? speciesInfo(prefSpeciesKeys()[0]).activities[0] : 'walk')}</select>
+        <div class="row add-walk-times" style="align-items:flex-end;margin-top:8px;">
+          <label class="small add-walk-time">Started<input type="time" id="addWalkStart" /></label>
+          <span class="muted" aria-hidden="true" style="padding-bottom:12px;">–</span>
+          <label class="small add-walk-time">Ended<input type="time" id="addWalkEnd" /></label>
         </div>
-        <label class="small" style="margin-top:8px;">Notes (optional)</label>
+        <label class="small" style="margin-top:8px;" id="addWalkNotesLabel">Notes (optional)</label>
         <div id="addWalkNotesBox">${noteTagBoxHtml({ placeholder: tagHint(), cls: 'end-note-text' })}</div>
         <div class="row" style="margin-top:8px;">
-          <button id="saveAddWalkBtn" class="btn primary">Save walk</button>
+          <button id="saveAddWalkBtn" class="btn primary">Save</button>
           <button id="cancelAddWalkBtn" class="btn">Cancel</button>
         </div>
         <p id="addWalkStatus" class="small muted" style="margin:6px 0 0;"></p>
@@ -6573,7 +7188,7 @@
   // Today's stats are the default/header view -- people care far more about
   // "how'd today go" than lifetime totals most of the time. Computed
   // client-side from the same walks list already fetched for the lifetime
-  // view (limit=1000 easily covers one day), so no extra round-trip.
+  // view (fetchMyWalks, every page), so no extra round-trip.
   // Averaging duration across every kind of interaction lumps a 10-minute
   // cuddle in with a 12-hour daycation, so this sticks to walk-only duration
   // whenever there are any walks in the set, falling back to the overall
@@ -6585,23 +7200,54 @@
   // A Together day's rows are all finished, though others' carry no times
   // (they have a slot instead).
   const rowEnded = (w) => !!(w.ended_at || w.endedAt || (w.slot !== undefined && w.order !== undefined));
-  function walkOnlyAvgSeconds(walks) {
+  // The one rule every average (tiles, rows, charts) follows: which finished
+  // rows it's over, which it left out as under a minute, and what it's of.
+  // { rows, skipped, activity }: activity is 'walk', the one kind there was,
+  // or null for a mix ("engagement").
+  function avgPick(walks) {
     const done = walks.filter(rowEnded);
-    const walkRows = done.filter((w) => (w.activity || 'walk') === 'walk' && rowSeconds(w) >= 60);
-    if (walkRows.length) return walkRows.reduce((s, w) => s + rowSeconds(w), 0) / walkRows.length;
-    const counted = done.filter((w) => rowSeconds(w) >= 60);
-    if (!counted.length) return 0;
-    return counted.reduce((s, w) => s + rowSeconds(w), 0) / counted.length;
+    const isWalk = (w) => (w.activity || 'walk') === 'walk';
+    // A Together day (/api/impact/day) says per row whether the server's
+    // average counted it: others' lengths arrive rounded to 5 minutes, so a
+    // 1-2 minute walk shows as 0 and re-running the minute rule here would
+    // call it a mis-scan (audit 3). Trust the flag whenever it's there.
+    if (done.length && done.every((w) => typeof w.averaged === 'boolean')) {
+      const rows = done.filter((w) => w.averaged);
+      const walksOnly = rows.some(isWalk);
+      const kinds = [...new Set(rows.map((w) => w.activity || 'walk'))];
+      return {
+        rows,
+        skipped: done.filter((w) => !w.averaged && (!walksOnly || isWalk(w))).length,
+        activity: walksOnly ? 'walk' : (kinds.length === 1 ? kinds[0] : null)
+      };
+    }
+    const walkRows = done.filter((w) => isWalk(w) && rowSeconds(w) >= SHARED_CONFIG.minAvgSeconds);
+    if (walkRows.length) {
+      return { rows: walkRows, skipped: done.filter((w) => isWalk(w) && rowSeconds(w) < SHARED_CONFIG.minAvgSeconds).length, activity: 'walk' };
+    }
+    const rows = done.filter((w) => rowSeconds(w) >= SHARED_CONFIG.minAvgSeconds);
+    const kinds = [...new Set(rows.map((w) => w.activity || 'walk'))];
+    return { rows, skipped: done.length - rows.length, activity: kinds.length === 1 ? kinds[0] : null };
   }
+  function walkOnlyAvgSeconds(walks) {
+    const { rows } = avgPick(walks);
+    return rows.length ? rows.reduce((s, w) => s + rowSeconds(w), 0) / rows.length : 0;
+  }
+  // ", not counting 2 under a minute" when the average left some out.
+  const skippedNote = (n) => (n > 0 ? `, not counting ${n} under a minute` : '');
   // What that average is of: walks whenever there are any, else every engagement.
   // With no walks, the one activity everything averaged was (a matchmaking-
   // only day is an "Average matchmaking session", never an "Average walk").
-  const avgLabelFor = (walks) => {
-    const counted = walks.filter((w) => rowEnded(w) && rowSeconds(w) >= 60);
-    const kinds = [...new Set(counted.map((w) => w.activity || 'walk'))];
-    if (kinds.includes('walk')) return 'Average walk';
-    return averageWordFor(kinds.length === 1 ? kinds[0] : null, historyTerms(walks));
-  };
+  const avgLabelFor = (walks) => averageWordFor(avgPick(walks).activity, historyTerms(walks));
+  // The tile label: "Avg walk length", "Avg matchmaking length", ...
+  const avgTileLabel = (walks) => avgLabelFor(walks).replace('Average', 'Avg') + ' length';
+  // The same for Lifetime, from /api/stats's per-activity breakdown (which
+  // knows how many of each made it into an average).
+  function lifetimeAvgLabel(byActivity, keys) {
+    const counted = (byActivity || []).filter((a) => (a.avgCount != null ? a.avgCount : a.count) > 0);
+    const activity = counted.some((a) => a.activity === 'walk') ? 'walk' : (counted.length === 1 ? counted[0].activity : null);
+    return averageWordFor(activity, termsFor(keys)).replace('Average', 'Avg') + ' length';
+  }
   // "Average <noun>" for an average with no walks in it. Dogs' own word is
   // "walk", which would be wrong here: the one activity it was, else
   // "engagement". Cats keep their word ("visit").
@@ -6615,11 +7261,10 @@
     const todaysWalks = allWalks.filter((w) => w.ended_at && dateKey(w.started_at) === todayKey());
     const uniqueDogs = new Set(todaysWalks.map((w) => w.dog_id)).size;
     const totalSeconds = todaysWalks.reduce((s, w) => s + (w.duration_seconds || 0), 0);
-    const avgSeconds = walkOnlyAvgSeconds(todaysWalks);
     // Wording follows the species actually seen today, not the volunteer's
     // current Settings preference -- see historySpeciesKeys above.
     const todayKeys = statsSpeciesKeys(todaysWalks);
-    const tw = statWords(todayKeys);
+    const tw = statWords(todayKeys, { count: todaysWalks.length, unique: uniqueDogs });
     // This is the tab's default landing view -- make it unmistakable that
     // it's showing today only, not everything, before you even get to the
     // toggle button.
@@ -6630,7 +7275,7 @@
         ${statDrillTile(todaysWalks.length, `${tw.count} today`, 'byActivity')}
         ${statDrillTile(uniqueDogs, tw.unique, 'byDogScope')}
         ${statDrillTile(fmtDuration(totalSeconds), tw.time, 'byActivity')}
-        ${statDrillTile(fmtDuration(avgSeconds), todaysWalks.length ? avgLabelFor(todaysWalks).replace('Average', 'Avg') + ' length' : tw.avg, 'avgChart')}
+        ${todaysWalks.length ? avgDrillTile(todaysWalks, avgTileLabel(todaysWalks)) : statDrillTile('–', tw.avg, 'avgChart')}
       </div>`;
     const items = todaysWalks
       .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
@@ -6666,8 +7311,11 @@
         starFlag: !!d.star_flag,
         pbFlag: !!d.pb_flag
       };
-      const noun = activityOverride ? activityCountNouns(activityOverride)[0] : termsOf(d).noun;
-      const nouns = activityOverride ? activityCountNouns(activityOverride)[1] : termsOf(d).nouns;
+      // Not every engagement with a dog is a walk (a daycation, a cuddle):
+      // dogs count "engagements", cats keep their own word.
+      const dw = statWords([d.species || 'dog']);
+      const noun = activityOverride ? activityCountNouns(activityOverride)[0] : dw.noun;
+      const nouns = activityOverride ? activityCountNouns(activityOverride)[1] : dw.nounsWord;
       return `
       <div class="card compact" data-id="${d.id}">
         <div class="dog-card">
@@ -6675,7 +7323,7 @@
           <div class="dog-info">
             <p class="dog-name">${esc(d.name)} ${markerBadges({ ...markerDog, name: d.name })}${d.stillListed ? '' : ` <span class="badge neutral">Adopted/Removed${d.removedAt ? ' ' + fmtDate(d.removedAt) : ''}</span>`}</p>
             <p class="dog-meta">${d.walkCount} ${d.walkCount === 1 ? noun : nouns} · ${fmtDuration(d.totalSeconds)} total</p>
-            <p class="dog-meta">${activityOverride ? `Last on ${fmtDate(d.lastWalkedAt)}` : `Last ${termsOf(d).past} ${fmtDate(d.lastWalkedAt)}`}</p>
+            <p class="dog-meta">${activityOverride || dw.noun === 'engagement' ? `Last on ${fmtDate(d.lastWalkedAt)}` : `Last ${termsOf(d).past} ${fmtDate(d.lastWalkedAt)}`}</p>
           </div>
         </div>
         ${dogActionButtons(d.id, false, d.species)}
@@ -6692,9 +7340,10 @@
   // the same shelter-level event feed; `personalHighlight` (from the
   // server, based on this user's notification_prefs + walk history) is the
   // one bit of personalization, for "a dog I walked was adopted".
-  function eventIcon(kind, detail) {
+  function eventIcon(kind, detail, species) {
     if (kind === 'adopted') return '🎉';
-    if (kind === 'new_dog') return '🐶';
+    // A new cat gets the cat's emoji, not a dog's.
+    if (kind === 'new_dog') return species && species !== 'dog' ? (speciesInfo(species).emoji || '✨') : '🐶';
     // A dog can reappear after an adoption, or after never really leaving
     // shelter care (vet work, a hold); the event's text tells them apart.
     // Both use ↩️, the app's one "returned" icon (the Updates filter chip,
@@ -6719,7 +7368,7 @@
   // clock, a week starting Sunday) and which kinds of event. Picking kinds is
   // a quick report, e.g. every dog returned this week.
   const UPDATES_RANGES = [['all', 'All'], ['today', 'Today'], ['week', 'This week']];
-  const UPDATES_KINDS = [['alert', '📢 Alerts'], ['adopted', '🎉 Adopted'], ['new_dog', '🐶 New'], ['returned', '↩️ Returned']];
+  const UPDATES_KINDS = [['alert', '📢 Alerts'], ['adopted', '🎉 Adopted'], ['new_dog', '✨ New'], ['returned', '↩️ Returned']];
   function updatesSince() {
     if (state.updatesRange === 'all') return null;
     // Midnight at the shelter today, or on this week's Sunday.
@@ -6729,10 +7378,20 @@
   }
   // Showing only dogs or only cats counts as filtered too (the other's news stays unread).
   function updatesFiltered() { return state.updatesRange !== 'all' || state.updatesKinds.size > 0 || updatesSpeciesKeys().length < prefSpeciesKeys().length; }
-  function updatesFilterHtml(rows) {
+  // capped: the server sent its whole page (UPDATES_LIMIT), so older ones exist.
+  const UPDATES_LIMIT = 150;
+  function updatesFilterHtml(rows, capped = false) {
     const since = updatesSince();
     const n = (kind) => rows.filter((r) => r.kind === kind).length;
-    const parts = [[n('alert'), n('alert') === 1 ? 'alert' : 'alerts'], [n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
+    // The split by kind only when it adds something: never a single kind
+    // repeating the total ("12 updates · 12 adopted").
+    const counted = [[n('alert'), n('alert') === 1 ? 'alert' : 'alerts'], [n('adopted'), 'adopted'], [n('new_dog'), 'new'], [n('returned'), 'returned']].filter(([c]) => c);
+    const parts = counted.length > 1 ? counted.map(([c, l]) => `${c} ${l}`) : [];
+    const countText = capped
+      ? `Newest <strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}`
+      : `<strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}`;
+    const sinceText = state.updatesRange === 'week'
+      ? ` · since ${esc(since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: SHELTER_TZ }))}` : '';
     return `
       ${speciesSwitchHtml(true)}
       <div class="card compact stack" style="gap:6px;margin-bottom:10px;">
@@ -6740,9 +7399,9 @@
           ${UPDATES_RANGES.map(([key, label]) => `<button type="button" class="seg-btn ${state.updatesRange === key ? 'on' : ''}" data-updates-range="${key}" style="white-space:nowrap;padding:7px 4px;" role="radio" aria-checked="${state.updatesRange === key}">${label}</button>`).join('')}
         </div>
         <div class="marker-row" role="group" aria-label="Show only these kinds of update" style="gap:6px;flex-wrap:wrap;">
-          ${UPDATES_KINDS.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${state.updatesKinds.has(key) ? 'active' : ''}" data-updates-kind="${key}" aria-pressed="${state.updatesKinds.has(key)}" style="width:auto;flex:1 1 auto;min-height:36px;padding:6px 6px;font-size:0.85rem;white-space:nowrap;">${label}</button>`).join('')}
+          ${UPDATES_KINDS.map(([key, label]) => `<button type="button" class="btn small-btn filter-chip ${state.updatesKinds.has(key) ? 'active' : ''}" data-updates-kind="${key}" aria-pressed="${state.updatesKinds.has(key)}" style="width:auto;flex:1 1 auto;min-height:44px;padding:6px 6px;font-size:0.85rem;white-space:nowrap;">${label}</button>`).join('')}
         </div>
-        <p class="muted small result-count" style="margin:0;"><strong>${rows.length}</strong> update${rows.length === 1 ? '' : 's'}${parts.length ? ` · ${parts.join(' · ')}` : ''}${state.updatesRange === 'week' ? ` · since ${esc(since.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}${rows.length >= 150 ? ' (newest 150 shown)' : ''}</p>
+        <p class="muted small result-count" style="margin:0;">${countText}${parts.length ? ` · ${parts.join(' · ')}` : ''}${sinceText}</p>
       </div>`;
   }
   function wireUpdatesFilter() {
@@ -6769,7 +7428,7 @@
       + (state.updatesKinds.size ? `&kinds=${[...state.updatesKinds].join(',')}` : '');
     let data;
     try {
-      data = await api(`/api/updates?userId=${state.currentUser.id}&limit=150${qs}`);
+      data = await api(`/api/updates?userId=${state.currentUser.id}&limit=${UPDATES_LIMIT}${qs}`);
     } catch (err) {
       if (state.tab === myTab) showLoadError('updates', err, renderUpdates);
       return;
@@ -6802,9 +7461,9 @@
           ${r.dog_id
             // Photo: full screen; name/info: profile (the app-wide card taps).
             ? `<img loading="lazy" decoding="async" class="dog-photo small" src="${r.photo_url ? esc(thumbOf(r.photo_url)) : '/icons/icon-192.png'}" alt="" />`
-            : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind, r.detail)}</div>`}
+            : `<div class="dog-photo small" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${eventIcon(r.kind, r.detail, r.species)}</div>`}
           <div class="dog-info">
-            <p class="dog-name"${r.dog_id ? ' style="cursor:pointer;"' : ''}>${r.dog_id ? eventIcon(r.kind, r.detail) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? speciesTagHtml(r) + ' ' + markerBadges(eventDogLike(r), true) : ''}</p>
+            <p class="dog-name"${r.dog_id ? ' role="button" tabindex="0" style="cursor:pointer;"' : ''}>${r.dog_id ? eventIcon(r.kind, r.detail, r.species) + ' ' : ''}${esc(r.title || r.dog_name || 'Update')} ${r.dog_id ? speciesTagHtml(r) + ' ' + markerBadges(eventDogLike(r), true) : ''}</p>
             ${r.personalHighlight ? `<span class="badge eligible">You ${termsOf(r).past} this ${esc(speciesOf(r).noun)}</span>` : ''}
             ${r.favorite ? '<span class="badge fav">♥ Your favorite</span>' : ''}
             <p class="dog-meta">${fmtDate(r.occurred_at)}</p>
@@ -6818,24 +7477,31 @@
       </div>`;
     }
     // A shelter alert from staff: no dog, a headline and the message itself.
-    function alertCardHtml(r) {
+    function alertCardHtml(r, pinned) {
       return `
-      <div class="card compact update-alert${r.unread ? ' update-unread' : ''}">
+      <div class="card compact update-alert${r.unread ? ' update-unread' : ''}${pinned ? ' update-pinned' : ''}">
         <p class="dog-name" style="margin:0;">📢 ${esc(r.title || 'Shelter alert')}</p>
         ${r.detail && r.detail !== r.title ? `<p class="small" style="margin:6px 0 0;white-space:pre-line;">${esc(r.detail)}</p>` : ''}
-        <p class="dog-meta" style="margin:6px 0 0;">Shelter alert · ${fmtDate(r.occurred_at)}</p>
+        <p class="dog-meta" style="margin:6px 0 0;">${pinned ? '📌 Pinned · ' : ''}Shelter alert · ${fmtDate(r.occurred_at)}</p>
       </div>`;
     }
-    const unreadRows = rows.filter((r) => r.unread);
-    const readRows = rows.filter((r) => !r.unread);
+    // A shelter alert (hours changes, closures) stays pinned above
+    // everything else, read or not, so it isn't buried under a day's worth
+    // of new animals. The server drops it once it expires.
+    const isPinned = (r) => r.kind === 'alert';
+    const pinnedRows = rows.filter(isPinned);
+    const rest = rows.filter((r) => !isPinned(r));
+    const unreadRows = rest.filter((r) => r.unread);
+    const readRows = rest.filter((r) => !r.unread);
+    const pinnedHtml = pinnedRows.map((r) => alertCardHtml(r, true)).join('');
     const unreadHtml = unreadRows.map(updateCardHtml).join('');
     const readHtml = readRows.map(updateCardHtml).join('');
     // The "Previous updates" divider only makes sense when there's an
     // actual new/old split to label -- an all-read (or all-unread) list
     // just renders as one plain stack.
-    appEl.innerHTML = updatesFilterHtml(rows) + (unreadRows.length && readRows.length
-      ? `<div class="stack">${unreadHtml}</div><h2 class="section-heading" style="margin-top:18px;">Previous updates</h2><div class="stack">${readHtml}</div>`
-      : `<div class="stack">${unreadHtml}${readHtml}</div>`);
+    appEl.innerHTML = updatesFilterHtml(rows, (data.updates || []).length >= UPDATES_LIMIT) + (unreadRows.length && readRows.length
+      ? `<div class="stack">${pinnedHtml}${unreadHtml}</div><h2 class="section-heading" style="margin-top:18px;">Previous updates</h2><div class="stack">${readHtml}</div>`
+      : `<div class="stack">${pinnedHtml}${unreadHtml}${readHtml}</div>`);
     state.updatesHtml = appEl.innerHTML;
     wireDogActionButtons(appEl);
     wireUpdatesFilter();
@@ -6903,7 +7569,7 @@
   }
 
   async function refreshStatsDay() {
-    const walksData = await api(`/api/walks?limit=1000&userId=${state.currentUser.id}`);
+    const walksData = await fetchMyWalks();
     state.statsDays = groupWalksByDay(walksData.walks.filter(inStatsSpecies));
     if (state.statsDays.find((d) => d.key === state.selectedDateKey)) {
       renderStatsDay();
@@ -6924,12 +7590,12 @@
     // Wording follows the species actually seen that day, not the
     // volunteer's current Settings preference -- see historySpeciesKeys above.
     const dayKeys = statsSpeciesKeys(day.walks);
-    const dw = statWords(dayKeys);
+    const dw = statWords(dayKeys, { count: day.walkCount, unique: day.dogCount });
     const dayTiles = `
       <div class="stat-grid">
         ${statDrillTile(day.walkCount, `${dw.count} that day`, 'byActivity')}
         ${statDrillTile(fmtDuration(dayTotalSeconds), 'Total time', 'byActivity')}
-        ${statDrillTile(fmtDuration(dayAvgSeconds), avgLabelFor(day.walks).replace('Average', 'Avg') + ' length', 'avgChart')}
+        ${avgDrillTile(day.walks, avgTileLabel(day.walks))}
         ${statDrillTile(day.dogCount, dw.unique, 'byDogScope')}
       </div>`;
 
@@ -6946,7 +7612,7 @@
     const shiftTiles = `
       <div class="stat-grid">
         ${WALK_SLOTS.map((s, i) => `
-        <div class="stat-tile shift-drilldown-tile ${state.selectedShiftIndex === i ? 'active' : ''}" data-shift-index="${i}" style="cursor:pointer;">
+        <div class="stat-tile shift-drilldown-tile ${state.selectedShiftIndex === i ? 'active' : ''}" data-shift-index="${i}" role="button" tabindex="0" aria-pressed="${state.selectedShiftIndex === i}" style="cursor:pointer;">
           <div class="value">${shiftTotals[i].count}</div>
           <div class="label">${esc(fmtSlotLabel(s.label))}${shiftTotals[i].count ? ' · ' + fmtDuration(shiftTotals[i].seconds) : ''}</div>
         </div>`).join('')}
@@ -6969,11 +7635,12 @@
       ${addWalkSectionHtml()}
       <div class="stack">${items}</div>`;
 
-    document.getElementById('backToStatsBtn').addEventListener('click', () => {
+    // The same as the phone's Back: the visit day is a history step of its
+    // own, so this steps back through it (no stale entry left behind).
+    document.getElementById('backToStatsBtn').addEventListener('click', () => statsBack(() => {
       state.statsView = 'summary';
       state.selectedShiftIndex = null;
-      renderStats();
-    });
+    }));
     wireStatDrillTiles('day');
     wireStatsBreakdowns('day');
     appEl.querySelectorAll('.shift-drilldown-tile').forEach((tile) => {
@@ -7165,7 +7832,7 @@
       if (!q) { results.innerHTML = ''; return; }
       const matches = allDogs.filter((d) => dogNameMatches(d, q)).slice(0, 8);
       if (!matches.length) {
-        results.innerHTML = '<p class="muted small">No matching dogs.</p>';
+        results.innerHTML = `<p class="muted small">No matching ${nounFor(prefSpeciesKeys(), true)}.</p>`;
         return;
       }
       results.innerHTML = matches.map((d) => `
@@ -7201,7 +7868,7 @@
   const cameraErrorCard = (title, body) => `<div class="card error-card" role="alert"><p class="error-card-title">${title}</p>${body}</div>`;
   function cameraErrorMessage(err) {
     const kind = cameraErrorKind(err);
-    const searchHint = '<p class="small muted" style="margin-bottom:0;">You can search for the dog by name instead.</p>';
+    const searchHint = `<p class="small muted" style="margin-bottom:0;">You can search for the ${esc(nounFor(prefSpeciesKeys()))} by name instead.</p>`;
     if (kind === 'blocked') {
       return `<div class="card error-card" role="alert">
         <p class="error-card-title">Camera access is blocked for this app.</p>
@@ -7229,6 +7896,21 @@
   // `readerId`/`errorId` let this be reused outside the Scan tab (e.g. Audit
   // Mode has its own camera container so it doesn't collide with the Scan
   // tab's). `onScanned` defaults to the Scan tab's own handler.
+  // Loads /js/html5-qrcode.min.js once (a failed load can be retried).
+  let scannerLibPromise = null;
+  function loadScannerLib() {
+    if (typeof Html5Qrcode !== 'undefined') return Promise.resolve();
+    if (!scannerLibPromise) {
+      scannerLibPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/js/html5-qrcode.min.js';
+        s.onload = () => (typeof Html5Qrcode !== 'undefined' ? resolve() : reject(new Error('scanner missing')));
+        s.onerror = () => reject(new Error('scanner failed to load'));
+        document.head.appendChild(s);
+      }).catch((err) => { scannerLibPromise = null; throw err; });
+    }
+    return scannerLibPromise;
+  }
   function startQrScanner(readerId, errorId, onScanned) {
     readerId = readerId || 'qr-reader';
     errorId = errorId || 'scanError';
@@ -7255,7 +7937,14 @@
       }));
     };
     if (typeof Html5Qrcode === 'undefined') {
-      showError(cameraErrorCard("The camera couldn't load.", '<p class="small muted">Check your connection and reload the page, or search for the dog by name instead.</p>'));
+      // eng (audit2): the scanner library (375 KB) loads the first time a
+      // scan opens, not with every page. A scan closed meanwhile stays closed.
+      const token = state.qrStartToken;
+      loadScannerLib().then(() => {
+        if (state.qrStartToken === token) startQrScanner(readerId, errorId, onScanned);
+      }, () => {
+        showError(cameraErrorCard("The camera couldn't load.", `<p class="small muted">Check your connection and reload the page, or search for the ${esc(nounFor(prefSpeciesKeys()))} by name instead.</p>`));
+      });
       return;
     }
     const scanner = new Html5Qrcode(readerId);
@@ -7276,6 +7965,8 @@
   }
 
   function stopQrScanner() {
+    // A scan still waiting on the library (loadScannerLib) won't start now.
+    state.qrStartToken = (state.qrStartToken || 0) + 1;
     const scanner = state.qrScanner;
     if (scanner) {
       state.qrScanner = null;
@@ -7350,7 +8041,7 @@
       // a stale record could be the wrong dog, so check the card first.
       if (dog.stillListed === false) {
         const goOn = await appConfirm(
-          `${dog.name} (ID ${dog.id}) is not in the database anymore. If they were adopted and returned, they may not have been added back to the site yet. Double check that the ${speciesOf(dog).noun} you're with matches the kennel card you scanned before you go on.`,
+          `${dog.name} (ID ${dog.id}) isn't on the shelter's site anymore. If they were adopted and returned, they may not have been added back to the site yet. Double check that the ${speciesOf(dog).noun} you're with matches the kennel card you scanned before you go on.`,
           { title: '⚠️ Not on the shelter\'s site', confirmText: 'It matches, continue', cancelText: 'Scan again' }
         );
         // Not stale(): closing the dialog is itself a Back, which bumps dogLookupSeq.
@@ -7425,7 +8116,7 @@
             <li><strong>Age:</strong> puppies under 6 months old can't be walked.</li>
             <li><strong>Stickers:</strong> make sure your level is cleared for any behavior or EVO stickers on the card.</li>
           </ul>` : ''}
-          <label style="display:block;">Kennel location</label>
+          <label style="display:block;">${esc(kennelPickLabel(kind))}</label>
           ${kennelLetterPickerHtml('locationPicker', (known && known.kennelLocation) || '', { letters: kind.kennels || KENNEL_LETTERS })}
         </div>
         <div class="action-dock">
@@ -7454,14 +8145,21 @@
       const open = pickRow.classList.toggle('hidden') === false;
       changeBtn.setAttribute('aria-expanded', String(open));
     });
+    // Stays open after a tap, so the second tap of a double tap lands on
+    // the same chip (making it the usual), never on Start below it.
+    const unlistedKind = { species: kindKey };
+    syncActivityChips(pickRow, startBtn.dataset.activity, unlistedKind);
     pickRow.addEventListener('click', (e) => {
       const chip = e.target.closest('[data-activity]');
       if (!chip) return;
+      if (chip.dataset.activity === startBtn.dataset.activity) {
+        makeUsualActivity(chip.dataset.activity, pickRow, unlistedKind);
+        return;
+      }
       startBtn.dataset.activity = chip.dataset.activity;
       startBtn.textContent = startActivityLabel(chip.dataset.activity);
-      pickRow.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
-      pickRow.classList.add('hidden');
-      changeBtn.setAttribute('aria-expanded', 'false');
+      syncActivityChips(pickRow, chip.dataset.activity, unlistedKind);
+      pickedActivityToast(chip.dataset.activity, unlistedKind, 'Picked');
     });
     startBtn.addEventListener('click', async () => {
       const activity = startBtn.dataset.activity || 'walk';
@@ -7481,6 +8179,8 @@
           startedAt: res.startedAt,
           stopsAt: res.stopsAt,
           closesAt: res.closesAt,
+          endsBy: res.endsBy || null,
+          endToken: res.endToken || null,
           autoStopped: false,
           activity,
           location: res.location || location,
@@ -7505,7 +8205,7 @@
   function walkTimingHint(dog, walks) {
     const today = todayKey();
     const walksToday = (walks || []).filter((w) => w.started_at && dateKey(w.started_at) === today).length;
-    const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: 'America/New_York' })
+    const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: SHELTER_TZ })
       .formatToParts(new Date());
     const hour = Number(parts.find((p) => p.type === 'hour').value) + Number(parts.find((p) => p.type === 'minute').value) / 60;
     // All three yellow stickers (POO, POO asterisk, PB) get the same tips.
@@ -7516,7 +8216,7 @@
     // from 4 to 5:30pm gets its own warning. Any other time it gets the
     // same yellow tips as any POO dog.
     if (star && hour >= 16 && hour < 17.5) {
-      return 'POO* dogs should be walked between 5:30-7 PM so they\'re the last out at night.';
+      return 'POO* dogs should be walked between 5:30–7 pm so they\'re the last out at night.';
     }
 
     // A POO dog gets a last walk after 4pm either way, whether this is its
@@ -7524,7 +8224,7 @@
     // dog that may miss its only walk of the day. Unlike the other branches
     // below, this applies regardless of walksToday.
     if (poo && hour >= 11 && hour < 16) {
-      return 'POOs will have a guaranteed walk from 4-7 PM. Since it is midday, focus on 2nd walks for non-POO dogs first.';
+      return 'POOs will have a guaranteed walk from 4–7 pm. Since it is midday, focus on 2nd walks for non-POO dogs first.';
     }
 
     if (walksToday !== 1) return '';
@@ -7533,7 +8233,7 @@
     return '';
   }
 
-  // Buttons are sentence case: "Start walk", "End play group".
+  // Buttons are sentence case: "Start walk", "End playgroup".
   const startActivityLabel = (key) => `${activityInfo(key).emoji} Start ${activityInfo(key).label.toLowerCase()}`;
 
   // Same rule serializeDog uses for `eligible`/`notEligibleReason`, mirrored
@@ -7570,10 +8270,7 @@
     let previewLevel = null;
 
     function eligibilityBadgeHtml() {
-      if (!kind.levelRules) return ''; // any volunteer may visit any of them
-      if (tooYoung) return `<span class="badge blocked">🚫 ${esc(notEligibleReasonText(dog))}</span>`;
-      if (dog.eligible) return `<span class="badge eligible">Eligible to walk ✓</span>`;
-      return `<span class="badge caution">⚠ ${esc(notEligibleReasonText(dog))}</span>`;
+      return eligibilityStatusHtml(dog, { eligibleText: 'Eligible to walk ✓' });
     }
     // Redraws everything that depends on eligibility/markers, called once
     // right after the initial render and again after every marker tap --
@@ -7595,7 +8292,9 @@
       // puppy block.
       appEl.classList.toggle('evo-caution-bg', isEvo);
       appEl.classList.toggle('age-block', !isEvo && tooYoung);
-      appEl.classList.toggle('caution-stripes', !isEvo && !tooYoung && dog.eligible === false);
+      // Listed as in foster isn't a block (Start only asks to check the
+      // card), so no hazard stripes: its amber status row says it.
+      appEl.classList.toggle('caution-stripes', !isEvo && !tooYoung && dog.eligible === false && dog.notEligibleReason !== 'in_foster');
       // PB overrides the days-in-shelter caution (handled server-side via
       // `eligible`), but still needs its own "short walk only" reminder.
       appEl.classList.toggle('pb-only-bg', !isEvo && !tooYoung && pending.pbFlag);
@@ -7626,7 +8325,7 @@
         ${dog.handlingWarning ? `<div class="card compact hard-block-banner handling-warning" role="alert"><strong>⚠ You were with ${esc(dog.handlingWarning.name)} (an ${esc(dog.handlingWarning.adult)}) at ${esc(fmtClock(dog.handlingWarning.at))}.</strong> ${esc(dog.handlingWarning.young.charAt(0).toUpperCase() + dog.handlingWarning.young.slice(1))}s first, then ${esc(dog.handlingWarning.adult)}s: wash up and change before ${esc(dog.name)}.</div>` : ''}
         ${dog.stillListed === false ? `<div class="timing-hint" role="note">📋 ${esc(dog.name)} isn't on the shelter's site right now. You can still ${termsOf(dog).verbWith} them, and this ${termsOf(dog).noun} will be added to their record.</div>` : ''}
         ${!tooYoung && timingHint ? `<div class="timing-hint" role="note">ℹ️ ${esc(timingHint)} <button type="button" class="link-btn" id="timingHintGuideBtn">Which dogs should I walk?</button></div>` : ''}
-        <div class="card compact" style="position:relative;">
+        <div class="card compact${state.currentUser.isPrivileged ? ' has-corner-gear' : ''}" style="position:relative;">
           ${state.currentUser.isPrivileged ? `<button type="button" id="advancedSettingsBtn" class="icon-btn" style="position:absolute;top:8px;right:8px;" aria-label="Advanced settings" title="Advanced settings">
             <svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="currentColor" aria-hidden="true">
               <path d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.03 7.03 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.14 7.14 0 0 0-.06.94 7.14 7.14 0 0 0 .06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/>
@@ -7637,10 +8336,10 @@
             <div class="dog-info">
               <p class="dog-name" style="cursor:pointer;">${esc(dog.name)} ${speciesTagHtml(dog)} ${markerBadges(dog)}</p>
               ${akaHtml(dog)}
-              <div class="dog-meta meta-wrap"><p class="meta-list">${[esc(dog.breed || ''), esc(dog.sex || ''), esc(fmtAge(dog.age)), `ID ${dog.id}`].filter(Boolean).map((s, i) => `<span class="meta-item${i ? ' nowrap' : ''}">${s}</span>`).join('')}</p></div>
+              <div class="dog-meta meta-wrap"><p class="meta-list">${[esc(dog.breed || ''), esc(dog.sex || ''), esc(fmtAge(dog.age)), `<span class="dog-id">ID ${dog.id}</span>`].filter(Boolean).map((s, i) => `<span class="meta-item${i ? ' nowrap' : ''}">${s}</span>`).join('')}</p></div>
               <p class="dog-meta">${shelterDaysHtml(dog)} in shelter</p>
               ${dog.currentWalk && !dog.currentWalk.mine ? currentWalkBadge(dog) : ''}
-              <span id="eligibilityBadge">${eligibilityBadgeHtml()}</span>${youngBadgeHtml(dog)}
+              <div id="eligibilityBadge">${eligibilityBadgeHtml()}</div>${youngBadgeHtml(dog)}
             </div>
           </div>
         </div>
@@ -7681,7 +8380,7 @@
         </div>
         <div class="card compact">
           ${kind.stickers ? markerPickerHtml(dog) : ''}
-          <label style="display:block;${kind.stickers ? 'margin-top:14px;' : ''}">Kennel location</label>
+          <label style="display:block;${kind.stickers ? 'margin-top:14px;' : ''}">${esc(kennelPickLabel(kind))}</label>
           ${kennelLetterPickerHtml('locationPicker', dog.kennelLocation || '', { disabled: tooYoung, letters: kennelsOf(dog) })}
           <div id="saveAllRow" class="row hidden" style="margin-top:10px;align-items:center;gap:10px;">
             <button id="saveAllBtn" class="btn">Save changes</button>
@@ -7692,7 +8391,6 @@
         ${tooYoung ? `<button id="startWalkBtn" class="btn primary big" disabled>Can't walk this dog</button>` : `
         <div class="action-dock">
           <div id="activityPickRow" class="marker-row activity-chips hidden">${activityChipsHtml(startActivity, kind.activities)}</div>
-          <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
           <div class="row start-row">
             <button id="startWalkBtn" class="btn primary big" data-activity="${startActivity}">${startActivityLabel(startActivity)}</button>
             <button type="button" id="changeActivityBtn" class="btn" aria-expanded="false" aria-controls="activityPickRow">⇄ Change</button>
@@ -7766,10 +8464,27 @@
       });
     }
 
-    // A species without stickers has nothing to save here.
+    // A species without stickers has nothing to save here. Sends only what
+    // this person changed (saveMarkerChanges); only Save changes calls it.
     async function saveMarkers() {
       if (!kind.stickers) return null;
-      return api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify(state.walk.pendingMarkers) });
+      return saveMarkerChanges(dog, state.walk.pendingMarkers);
+    }
+    function hasUnsavedMarkers() {
+      return !!kind.stickers && !!markerPatch(markersOfDog(dog), state.walk.pendingMarkers);
+    }
+    // Someone changed this dog's stickers since it was opened (409): show
+    // them as they are now and say so; this person's taps are dropped.
+    async function reloadAfterStaleMarkers(err) {
+      try {
+        const fresh = await api(`/api/dogs/${dog.id}?userId=${state.currentUser.id}`);
+        if (state.walk.dog === dog) {
+          Object.assign(dog, fresh.dog);
+          state.walk.pendingMarkers = markersOfDog(dog);
+          renderWalkConfirm();
+        }
+      } catch (e) { /* the message below still says what happened */ }
+      appAlert(err.serverMessage || err.message, 'Stickers changed');
     }
 
     async function applyMarkerUpdate(updated) {
@@ -7778,6 +8493,7 @@
       dog.pooStatus = updated.pooStatus;
       dog.starFlag = updated.starFlag;
       dog.pbFlag = updated.pbFlag;
+      if (updated.version) dog.markersVersion = updated.version;
       // Eligibility can depend on several of these at once, which only the
       // server works out -- re-fetch rather than duplicating that logic
       // here, so this can't drift out of sync with server.js.
@@ -7785,6 +8501,8 @@
         const fresh = await api(`/api/dogs/${dog.id}?userId=${state.currentUser.id}`);
         dog.eligible = fresh.dog.eligible;
         dog.notEligibleReason = fresh.dog.notEligibleReason;
+        dog.markersVersion = fresh.dog.markersVersion;
+        dog.lockedMarkers = fresh.dog.lockedMarkers;
       } catch (err) { /* best effort -- badges just won't refresh instantly if this fails */ }
     }
 
@@ -7815,6 +8533,7 @@
           setTimeout(() => check.classList.add('hidden'), 2000);
         }
       } catch (err) {
+        if (err.staleMarkers) { await reloadAfterStaleMarkers(err); return; }
         statusEl.textContent = `Failed: ${err.message}`;
       }
     });
@@ -7829,18 +8548,22 @@
         const open = pickRow.classList.toggle('hidden') === false;
         changeBtn.setAttribute('aria-expanded', String(open));
       });
+      // Stays open after a tap, so the second tap of a double tap lands on
+      // the same chip (making it the usual), never on Start below it.
+      syncActivityChips(pickRow, document.getElementById('startWalkBtn').dataset.activity, dog);
       pickRow.addEventListener('click', (e) => {
         const chip = e.target.closest('[data-activity]');
         if (!chip) return;
         const btn = document.getElementById('startWalkBtn');
+        if (chip.dataset.activity === btn.dataset.activity) {
+          makeUsualActivity(chip.dataset.activity, pickRow, dog);
+          return;
+        }
         btn.dataset.activity = chip.dataset.activity;
         btn.textContent = startActivityLabel(chip.dataset.activity);
-        pickRow.querySelectorAll('[data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
-        pickRow.classList.add('hidden');
-        changeBtn.setAttribute('aria-expanded', 'false');
-        syncMakeUsualBtn(document.getElementById('makeUsualBtn'), chip.dataset.activity);
+        syncActivityChips(pickRow, chip.dataset.activity, dog);
+        pickedActivityToast(chip.dataset.activity, dog, 'Picked');
       });
-      wireMakeUsualBtn(document.getElementById('makeUsualBtn'));
     }
     const startBtn = document.getElementById('startWalkBtn');
     startBtn.addEventListener('click', async () => {
@@ -7855,23 +8578,29 @@
         if (!proceed) return;
       }
       const location = kennelLetterPickerValue('locationPicker');
-      startBtn.disabled = true;
-      // Save whatever's pending (e.g. a PB tap that was never explicitly
-      // "Saved") before checking eligibility, so a change that allows or
-      // blocks this walk is checked with its own effect already in place —
-      // never against the state from before it was made. Not cleared for
-      // this dog is a hard stop, no override: re-check with the server's
-      // own fresh answer, not the local preview, before starting.
-      try {
-        const markerUpdate = await saveMarkers();
-        await applyMarkerUpdate(markerUpdate);
-      } catch (err) {
-        appAlert(`Couldn't save: ${err.message}`);
-        startBtn.disabled = false;
-        return;
+      // Start never saves stickers by itself: a screen opened before staff
+      // added one would quietly take it off again. Sticker taps not saved
+      // yet are saved only when the walker says so here (and then only what
+      // they changed); the server checks the result, not the local preview.
+      if (hasUnsavedMarkers()) {
+        const save = await appConfirm("You changed this dog's stickers but haven't saved them. Save them before you start?", {
+          title: 'Unsaved stickers', confirmText: 'Save and start', cancelText: 'Cancel'
+        });
+        if (!save || state.walk.dog !== dog) return;
+        startBtn.disabled = true;
+        try {
+          const markerUpdate = await saveMarkers();
+          await applyMarkerUpdate(markerUpdate);
+        } catch (err) {
+          startBtn.disabled = false;
+          if (err.staleMarkers) { await reloadAfterStaleMarkers(err); return; }
+          appAlert(`Couldn't save: ${err.message}`);
+          return;
+        }
       }
+      startBtn.disabled = true;
       if (!dog.tooYoung && dog.eligible === false && dog.notEligibleReason !== 'in_foster') {
-        appAlert(`${dog.name} can't be walked right now at your experience level. ${notEligibleReasonText(dog)}. You can change your level any time from Settings (the gear icon, top right), or ask a privileged volunteer to adjust this dog's markers.`);
+        appAlert(`${dog.name} can't be walked right now at your experience level. ${notEligibleReasonText(dog)}. You can change your level any time from Settings (the gear icon, top right), or ask a privileged volunteer to adjust this dog's stickers.`);
         renderWalkConfirm();
         return;
       }
@@ -7896,14 +8625,29 @@
         state.walk.startedAt = res.startedAt;
         state.walk.stopsAt = res.stopsAt;
         state.walk.closesAt = res.closesAt;
+        state.walk.endsBy = res.endsBy || null;
+        state.walk.endToken = res.endToken || null;
         state.walk.autoStopped = false;
         state.walk.activity = activity;
         state.walk.location = res.location || location;
         state.walk.phase = 'active';
         renderWalk();
       } catch (err) {
-        appAlert(err.message);
         startBtn.disabled = false;
+        // Refused (say staff added a sticker since this screen opened): show
+        // the dog as it is now, not a stale "Eligible to walk ✓" with Start
+        // still on (audit 3). A network failure keeps the screen as it is.
+        if (err.status >= 400 && err.status < 500) {
+          try {
+            const fresh = await api(`/api/dogs/${dog.id}?userId=${state.currentUser.id}`);
+            if (state.walk.dog === dog && state.walk.phase !== 'active') {
+              Object.assign(dog, fresh.dog);
+              state.walk.pendingMarkers = markersOfDog(dog);
+              renderWalkConfirm();
+            }
+          } catch (e) { /* the message below still says what happened */ }
+        }
+        appAlert(err.message);
       }
     });
     document.getElementById('backToScanBtn2').addEventListener('click', () => {
@@ -7952,19 +8696,61 @@
   // `pending` from scratch, so that implication is always reflected however
   // `pending` got there (initial load or any click).
   function markerPickerHtml(dog) {
+    // Stickers that keep this volunteer's level off the dog (server.js
+    // lockedMarkersFor): only staff or a privileged volunteer can take them off.
+    const locked = new Set((dog && dog.lockedMarkers) || []);
+    const lockAttrs = (key, name) => (locked.has(key)
+      ? ` disabled aria-disabled="true" title="${esc(name)}: only staff or a privileged volunteer can take this off"` : ` title="${esc(name)}"`);
+    // A small 🔒 on each locked sticker, so the hint below can point at it.
+    const lockIcon = (key) => (locked.has(key) ? '<span class="marker-lock" aria-hidden="true">🔒</span>' : '');
     return `
-      <label class="small">Behavior markers (tap to toggle)</label>
+      <label class="small">Behavior stickers (tap to turn on or off)</label>
       <div class="marker-row">
         <button type="button" class="marker-shape star" data-group="star" title="Good for beginners" aria-label="Good for beginners (star)">★</button>
-        ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''}" data-group="blue" data-value="${m.value}" title="${esc(m.name)}" aria-label="${esc(m.name)}">${esc(m.letter)}</button>`).join('')}
+        ${BLUE_MARKERS.map((m) => `<button type="button" class="marker-shape blue${m.rect ? ' rect' : ''}" data-group="blue" data-value="${m.value}"${lockAttrs(m.value, m.name)} aria-label="${esc(m.name)}${locked.has(m.value) ? ' (locked)' : ''}">${esc(m.letter)}${lockIcon(m.value)}</button>`).join('')}
       </div>
       <label class="small" style="display:block;margin-top:14px;">POO status</label>
       <div class="marker-row">
         <button type="button" class="marker-shape poo" data-group="poo" data-value="poo" title="POO dog" aria-label="POO dog"></button>
         <button type="button" class="marker-shape poo-priority" data-group="poo" data-value="priority" title="High priority POO dog" aria-label="High priority POO dog">${ASTERISK_SVG}</button>
-        <button type="button" class="marker-shape pb" data-group="pb" title="PB: Potty break only, a short potty walk. Clears the days-in-shelter wait" aria-label="PB: Potty break only">PB</button>
+        <button type="button" class="marker-shape pb" data-group="pb"${lockAttrs('pb', 'PB: Potty break only, a short potty walk. Clears the days-in-shelter wait')} aria-label="PB: Potty break only${locked.has('pb') ? ' (locked)' : ''}">PB${lockIcon('pb')}</button>
       </div>
+      ${locked.size ? '<p class="small muted marker-lock-hint">🔒 Stickers with a lock are there for volunteers at your level. Only staff or a privileged volunteer can take them off.</p>' : ''}
       ${dog ? stickerAddedHtml(dog) : ''}`;
+  }
+
+  // A dog's stickers as the server last sent them (dog.markersVersion is
+  // their version).
+  function markersOfDog(dog) {
+    return { blueMarkers: [...(dog.blueMarkers || [])], pooStatus: dog.pooStatus || 'none', starFlag: !!dog.starFlag, pbFlag: !!dog.pbFlag };
+  }
+  // Only what this person changed, as a patch for PUT /api/dogs/:id/markers,
+  // or null when nothing changed. A sticker someone else added or took off
+  // meanwhile is never sent back.
+  function markerPatch(before, after) {
+    const was = new Set(before.blueMarkers);
+    const now = new Set(after.blueMarkers);
+    const add = [...now].filter((m) => !was.has(m));
+    const remove = [...was].filter((m) => !now.has(m) && m !== 'blue');
+    const patch = {};
+    if (add.length || remove.length) patch.blueMarkers = { add, remove };
+    if (before.pooStatus !== after.pooStatus) patch.pooStatus = after.pooStatus;
+    if (!!before.starFlag !== !!after.starFlag) patch.starFlag = !!after.starFlag;
+    if (!!before.pbFlag !== !!after.pbFlag) patch.pbFlag = !!after.pbFlag;
+    return Object.keys(patch).length ? patch : null;
+  }
+  // Saves this person's sticker changes to `dog`. Answers null when there was
+  // nothing to save. A 409 (someone changed the stickers since this dog was
+  // loaded) comes back as an error with err.staleMarkers set.
+  async function saveMarkerChanges(dog, pending) {
+    const patch = markerPatch(markersOfDog(dog), pending);
+    if (!patch) return null;
+    try {
+      return await api(`/api/dogs/${dog.id}/markers`, { method: 'PUT', body: JSON.stringify({ patch, version: dog.markersVersion || null }) });
+    } catch (err) {
+      if (err.status === 409 && err.body && err.body.staleMarkers) err.staleMarkers = true;
+      throw err;
+    }
   }
 
   // root: where the picker lives (the edit popup passes its own, so the
@@ -8021,6 +8807,15 @@
     });
   }
 
+  // The animal you're out with, at the top of the walk screen: its photo
+  // (tap for full screen), or its drawn silhouette when it has none yet.
+  function walkHeadPhotoHtml(dog) {
+    const silhouette = `/dog-silhouettes/${dog.species === 'cat' ? 'cat-' : ''}${encodeURIComponent(String(dog.id))}.svg?v=1`;
+    const src = dog.photoUrl || silhouette;
+    const real = !/\/dog-silhouettes\//.test(src);
+    return `<img class="dog-photo walk-head-photo${real ? ' photo-lightbox-trigger' : ' photo-fallback'}" src="${esc(real ? thumbOf(src) : src)}" alt="${esc(dog.name)}" data-dog-id="${esc(String(dog.id))}" data-species="${esc(dog.species || 'dog')}" />`;
+  }
+
   let timerInterval = null;
   function renderWalkActive() {
     const w = state.walk;
@@ -8029,10 +8824,11 @@
         ${w.dog.pbFlag ? `<div class="pb-warning-banner">Potty break only (PB): a short, potty-focused walk</div>` : ''}
         <div class="card">
           <div class="timer-display">${fmtClock(w.startedAt)}</div>
-          <p class="muted small center checkout-caption">⏰ Check-out time: write this on the kennel</p>
+          <p class="muted small center checkout-caption">⏰ Check-out time: write this on the ${kennelWordOf(w.dog)}${kennelWordOf(w.dog) === 'condo' ? ' card' : ''}</p>
+          ${walkHeadPhotoHtml(w.dog)}
           <p class="walk-dog-name walk-head-name">${esc(w.dog.name)} ${sexIcon(w.dog.sex)} ${markerBadges(w.dog)}</p>
           ${akaHtml(w.dog, 'center')}
-          <p class="muted small center walk-head-id">ID ${w.dog.id}</p>
+          <p class="center walk-head-id dog-id">ID ${w.dog.id}</p>
           ${w.dog.awaitingListing ? `<p class="small center unlisted-note">📋 Details not in yet. This ${activityInfo(w.activity).noun} will be added to their record once the shelter lists them.</p>`
             : w.dog.stillListed === false ? `<p class="small center unlisted-note">📋 Not on the shelter's site right now. This ${activityInfo(w.activity).noun} will still be added to their record.</p>` : ''}
           <p class="walk-location">Return to: <span class="nowrap">🏠 ${w.location ? esc(w.location) : 'location not recorded'}</span></p>
@@ -8044,12 +8840,11 @@
         <div class="card compact">
           <label class="small">Doing something else?</label>
           <div id="activityChoice" class="marker-row activity-chips">${activityChipsHtml(w.activity || 'walk', speciesOf(w.dog).activities)}</div>
-          <button type="button" id="makeUsualBtn" class="link-btn hidden"></button>
         </div>
         <button type="button" id="walkPlaygroupBtn" class="btn primary playgroup-notes-btn${w.activity === 'playgroup' ? '' : ' hidden'}" data-dog-id="${w.dog.id}" data-session>${playgroupSessionButtonLabel((w.dog.playgroupCounts || {}).notes)}</button>
         <div class="card compact autostop-card" id="autoStopCard">
           <span class="small" id="autoStopText"></span>
-          <button type="button" id="extendWalkBtn" class="btn small-btn">＋10 min</button>
+          <button type="button" id="extendWalkBtn" class="btn small-btn">＋${SHARED_CONFIG.extendMinutes} min</button>
         </div>
         <div class="card compact">
           <button type="button" id="walkNotesToggle" class="notes-toggle" aria-expanded="false">
@@ -8064,30 +8859,35 @@
       </div>`;
     // Switching activity mid-session keeps the same timer; it just changes
     // what gets recorded.
-    const makeUsualBtn = document.getElementById('makeUsualBtn');
-    wireMakeUsualBtn(makeUsualBtn);
-    syncMakeUsualBtn(makeUsualBtn, w.activity || 'walk');
+    // Tap again (or double tap) to make it the usual, as on the start screen.
+    // `picked` follows taps at once, so a double tap's second tap counts as
+    // "again" even while the first one is still saving.
+    const choiceRow = document.getElementById('activityChoice');
+    syncActivityChips(choiceRow, w.activity || 'walk', w.dog);
+    let picked = w.activity || 'walk';
     document.querySelectorAll('#activityChoice [data-activity]').forEach((chip) => {
       chip.addEventListener('click', async () => {
         const activity = chip.dataset.activity;
-        if (activity === (w.activity || 'walk')) return;
+        if (activity === picked) { makeUsualActivity(activity, choiceRow, w.dog); return; }
+        const before = picked;
+        picked = activity;
         try {
           const res = await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ activity }) });
           state.walk.activity = activity;
           // A daycation has its own time limit, so switching moves the stop.
           if (res.stopsAt) state.walk.stopsAt = res.stopsAt;
           state.walk.closesAt = res.closesAt || null;
+          state.walk.endsBy = res.endsBy || null;
           saveLocalWalk();
           const a = activityInfo(activity);
-          document.querySelectorAll('#activityChoice [data-activity]').forEach((c) => c.classList.toggle('active', c === chip));
           document.getElementById('endWalkBtn').textContent = `End ${a.label.toLowerCase()}`;
           document.getElementById('cancelWalkBtn').textContent = `Cancel ${a.label.toLowerCase()}`;
           topbarTitle.textContent = `${a.label} in progress`;
           updateWalkTabLabel();
-          syncMakeUsualBtn(makeUsualBtn, activity);
+          syncActivityChips(choiceRow, activity, w.dog);
           document.getElementById('walkPlaygroupBtn').classList.toggle('hidden', activity !== 'playgroup');
-          toast(`Switched to ${a.emoji} ${a.label}`);
-        } catch (err) { toast(err.message, 'error'); }
+          pickedActivityToast(activity, w.dog, 'Switched to');
+        } catch (err) { picked = before; toast(err.message, 'error'); }
       });
     });
     // Collapsed by default -- kept out of the way while you're actually
@@ -8113,7 +8913,13 @@
       state.statsScope = 'mine';
       state.statsRange = 'today';
       state.statsView = 'summary';
-      switchTab('stats');
+      // A step on top of the walk, not a tab switch: the phone's Back
+      // returns to the walk in progress, not to Available (audit 3).
+      state.tab = 'stats';
+      tabButtons.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'stats'));
+      topbarTitle.textContent = TAB_TITLES.stats;
+      pushHistory({ sheet: null });
+      render();
     });
     // The walk ends now, on the server too (so the dog is free for everyone
     // right away), not when the notes are saved.
@@ -8152,33 +8958,54 @@
 
     if (timerInterval) clearInterval(timerInterval);
     const startedMs = new Date(w.startedAt).getTime();
-    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + 45 * 60000);
+    // Fallback before the server says: the activity's own limit (matchmaking
+    // runs 60 minutes, not the walk's 45; a daycation 12 hours).
+    const stopsMs = () => (state.walk.stopsAt ? new Date(state.walk.stopsAt).getTime() : startedMs + activityLimitMinutes(state.walk.activity) * 60000);
     const tick = () => {
       const el = document.getElementById('timerDisplay');
       if (!el) { clearInterval(timerInterval); return; }
-      el.textContent = fmtElapsed((Date.now() - startedMs) / 1000);
+      // On the server's clock (serverNow), so a phone minutes fast or slow
+      // still shows the real elapsed time and time left (audit 3).
+      const now = serverNow();
+      el.textContent = fmtElapsed((now - startedMs) / 1000);
       // Cats: a gentle "time to wrap up" once past the suggested length.
       const visit = speciesOf(state.walk.dog).visitMinutes;
       const hint = document.getElementById('visitHint');
       if (visit && hint) {
-        const long = Date.now() - startedMs >= visit[1] * 60000;
+        const long = now - startedMs >= visit[1] * 60000;
         el.classList.toggle('visit-long', long);
         hint.classList.toggle('visit-long', long);
         hint.textContent = long ? `${visit[1]} minutes: a good time to say goodbye` : `${visit[0]} to ${visit[1]} minutes is usually best`;
       }
-      const left = (stopsMs() - Date.now()) / 1000;
+      const left = (stopsMs() - now) / 1000;
       const text = document.getElementById('autoStopText');
       const card = document.getElementById('autoStopCard');
       const daycation = state.walk.activity === 'daycation';
+      // Held to closing: show the official closing time (audit 3), never
+      // the server's quiet stop a little after it.
+      const closesMs = !daycation && state.walk.closesAt ? new Date(state.walk.closesAt).getTime() : Infinity;
+      const shownMs = Math.min(stopsMs(), closesMs);
+      const shownLeft = (shownMs - now) / 1000;
       if (text) {
         text.textContent = daycation
-          ? `🚗 Daycations can last up to ${DAYCATION_HOURS} hours. Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())}.`
-          : `Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())} (${fmtElapsed(Math.max(0, left))} left)`;
+          ? `🚗 Daycations can last up to ${SHARED_CONFIG.daycationMinutes / 60} hours. Stops automatically at ${fmtClock(new Date(stopsMs()).toISOString())}.`
+          : shownLeft > 0 ? `Stops automatically at ${fmtClock(new Date(shownMs).toISOString())} (${fmtElapsed(shownLeft)} left)`
+            : `Stops automatically at ${fmtClock(new Date(shownMs).toISOString())}`;
       }
-      if (card) card.classList.toggle('warn', left <= 180);
+      if (card) card.classList.toggle('warn', shownLeft <= 180);
       const extendBtn = document.getElementById('extendWalkBtn');
       if (extendBtn) extendBtn.classList.toggle('hidden', daycation);
-      if (left <= 0) { clearInterval(timerInterval); handleAutoStopped(); }
+      // At the limit, ask the server what happened -- but not every second
+      // while it still says "running" (its stop runs a moment later, or a
+      // clock is off): wait 3, 6, 12, then 30 s between asks (audit 3).
+      if (left > 0) autoStopPoll.delay = 0;
+      else if (now >= autoStopPoll.nextAt) {
+        autoStopPoll.delay = autoStopPoll.walkId === state.walk.walkId ? Math.min(30000, (autoStopPoll.delay || 1500) * 2) : 3000;
+        autoStopPoll.walkId = state.walk.walkId;
+        autoStopPoll.nextAt = now + autoStopPoll.delay;
+        clearInterval(timerInterval);
+        handleAutoStopped();
+      }
     };
     tick();
     timerInterval = setInterval(tick, 1000);
@@ -8188,6 +9015,8 @@
   // and flag it; ask it what happened rather than assuming, since the walk
   // may have been extended from another device.
   let handlingAutoStop = false;
+  // When the timer may next ask the server about a walk at its limit.
+  const autoStopPoll = { walkId: null, nextAt: 0, delay: 0 };
   async function handleAutoStopped() {
     if (handlingAutoStop || state.walk.phase !== 'active') return;
     handlingAutoStop = true;
@@ -8228,31 +9057,40 @@
     const wrapUp = !!w.wrapUpEndedAt;
     const startedMs = new Date(w.startedAt).getTime();
     const draft = readEndDraft(w.walkId);
-    // Walks end by closing time (7pm), so nothing later can be picked.
-    const closesMs = w.closesAt ? new Date(w.closesAt).getTime() : Infinity;
+    // Walks end by closing time (7pm), so nothing later can be picked. The
+    // server's endsBy is the real limit (a little past it); wording always
+    // names the official closesAt.
+    const closesMs = w.endsBy ? new Date(w.endsBy).getTime() : w.closesAt ? new Date(w.closesAt).getTime() : Infinity;
     const maxHours = maxActivityHours(w.activity);
     const latestMs = () => Math.min(Date.now(), startedMs + maxHours * 3600000, closesMs);
-    const stoppedAtClosing = wrapUp && new Date(w.wrapUpEndedAt).getTime() >= closesMs;
+    const stoppedAtClosing = wrapUp && !!w.closesAt && new Date(w.wrapUpEndedAt).getTime() >= new Date(w.closesAt).getTime();
+    // Stopped at closing: named by the official closing time.
+    const limitLabel = stoppedAtClosing && w.closesAt ? w.closesAt : w.wrapUpEndedAt;
+    // audit 3: "Just now" is the real now, offered only while it still is
+    // (not past the longest allowed), and preselected only when the walker
+    // is back within a few minutes of the stop; otherwise "At [limit]".
+    const nowOffered = wrapUp && !stoppedAtClosing && Date.now() <= Math.min(startedMs + maxHours * 3600000, closesMs);
+    const nowDefault = nowOffered && Date.now() - new Date(w.wrapUpEndedAt).getTime() <= 5 * 60000;
     appEl.innerHTML = `
       <div class="stack">
         <div class="card">
           <p class="walk-dog-name">${esc(w.dog.name)}</p>
           ${wrapUp ? `
           <p class="small autostop-note">⏱ ${stoppedAtClosing
-    ? `${capFirst(termsOf(w.dog).nouns)} end at ${fmtClock(w.closesAt)}, so this one stopped automatically then.`
+    ? `${capFirst(termsOf(w.dog).nouns)} end at ${fmtClock(w.closesAt)}, so this one stopped automatically.`
     : `This ${activityInfo(w.activity).noun} reached its time limit and stopped automatically at ${fmtClock(w.wrapUpEndedAt)}.`}</p>
           <label>When did the ${activityInfo(w.activity).noun} end?</label>
           <div id="endTimeChoice" class="marker-row" style="gap:6px;">
-            ${stoppedAtClosing ? '' : '<button type="button" class="btn small-btn filter-chip active" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>'}
-            <button type="button" class="btn small-btn filter-chip ${stoppedAtClosing ? 'active' : ''}" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(w.wrapUpEndedAt)}</button>
+            ${nowOffered ? `<button type="button" class="btn small-btn filter-chip ${nowDefault ? 'active' : ''}" data-end="now" style="width:auto;flex:1 1 0;">Just now</button>` : ''}
+            <button type="button" class="btn small-btn filter-chip ${nowDefault ? '' : 'active'}" data-end="limit" style="width:auto;flex:1 1 0;">At ${fmtClock(limitLabel)}</button>
             <button type="button" class="btn small-btn filter-chip" data-end="pick" style="width:auto;flex:1 1 0;">Pick a time</button>
           </div>
-          <input type="time" id="walkEndTime" class="hidden" value="${toLocalTimeInput(w.wrapUpEndedAt)}" style="margin-top:6px;" />
-          <p class="small muted" id="walkEndSummary" style="margin:4px 0 10px;" aria-live="polite"></p>` : `<p class="center muted">${esc(activityInfo(w.activity).label)} finished${w.endTappedAt ? ` at ${fmtClock(w.endTappedAt)}` : ''}. Add any notes before saving.</p>`}
+          <input type="time" id="walkEndTime" class="hidden" aria-label="${esc(capFirst(activityInfo(w.activity).noun))} ended at" value="${toLocalTimeInput(limitLabel)}" style="margin-top:6px;" />
+          <p class="small muted" id="walkEndSummary" style="margin:4px 0 10px;" aria-live="polite"></p>` : `<p class="center muted">${esc(activityInfo(w.activity).label)} finished${w.endTappedAt ? ` at ${fmtClock(w.endSynced ? w.endTappedAt : new Date(new Date(w.endTappedAt).getTime() + serverClockOffsetMs).toISOString())}` : ''}. Add any notes before saving.</p>`}
           ${offlineWalkNoteHtml(w)}
           ${wrapUpChecklistHtml(w.dog)}
           ${w.activity === 'playgroup' ? `<div id="walkPlaygroupNote">
-            <label>Play group note (optional)</label>
+            <label>Playgroup note (optional)</label>
             ${pgEditorHtml({ showDate: false, text: draft.pg ? draft.pg.text : '', placeholder: `How did ${w.dog.name} do? Type @ to tag a dog they played with.` })}
           </div>` : ''}
           <label>Note for other volunteers (optional)</label>
@@ -8270,7 +9108,7 @@
     // Wrap-up only: the chosen end time as an ISO time, or null to keep the
     // time-limit end. A picked time earlier in the day than the start means
     // the walk ran past midnight.
-    let choice = stoppedAtClosing ? 'limit' : 'now';
+    let choice = nowDefault ? 'now' : 'limit';
     const endInput = document.getElementById('walkEndTime');
     // The picked clock time on the walk's day -- or the next day, only when
     // that's still a possible end (a daycation running past midnight). A
@@ -8292,7 +9130,7 @@
     };
     const chosenEnd = () => {
       if (choice === 'now') return new Date(latestMs()).toISOString();
-      if (choice === 'limit' || !endInput.value || endInput.value === toLocalTimeInput(w.wrapUpEndedAt)) return null;
+      if (choice === 'limit' || !endInput.value || endInput.value === toLocalTimeInput(limitLabel)) return null;
       return new Date(pickedMs()).toISOString();
     };
     let summaryTimer = null;
@@ -8326,8 +9164,8 @@
     const pgBox = document.getElementById('walkPlaygroupNote');
     const pgPicks = draftPicks(draft.pg);
     const pgEditor = pgBox ? wirePgEditor(pgBox, { ownId: w.dog.id, picks: pgPicks }) : null;
-    const sharedNoteBox = wireNoteTagBox(document.getElementById('walkNotesBox'), { ownId: w.dog.id, ...draftBoxStart(draft.notes) });
-    const privateNoteBox = wireNoteTagBox(document.getElementById('walkPrivateNoteBox'), { ownId: w.dog.id, maxLength: PRIVATE_NOTE_MAX_CHARS, ...draftBoxStart(draft.priv) });
+    const sharedNoteBox = wireNoteTagBox(document.getElementById('walkNotesBox'), { ownId: w.dog.id, guard: false, ...draftBoxStart(draft.notes) });
+    const privateNoteBox = wireNoteTagBox(document.getElementById('walkPrivateNoteBox'), { ownId: w.dog.id, maxLength: PRIVATE_NOTE_MAX_CHARS, guard: false, ...draftBoxStart(draft.priv) });
     // Every change is kept as this walk's draft (see endDraft above).
     // Not once this walk is gone from the screen (saved, deleted here or
     // elsewhere): a late blur would otherwise bring its draft back.
@@ -8362,7 +9200,9 @@
             // end time (e.g. saved from another device, or a second tap
             // that got past the first): it's this walk, so just attach the notes.
             if (err.status === 409 && err.body && err.body.alreadyEnded) {
-              if (notes) await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ notes }) }).catch(() => {});
+              // Not swallowed: if the note can't be attached, the draft stays
+              // and the alert below says to try again.
+              if (notes) await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ notes }) });
               res = { durationSeconds: err.body.durationSeconds };
               state.walk.autoStopped = !!err.body.autoStopped;
             } else { throw err; }
@@ -8382,18 +9222,30 @@
           res = await api(`/api/walks/${w.walkId}`, { method: 'PUT', body: JSON.stringify({ wrapUpDone: true, ...(notes ? { notes } : {}) }) });
           if (res.levelUpOffer === undefined) res.levelUpOffer = w.levelUpOffer;
         }
-        clearInterval(summaryTimer);
         state.walk.durationSeconds = res.durationSeconds;
-        if (privateNote) {
-          // Never blocks saving the walk itself.
-          api(`/api/dogs/${w.dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body: privateNote, append: true }) })
-            .catch(() => toast("Your private note couldn't be saved.", 'error'));
+        // The walk itself is saved by now. A private or Playgroup note that
+        // can't be saved keeps the end screen and its draft, so Save & finish
+        // can try again; one already saved (w.sentNotes) isn't sent twice.
+        w.sentNotes = w.sentNotes || {};
+        const notSaved = [];
+        if (privateNote && w.sentNotes.priv !== privateNote) {
+          try {
+            await api(`/api/dogs/${w.dog.id}/private-note`, { method: 'PUT', body: JSON.stringify({ body: privateNote, append: true }) });
+            w.sentNotes.priv = privateNote;
+          } catch (e) { notSaved.push('private note'); }
         }
-        if (playgroupNote) {
-          // Dated the day play group started; never blocks saving the session.
-          api(`/api/dogs/${w.dog.id}/playgroup-notes`, { method: 'POST', body: JSON.stringify({ body: playgroupNote, noteDate: dateKey(w.startedAt), signed: pgEditor.signed() }) })
-            .catch(() => toast("Your play group note couldn't be saved.", 'error'));
+        if (playgroupNote && w.sentNotes.pg !== playgroupNote) {
+          // Dated the day Playgroup started.
+          try {
+            await api(`/api/dogs/${w.dog.id}/playgroup-notes`, { method: 'POST', body: JSON.stringify({ body: playgroupNote, noteDate: dateKey(w.startedAt), signed: pgEditor.signed() }) });
+            w.sentNotes.pg = playgroupNote;
+          } catch (e) { notSaved.push('Playgroup note'); }
         }
+        if (notSaved.length) {
+          appAlert(`The ${activityInfo(w.activity).noun} is saved, but your ${notSaved.join(' and ')} couldn't be saved yet. It's kept on this phone; tap Save & finish again to try again.`);
+          return;
+        }
+        clearInterval(summaryTimer);
         // You just walked them yourself — mark today's checkoff automatically
         // so they don't sit in the Available list looking like they still
         // need it. (Ended with End: already done when it ended.)
@@ -8408,7 +9260,9 @@
         maybeOfferLevelUp(res.levelUpOffer);
       } catch (err) {
         if (err.status === 404) { clearInterval(summaryTimer); walkDeletedElsewhere(w); return; }
-        appAlert(friendlyError(err, 'save this'));
+        if (walkMovedError(err)) { clearInterval(summaryTimer); walkMovedElsewhere(w); return; }
+        // The draft is kept (keepDraft above), so nothing typed is lost.
+        appAlert(`${friendlyError(err, 'save this')} Your notes are kept on this phone; tap Save & finish to try again.`);
       } finally {
         saving = false;
         if (saveBtn.isConnected) saveBtn.disabled = !!pickError();
@@ -8438,7 +9292,7 @@
         <div class="card center">
           <p class="walk-dog-name">Great ${noun} with ${esc(w.dog.name)}! ${activityInfo(w.activity).emoji}🎉</p>
           <p class="muted">Started at ${fmtClock(w.startedAt)} · ${(w.durationSeconds || 0) < 60 ? 'under a minute' : fmtDuration(w.durationSeconds)}</p>
-          ${w.autoStopped ? `<p class="small autostop-note">⏱ This ${noun} was stopped automatically after ${fmtDuration(w.durationSeconds)}. If it ran longer, you can fix the time from Stats (tap the pencil on it).</p>` : ''}
+          ${w.autoStopped ? `<p class="small autostop-note">⏱ This ${noun} was stopped automatically after ${fmtDuration(w.durationSeconds)}. If it ran longer, you can fix the time from Stats&amp;Notes (tap the pencil on it).</p>` : ''}
           <div class="stack" style="margin-top:12px;">
             <button id="doneBtn" class="btn primary big">📷 Scan next ${worksWithBoth() ? 'kennel card' : esc(nounFor(prefSpeciesKeys()))}</button>
             <button id="summaryDoneBtn" class="btn">Done</button>
@@ -8506,7 +9360,7 @@
     if (syncingEnd) { await syncingEnd; return; }
     syncingEnd = (async () => {
       try {
-        const res = await api(`/api/walks/${w.walkId}/end`, { method: 'PUT', body: JSON.stringify({ endTappedAt: w.endTappedAt, finishLater: true }) });
+        const res = await sendEndTap(w.walkId, w.endTappedAt, w.endToken);
         w.endSynced = true;
         w.offline = false;
         w.endTappedAt = res.endedAt;
@@ -8523,6 +9377,7 @@
           return;
         }
         if (err.status === 404) { walkDeletedElsewhere(w); return; }
+        if (walkMovedError(err)) { walkMovedElsewhere(w); return; }
         // Ended on another device, or the time limit got there first (a 400:
         // the tap was after it): show that walk's own end screen, where the
         // note can still be saved.
@@ -8533,6 +9388,38 @@
       } finally { syncingEnd = null; }
     })();
     await syncingEnd;
+  }
+
+  // Sends an End tap (finishLater). One the server refuses as a time (400:
+  // this phone's clock far off, say) still ends the walk, at the server's
+  // own time, instead of leaving it running with the tap dropped.
+  // endToken (from the walk's start) lets it through after someone else
+  // signed in on this phone (audit 3, shared tablet).
+  async function sendEndTap(walkId, endTappedAt, endToken) {
+    const token = endToken ? { endToken } : {};
+    try {
+      return await api(`/api/walks/${walkId}/end`, { method: 'PUT', body: JSON.stringify({ endTappedAt, finishLater: true, ...token }) });
+    } catch (err) {
+      if (err.status !== 400) throw err;
+      return api(`/api/walks/${walkId}/end`, { method: 'PUT', body: JSON.stringify({ finishLater: true, ...token }) });
+    }
+  }
+  // Ends tapped offline by someone else on this (shared) phone, kept when
+  // the next person's walk took the walk copy's place (saveLocalWalk). Sent
+  // whoever is signed in; the server takes them on the walk's endToken.
+  const QUEUED_ENDS_KEY = 'dogwalk_queued_ends';
+  function readQueuedEnds() {
+    try { const list = JSON.parse(localStorage.getItem(QUEUED_ENDS_KEY) || '[]'); return Array.isArray(list) ? list : []; } catch (e) { return []; }
+  }
+  function writeQueuedEnds(list) {
+    try { if (list.length) localStorage.setItem(QUEUED_ENDS_KEY, JSON.stringify(list)); else localStorage.removeItem(QUEUED_ENDS_KEY); } catch (e) { /* storage blocked */ }
+  }
+  async function sendQueuedEnds() {
+    const left = [];
+    for (const q of readQueuedEnds()) {
+      try { await sendEndTap(q.walkId, q.endTappedAt, q.endToken); } catch (err) { if (unreachable(err)) left.push(q); }
+    }
+    writeQueuedEnds(left);
   }
 
   // A wrap-up the server is holding (GET /api/walks/active wrapUp) as this
@@ -8547,6 +9434,7 @@
       w.wrapUpEndedAt = wrapUp.ended_at;
     }
     w.closesAt = wrapUp.closesAt;
+    w.endsBy = wrapUp.endsBy || null;
     w.offline = false;
     w.phase = 'ending';
   }
@@ -8565,6 +9453,7 @@
     let res;
     try { res = await api(`/api/walks/active?userId=${state.currentUser.id}&walkId=${encodeURIComponent(w.walkId)}`); } catch (err) { return; }
     if (state.walk !== w) return;
+    if (res.walkMoved) { walkMovedElsewhere(w); return; }
     if (res.walkMissing) { walkDeletedElsewhere(w); return; }
     if (finishing && !force) return;
     if (res.walk && res.walk.id === w.walkId) {
@@ -8572,6 +9461,7 @@
         // Still going, maybe extended or switched elsewhere.
         w.stopsAt = res.walk.stopsAt;
         w.closesAt = res.walk.closesAt;
+        w.endsBy = res.walk.endsBy || null;
         if (res.walk.activity !== w.activity) { w.activity = res.walk.activity; if (state.tab === 'walk') renderWalk(); }
         saveLocalWalk();
       }
@@ -8604,6 +9494,28 @@
     updateWalkTabLabel();
     if (state.tab === 'walk') switchTab('available');
   }
+  // Staff moved this walk to another volunteer (server: walkMoved, or a 403
+  // with notYourWalk): not deleted, just not this person's any more. What
+  // was typed on its end screen stays on this phone (the end draft) and can
+  // be copied.
+  async function walkMovedElsewhere(w) {
+    if (state.walk !== w) return;
+    clearInterval(timerInterval);
+    clearLocalWalk(w.walkId);
+    const draft = readEndDraft(w.walkId) || {};
+    const typed = [draft.notes, draft.priv, draft.pg].map((p) => (p && p.text ? p.text.trim() : '')).filter(Boolean).join('\n\n');
+    state.walk = { phase: 'idle', dog: null, walkId: null, startedAt: null, location: null };
+    updateWalkTabLabel();
+    if (state.tab === 'walk') switchTab('available');
+    const msg = `This ${activityInfo(w.activity).noun} was moved to another volunteer, so it can't be saved from this phone.`;
+    if (typed && navigator.clipboard) {
+      const copy = await appConfirm(`${msg} What you typed is kept on this phone. Copy it?`, { title: 'Moved to another volunteer', confirmText: 'Copy my notes', cancelText: 'Close' });
+      if (copy) navigator.clipboard.writeText(typed).then(() => toast('Copied'), () => toast("Couldn't copy your notes", 'error'));
+    } else {
+      appAlert(msg, 'Moved to another volunteer');
+    }
+  }
+  const walkMovedError = (err) => err && err.status === 403 && err.body && err.body.notYourWalk;
 
   // ---------- This device's copy of the walk ----------
   // From the moment a walk starts until its end reaches the server, the walk
@@ -8623,17 +9535,27 @@
     const copy = {
       userId: u.id,
       // Just enough of the account to draw the walk screen offline.
-      user: { id: u.id, name: u.name, onboardingCompleted: u.onboardingCompleted, experienceLevel: u.experienceLevel, defaultActivity: u.defaultActivity, speciesPref: u.speciesPref, species: u.species },
+      user: { id: u.id, name: u.name, onboardingCompleted: u.onboardingCompleted, experienceLevel: u.experienceLevel, defaultActivity: u.defaultActivity, defaultActivityCat: u.defaultActivityCat, speciesPref: u.speciesPref, species: u.species },
       walkId: w.walkId,
       dog,
       startedAt: w.startedAt,
       stopsAt: w.stopsAt || null,
       closesAt: w.closesAt || null,
+      endsBy: w.endsBy || null,
+      endToken: w.endToken || null,
       activity: w.activity,
       location: w.location || null,
       phase: w.phase,
       endTappedAt: w.phase === 'ending' ? w.endTappedAt : null
     };
+    // Someone else's End still waiting to be sent (a shared phone): kept
+    // aside rather than overwritten (sendQueuedEnds).
+    try {
+      const prev = JSON.parse(localStorage.getItem(LOCAL_WALK_KEY) || 'null');
+      if (prev && String(prev.walkId) !== String(copy.walkId) && prev.phase === 'ending' && prev.endTappedAt && prev.endToken) {
+        writeQueuedEnds([...readQueuedEnds(), { walkId: prev.walkId, endTappedAt: prev.endTappedAt, endToken: prev.endToken }]);
+      }
+    } catch (e) { /* storage blocked */ }
     try { localStorage.setItem(LOCAL_WALK_KEY, JSON.stringify(copy)); } catch (e) { /* storage full or blocked */ }
   }
   function readLocalWalk(userId) {
@@ -8662,6 +9584,8 @@
       startedAt: copy.startedAt,
       stopsAt: copy.stopsAt,
       closesAt: copy.closesAt,
+      endsBy: copy.endsBy || null,
+      endToken: copy.endToken || null,
       activity: copy.activity,
       location: copy.location,
       endTappedAt: copy.endTappedAt || null,
@@ -8707,7 +9631,32 @@
   // Opened by "End walk" with the app closed: /?endWalk=<id>&at=<time>.
   // Read once, before the URL is tidied away.
   const launchParams = new URLSearchParams(window.location.search);
-  const pendingEnd = launchParams.get('endWalk') ? { walkId: launchParams.get('endWalk'), at: launchParams.get('at') } : null;
+  // Only honoured with the service worker's nonce for that tap (sw.js
+  // stashEndTap), so a crafted /?endWalk link does nothing (audit 3).
+  const pendingEnd = launchParams.get('endWalk') ? { walkId: launchParams.get('endWalk'), nonce: launchParams.get('nonce') } : null;
+  // Offline start-up showing the walk from this phone's copy: an "End walk"
+  // tapped on its notification is queued like the End button (endWalkAt
+  // keeps the tap and sends it once back online).
+  async function endFromNotificationOffline(copy) {
+    if (!pendingEnd || copy.phase === 'ending') return;
+    const tapAt = await takeEndTap(copy.walkId);
+    if (tapAt && String(state.walk.walkId) === String(copy.walkId) && state.walk.phase === 'active') {
+      endWalkAt(notificationEndTime(tapAt, copy.startedAt));
+    }
+  }
+  // The tap time the service worker kept for this End, or null.
+  async function takeEndTap(walkId) {
+    if (!pendingEnd || !pendingEnd.nonce || String(pendingEnd.walkId) !== String(walkId) || !('caches' in window)) return null;
+    try {
+      const cache = await caches.open('shelter-walk-end-taps');
+      const key = `/__end-tap/${encodeURIComponent(walkId)}`;
+      const hit = await cache.match(key);
+      const tap = hit ? await hit.json() : null;
+      if (!tap || tap.nonce !== pendingEnd.nonce || String(tap.walkId) !== String(walkId)) return null;
+      await cache.delete(key);
+      return tap.at || null;
+    } catch (e) { return null; }
+  }
   const pendingFeedbackInbox = launchParams.get('open') === 'feedback';
   const pendingUpdates = launchParams.get('open') === 'updates';
   if (window.location.search) history.replaceState(history.state, '', window.location.pathname);
@@ -8726,12 +9675,21 @@
     refreshUpdatesBadge();
     refreshUpdatesTabVisibility();
     const local = readLocalWalk(state.currentUser.id);
+    // Someone else's End tapped offline on this phone: queued and sent now.
+    try {
+      const other = JSON.parse(localStorage.getItem(LOCAL_WALK_KEY) || 'null');
+      if (other && !local && other.phase === 'ending' && other.endTappedAt && other.endToken) {
+        writeQueuedEnds([...readQueuedEnds(), { walkId: other.walkId, endTappedAt: other.endTappedAt, endToken: other.endToken }]);
+        localStorage.removeItem(LOCAL_WALK_KEY);
+      }
+    } catch (e) { /* storage blocked */ }
+    sendQueuedEnds().catch(() => {});
     try {
       // End tapped while offline (kept on this phone) goes first, so the
       // answer below already has that walk ended, at the tap.
       if (local && local.phase === 'ending' && local.endTappedAt) {
         try {
-          await api(`/api/walks/${local.walkId}/end`, { method: 'PUT', body: JSON.stringify({ endTappedAt: local.endTappedAt, finishLater: true }) });
+          await sendEndTap(local.walkId, local.endTappedAt, local.endToken);
           api('/api/checkoff', { method: 'POST', body: JSON.stringify({ dogId: local.dog.id, dateKey: todayKey() }) }).catch(() => {});
         } catch (err) {
           if (unreachable(err)) throw err;
@@ -8750,12 +9708,15 @@
           startedAt: walk.started_at,
           stopsAt: walk.stopsAt,
           closesAt: walk.closesAt,
+          endsBy: walk.endsBy || null,
+          endToken: walk.endToken || null,
           activity: walk.activity,
           location: walk.location
         };
         switchTab('walk');
-        if (pendingEnd && String(pendingEnd.walkId) === String(walk.id)) {
-          endWalkAt(notificationEndTime(pendingEnd.at, walk.started_at));
+        const tapAt = await takeEndTap(walk.id);
+        if (tapAt && state.walk.walkId === walk.id && state.walk.phase === 'active') {
+          endWalkAt(notificationEndTime(tapAt, walk.started_at));
         }
         dayNotice = showShelterDayNotice(todayInfo);
         return;
@@ -8785,6 +9746,7 @@
       if (copy && unreachable(err)) {
         state.walk = walkFromLocal(copy);
         switchTab('walk');
+        endFromNotificationOffline(copy);
         return;
       }
     }
@@ -8797,7 +9759,12 @@
     }
 
     if (pendingUpdates) switchTab('updates');
-    else render();
+    else {
+      // The title was set before we knew who this is (a cat volunteer just
+      // out of onboarding would keep "Dogs to walk" until a reload).
+      if (TAB_TITLES[state.tab]) topbarTitle.textContent = TAB_TITLES[state.tab];
+      render();
+    }
     dayNotice = showShelterDayNotice(todayInfo);
     if (pendingFeedbackInbox) { openFeedbackInbox(); return; }
     // One popup at a time: the day's hours notice first, then the shelter
@@ -8820,13 +9787,14 @@
     const t = data.today;
     state.shelterToday = t;
     if (!t || !t.special) return false;
-    const seenKey = `${t.dateKey}|${t.closed}|${t.hoursLabel}|${t.note}`;
+    const seenKey = `${t.dateKey}|${t.closed}|${t.hoursLabel}|${t.note}|${t.message || ''}`;
     try { if (localStorage.getItem(DAY_NOTICE_KEY) === seenKey) return false; } catch (err) { /* show it */ }
     const title = t.closed ? '🚫 The shelter is closed today' : '🕒 Today is different';
     const lines = [];
     if (t.closed) lines.push(`There are no ${myTerms().nouns} today.`);
     else lines.push(`${capFirst(myTerms().nouns)} today: ${t.hoursLabel}.`);
     if (t.note) lines.push(t.note);
+    if (t.message) lines.push(t.message);
     await appAlert(lines.join('\n\n'), title);
     try { localStorage.setItem(DAY_NOTICE_KEY, seenKey); } catch (err) { /* fine */ }
     return true;
@@ -8882,6 +9850,7 @@
   // meanwhile, or check the walk with the server again.
   window.addEventListener('online', () => {
     const w = state.walk;
+    if (state.currentUser && readQueuedEnds().length) sendQueuedEnds().catch(() => {});
     if (!state.currentUser || !w.offline) return;
     if (w.phase === 'ending' && !w.endSynced) { syncWalkEnd(w).then(() => { if (state.walk === w && state.tab === 'walk' && !w.offline) renderWalk(); }); return; }
     w.offline = false;
@@ -8932,9 +9901,55 @@
   // species view) aren't personal and stay.
   const PER_USER_LOCAL_KEYS = [LOCAL_WALK_KEY, END_DRAFT_KEY, 'sw-last-user-id', ONBOARDING_STEP_KEY, DAY_NOTICE_KEY, ALERTS_ASKED_KEY];
   function forgetUserOnDevice() {
+    // This phone's push subscription goes too (server first, while still
+    // signed in), so the next person here doesn't get this one's alerts.
+    const pushGone = unsubscribePushOnDevice();
     try { PER_USER_LOCAL_KEYS.forEach((k) => localStorage.removeItem(k)); } catch (e) { /* storage blocked */ }
     try { sessionStorage.clear(); } catch (e) { /* storage blocked */ }
-    return forgetApiCache();
+    return Promise.all([pushGone, forgetApiCache()]);
+  }
+  async function unsubscribePushOnDevice() {
+    try {
+      const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+      const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+      if (!sub) return;
+      // The browser's subscription goes first (it never reaches this phone
+      // again, whatever the server says), then the server's copy (audit 3).
+      const endpoint = sub.endpoint;
+      await sub.unsubscribe().catch(() => {});
+      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }), timeout: 3000 }).catch(() => {});
+    } catch (e) { /* best effort */ }
+  }
+  // Before signing out: an End tapped offline is sent first (signing out
+  // would otherwise leave the walk running, for the next person to find).
+  // If it can't be sent, sign-out waits. Unsaved end-screen notes ask first.
+  async function readyToSignOut() {
+    const u = state.currentUser;
+    if (!u) return true;
+    const local = readLocalWalk(u.id);
+    if (local && local.phase === 'ending' && local.endTappedAt) {
+      try {
+        await sendEndTap(local.walkId, local.endTappedAt, local.endToken);
+        clearLocalWalk(local.walkId);
+        if (state.walk.walkId === local.walkId) state.walk.endSynced = true;
+      } catch (err) {
+        if (unreachable(err)) {
+          await appAlert(`The end of your ${activityInfo(local.activity).noun} with ${local.dog.name} hasn't reached the server yet, so you're still signed in. Sign out once you're back online, and the ${activityInfo(local.activity).noun} is ended at the time you tapped End.`, 'Not signed out yet');
+          return false;
+        }
+        // Ended or deleted elsewhere already: nothing left to send.
+        clearLocalWalk(local.walkId);
+      }
+    }
+    const w = state.walk;
+    const draft = w && w.phase === 'ending' && w.walkId ? readEndDraft(w.walkId) : {};
+    const typed = [draft.notes, draft.priv, draft.pg].some((p) => p && p.text && p.text.trim());
+    if (typed) {
+      return appConfirm(`Your notes for ${w.dog ? w.dog.name : 'this animal'} aren't saved yet. Sign out anyway? They'll be lost.`, {
+        title: 'Unsaved notes', confirmText: 'Sign out anyway', cancelText: 'Stay', danger: true
+      });
+    }
+    return true;
   }
   document.addEventListener('click', (e) => {
     const link = e.target.closest && e.target.closest('#signOutLink, [data-sign-out], a[href*="logout"], a[href*="sign-out"], a[href*="signout"]');
@@ -8944,8 +9959,13 @@
     const href = link.getAttribute('href');
     if (href && !e.defaultPrevented && !(e.metaKey || e.ctrlKey || e.shiftKey) && link.target !== '_blank') {
       e.preventDefault();
-      const go = () => { window.location.href = href; };
-      Promise.race([forgetUserOnDevice(), new Promise((r) => setTimeout(r, 800))]).then(go, go);
+      (async () => {
+        if (!(await readyToSignOut())) return;
+        const go = () => { window.location.href = href; };
+        // Waits for the push unsubscribe (browser and server, up to its 3 s
+        // timeout); the longer cap only guards against a hung browser call.
+        Promise.race([forgetUserOnDevice(), new Promise((r) => setTimeout(r, 6000))]).then(go, go);
+      })();
     } else {
       forgetUserOnDevice();
     }
@@ -8958,8 +9978,15 @@
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('[sw] registration failed:', err.message));
+      // The scanner library, fetched once the page is idle so the service
+      // worker has it for Scan offline (audit 3; sw.js also keeps it at install).
+      const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 4000));
+      idle(() => { fetch('/js/html5-qrcode.min.js', { credentials: 'same-origin' }).catch(() => {}); });
     }
 
+    // The live shared numbers (eng, audit2); the fallback copies stand in
+    // until they arrive, or if they can't.
+    fetch('/api/config').then((r) => (r.ok ? r.json() : null)).then(applySharedConfig).catch(() => {});
     let me;
     try {
       me = await api('/api/me');
@@ -8974,6 +10001,7 @@
         setCurrentUser(copy.user);
         state.walk = walkFromLocal(copy);
         switchTab('walk');
+        endFromNotificationOffline(copy);
         window.addEventListener('online', () => window.location.reload(), { once: true });
         return;
       }

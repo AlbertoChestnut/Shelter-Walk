@@ -19,6 +19,8 @@ const TEN_PM_ET = new Date('2026-11-11T03:00:00Z');
 testHooks.now = () => NOON_ET;
 
 const PENDING = "I'm getting adopted!";
+// Cached photos must start like a real JPEG (scraper.js isJpeg).
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
 const lists = { Dog: [], Cat: [] };
 let adopted = [];
 let adoptedFails = false;
@@ -51,7 +53,7 @@ global.fetch = async (url, opts = {}) => {
     return new Response(imageBytes[imgKey], { status: 200, headers: { 'content-type': 'image/jpeg', 'last-modified': lastModified } });
   }
   const m = /\/api\/animals\/adopt\/(\d+)$/.exec(u);
-  if (m) return json({ primaryBreed: 'Mix', tags: pendingIds.has(Number(m[1])) ? [PENDING] : [] });
+  if (m) return json({ primaryBreed: 'Mix', location: 'Kennel', tags: pendingIds.has(Number(m[1])) ? [PENDING] : [] });
   return realFetch(url, opts);
 };
 
@@ -295,20 +297,20 @@ test('a changed photo URL is fetched fresh, never with the old URL\'s Last-Modif
   const newKey = 'AnimalImages/3003/Large/3003_2.jpg';
   const sameDate = 'Mon, 01 Jun 2026 12:00:00 GMT';
   photoPaths[id] = [`../app_data/${oldKey}`];
-  imageBytes[oldKey] = Buffer.from(`old:${'x'.repeat(600)}`);
+  imageBytes[oldKey] = Buffer.concat([JPEG_MAGIC, Buffer.from(`old:${'x'.repeat(600)}`)]);
   imageLastModified[oldKey] = sameDate;
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('old:'));
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('old:'));
   assert.match(fs.readFileSync(`${file}.lastmod`, 'utf8'), /3003_1\.jpg\nMon, 01 Jun/);
 
   // The new photo happens to carry the same Last-Modified: sending it would get a 304.
   photoPaths[id] = [`../app_data/${newKey}`];
-  imageBytes[newKey] = Buffer.from(`new:${'x'.repeat(600)}`);
+  imageBytes[newKey] = Buffer.concat([JPEG_MAGIC, Buffer.from(`new:${'x'.repeat(600)}`)]);
   imageLastModified[newKey] = sameDate;
   conditionalRequests.length = 0;
   await runScrape();
   assert.deepEqual(conditionalRequests.find(([k]) => k === newKey), [newKey, null], 'no If-Modified-Since for a new URL');
-  assert.ok(fs.readFileSync(file).toString().startsWith('new:'), 'the new photo replaced the old one');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('new:'), 'the new photo replaced the old one');
 
   // Same URL again: now the conditional GET is used.
   conditionalRequests.length = 0;

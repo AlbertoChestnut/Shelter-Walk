@@ -9,7 +9,7 @@
 // back in.
 const species = require('./species');
 
-const TZ = 'America/New_York'; // the shelter's clock, same as impact.js
+const { SHELTER_TZ: TZ } = require('./constants'); // the shelter's clock
 // Dogs leaving without an adoption ('removed') were only logged from this day
 // on, so earlier days can't be rebuilt correctly and aren't shown.
 const TRENDS_SINCE = '2026-09-23';
@@ -116,7 +116,10 @@ function register(app, { db }) {
     const live = currentCounts(db, kind);
     const fosterByDay = new Map(db.prepare('SELECT date_key, in_foster FROM shelter_species_counts WHERE species = ?').all(kind).map((r) => [r.date_key, r.in_foster]));
     fosterByDay.set(dateKeyOf(now.toISOString()), live.inFoster);
-    res.json({ species: kind, ...buildTrends(events, live.listed, now, fosterByDay, trendsSince(first)) });
+    // since: the first day tracked, so the app can name it even before there
+    // is a day to show (a species' first day: tracking starts tomorrow).
+    const since = trendsSince(first);
+    res.json({ species: kind, since, ...buildTrends(events, live.listed, now, fosterByDay, since) });
   });
 }
 

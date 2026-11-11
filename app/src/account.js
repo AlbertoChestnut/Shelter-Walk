@@ -15,6 +15,7 @@
 //          favorite dogs, private notes, an unfinished walk in progress.
 // There is no undo, by design.
 const http = require('http');
+const asyncRoute = require('./asyncRoute');
 
 const DJANGO_URL = () => new URL(process.env.DJANGO_INTERNAL_URL || 'http://127.0.0.1:8001');
 const TOKEN = () => process.env.INTERNAL_API_TOKEN || '';
@@ -90,14 +91,31 @@ function register(app, { db }) {
     // them anyway.
     db.prepare("DELETE FROM dog_notes WHERE user_id = ? AND visibility = 'private'").run(userId);
     db.prepare('UPDATE dog_notes SET user_id = 0 WHERE user_id = ?').run(userId);
-    // Play group notes stay too; signed ones lose the name.
+    // Playgroup notes stay too; signed ones lose the name.
     db.prepare('UPDATE playgroup_notes SET user_id = 0, signed = 0 WHERE user_id = ?').run(userId);
   });
+
+  // Deleting mid-walk would make the animal look free while it's still out
+  // with this person, so both deletions wait until the walk is ended.
+  const openWalkOf = db.prepare(`
+    SELECT d.name FROM walks w LEFT JOIN dogs d ON d.shelter_buddy_id = w.dog_id
+    WHERE w.user_id = ? AND w.ended_at IS NULL LIMIT 1
+  `);
+  function refuseWhileOut(res, userId) {
+    const open = openWalkOf.get(userId);
+    if (!open) return false;
+    res.status(409).json({
+      error: `You're still out with ${open.name || 'an animal'}. End that first, then try again. Nothing was deleted.`,
+      walkInProgress: true
+    });
+    return true;
+  }
 
   const anonymize = db.transaction((userId, name) => {
     wipeWalkData(userId);
     db.prepare('DELETE FROM notification_prefs WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM queued_pushes WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM saved_filters WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM favorite_dogs WHERE user_id = ?').run(userId);
     // Guide sections remember the last editor's name; forget it.
@@ -117,6 +135,7 @@ function register(app, { db }) {
     if (!req.body || req.body.confirm !== 'DELETE') {
       return res.status(400).json({ error: 'The confirmation was not received, so nothing was deleted.' });
     }
+    if (refuseWhileOut(res, me.id)) return;
     try {
       wipeWalkData(me.id);
     } catch (err) {
@@ -127,7 +146,7 @@ function register(app, { db }) {
     res.json({ deleted: true });
   });
 
-  app.delete('/api/me', async (req, res) => {
+  app.delete('/api/me', asyncRoute(async (req, res) => {
     const me = req.me;
     if (!me) return res.status(401).json({ error: 'Not signed in.' });
     if (!req.body || req.body.confirm !== 'DELETE') {
@@ -136,6 +155,7 @@ function register(app, { db }) {
     if (req.headers['x-auth-staff'] === '1') {
       return res.status(403).json({ error: 'Staff accounts are removed from the staff panel, not here.' });
     }
+    if (refuseWhileOut(res, me.id)) return;
     const email = String(req.headers['x-auth-email'] || '').trim().toLowerCase();
 
     let result;
@@ -166,7 +186,7 @@ function register(app, { db }) {
     }
     console.warn(`[account] user ${me.id} deleted their account; walks kept, unattributed`);
     res.json({ deleted: true });
-  });
+  }));
 }
 
 module.exports = { register, setLoginName, onAccountDeleted };

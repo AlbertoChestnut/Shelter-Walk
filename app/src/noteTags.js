@@ -1,5 +1,5 @@
 // "@" tags in the everyday notes: shared tips, private notes, and the note
-// left at the end of a walk or play session. Same format as play group notes
+// left at the end of a walk or play session. Same format as playgroup notes
 // (playgroupNotes.js): "@[123]" in the body tags animal 123, and the app
 // shows it as that animal's current name, so a rename never breaks a tag.
 // Cats share condos and rooms far more often than dogs share kennels, so
@@ -17,7 +17,8 @@ const MAX_MENTIONS = 60;
 // only the shelter date, as a timestamp at 16:00 UTC on that date (late
 // morning in New York), which reads as the same calendar day on any US
 // phone, so the app's date formatting keeps working unchanged.
-const shelterDayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+const { SHELTER_TZ } = require('./constants');
+const shelterDayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: SHELTER_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
 function noteDay(iso) {
   if (!iso) return iso;
   const d = new Date(iso);

@@ -132,36 +132,6 @@ body {
   color: var(--text);
 }
 
-.notif-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  background: var(--red, #b3392c);
-  color: white;
-  font-size: 0.65rem;
-  font-weight: 700;
-  line-height: 1;
-  min-width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 3px;
-}
-
-.notif-celebrate {
-  position: absolute;
-  top: -8px;
-  left: -8px;
-  font-size: 1rem;
-  opacity: 0;
-  transform: scale(0.6);
-  transition: opacity 0.4s ease, transform 0.4s ease;
-  pointer-events: none;
-}
-.notif-celebrate.show { opacity: 1; transform: scale(1); }
-
 main#app {
   flex: 1;
   min-height: 0;
@@ -205,7 +175,7 @@ body.sheet-open main#app {
    Updates icon is also wrapped in a span (.tab-icon-wrap, for the unread
    badge), and a generic .tab-btn span rule was catching that too, shrinking
    its emoji down to label-text size instead of matching the other tabs. */
-.tab-btn .tab-label { font-size: 0.7rem; font-weight: 600; }
+.tab-btn .tab-label { font-size: 0.85rem; font-weight: 600; }
 .tab-btn.active { color: var(--green-text); }
 
 .tab-icon-wrap { position: relative; display: inline-block; }
@@ -215,7 +185,7 @@ body.sheet-open main#app {
   right: -10px;
   background: var(--red-fill);
   color: white;
-  font-size: 0.6rem;
+  font-size: 0.6rem; /* text-size-ok: unread count bubble on an icon */
   font-weight: 700;
   line-height: 1;
   min-width: 15px;
@@ -246,8 +216,19 @@ body.sheet-open main#app {
 .update-unread { border-color: var(--green); border-width: 2px; }
 .update-alert { border-left: 5px solid var(--amber); }
 /* A deploy happened while this page was open (app.js showNewBuildBanner). */
-.new-build-banner { background: var(--amber); color: #fff; text-align: center; font-size: 0.85rem; padding: 4px 8px; }
-.new-build-banner .btn { margin-left: 8px; padding: 2px 10px; min-height: 0; font-size: 0.8rem; }
+/* Both top banners (this one and You're offline): near-black on a fixed
+   amber in either theme (7.6:1; white on amber was 2.3-3.7:1), and an
+   auto-width 44px Reload button beside the words, wrapping under them on a
+   narrow phone. */
+.new-build-banner, .offline-banner {
+  background: #d9a441; color: #1c1c1c; text-align: center;
+  font-size: 0.85rem; font-weight: 600; padding: 4px 10px;
+}
+.new-build-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px; }
+.new-build-banner .btn {
+  width: auto; flex: 0 0 auto; min-height: 44px; padding: 6px 18px; font-size: 0.95rem;
+  background: #1c1c1c; color: #fff; border-color: #1c1c1c;
+}
 
 /* Scan-a-dog page only: a little translucent (not fully opaque like normal
    cards) so the caution/EVO/PB backgrounds behind them stay noticeable
@@ -364,6 +345,16 @@ html[data-theme="dark"] main#app.pb-only-bg {
   cursor: pointer;
 }
 
+/* One session listed under its animal's heading (Stats → an activity). */
+.session-row {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+.session-row .dog-name {
+  font-size: 0.95rem;
+}
+
 .dog-photo {
   width: 76px;
   height: 76px;
@@ -378,15 +369,20 @@ html[data-theme="dark"] main#app.pb-only-bg {
 .dog-info { flex: 1; min-width: 0; }
 .dog-name { font-weight: 700; font-size: 1.05rem; margin: 0 0 2px; }
 .dog-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
-/* A dog's old name(s) after the shelter renames them (akaHtml in app.js). */
-.dog-aka { color: var(--muted); font-size: 0.78rem; font-style: italic; margin: -2px 0 2px; }
+/* A dog's old name(s) after the shelter renames them (akaHtml in app.js).
+   Nearly name-sized and upright: volunteers match it against the kennel card. */
+.dog-aka { color: var(--muted); font-size: 1rem; margin: -2px 0 2px; }
+.dog-aka .aka-names { color: var(--text); font-weight: 600; }
+/* A dog's shelter ID, wherever it's shown: bigger than the line around it,
+   smaller than the aka names. */
+.dog-id { font-size: 0.95rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .dog-aka.profile-aka { margin: -10px 0 8px; }
 .walk-dog-name + .dog-aka { margin: -6px 0 8px; }
 
 /* Compact Available-tab cards: tighter text, smaller photo/buttons. */
-.avail-card .dog-name { font-size: 0.95rem; }
-.avail-card .dog-meta { font-size: 0.78rem; line-height: 1.3; }
-.avail-card .badge { margin-top: 4px; padding: 2px 8px; font-size: 0.7rem; }
+.avail-card .dog-name { font-size: 1.15rem; }
+.avail-card .dog-meta { font-size: 0.85rem; line-height: 1.3; }
+.avail-card .badge { margin-top: 4px; padding: 2px 8px; font-size: 0.85rem; }
 .avail-card .checkoff-label { gap: 1px; }
 .avail-card.evo-caution { background: #fbeaea; border: 2px solid var(--red); }
 
@@ -396,7 +392,7 @@ html[data-theme="dark"] main#app.pb-only-bg {
   display: inline-block;
   padding: 3px 9px;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 700;
   margin-top: 6px;
 }
@@ -438,7 +434,7 @@ html[data-theme="dark"] .badge.fav { background: rgba(236, 64, 122, 0.2); color:
   height: 16px;
   border-radius: 50%;
   vertical-align: middle;
-  font-size: 0.65rem;
+  font-size: 0.65rem; /* text-size-ok: one or two characters inside a fixed-size dot */
   font-weight: 900;
   margin-right: 2px;
 }
@@ -458,12 +454,12 @@ svg.asterisk-icon { display: block; }
    marker-dot (blue included) -- it used to be sized up to 18px on its own,
    which just made it look inconsistent next to the rest. */
 .marker-dot.poo-priority svg.asterisk-icon { width: 8px; height: 8px; }
-.marker-dot.blue.rect { border-radius: 5px; width: auto; padding: 0 4px; font-size: 0.55rem; background: var(--red-fill); border-color: #8a2a20; }
-.marker-dot.pb { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+.marker-dot.blue.rect { border-radius: 5px; width: auto; padding: 0 4px; font-size: 0.55rem; background: var(--red-fill); border-color: #8a2a20; } /* text-size-ok: one or two characters inside a fixed-size dot */
+.marker-dot.pb { background: #ffd400; border: 1px solid #c9a600; color: #1c1c1c; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; } /* text-size-ok: one or two characters inside a fixed-size dot */
 /* Pending adoption ("I'm getting adopted!" on the shelter's own site) —
    purple so it reads as its own distinct category, not confusable with the
    yellow POO/PB markers, the blue behavior markers, or red EVO/hard-block. */
-.marker-dot.pending { background: #8a5fc9; border: 1px solid #6d449e; color: white; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; }
+.marker-dot.pending { background: #8a5fc9; border: 1px solid #6d449e; color: white; width: auto; padding: 0 4px; border-radius: 8px; font-size: 0.55rem; } /* text-size-ok: one or two characters inside a fixed-size dot */
 
 .save-checkmark {
   /* Overrides ".row > * { flex: 1; }" — without this it stretches to fill
@@ -551,15 +547,17 @@ svg.asterisk-icon { display: block; }
   transition: transform 0.1s ease;
 }
 
-.marker-shape.rect { border-radius: 8px; width: auto; min-width: 48px; padding: 0 8px; font-size: 0.62rem; }
+.marker-shape.rect { border-radius: 8px; width: auto; min-width: 48px; padding: 0 8px; font-size: 0.85rem; }
+/* A sticker this volunteer's level can't take off (lockedMarkers). */
+.marker-shape:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Inactive = outline only (colored border + text, white fill) so "off" is
    unambiguous even for a light color like yellow. */
 .marker-shape.blue { background: var(--card-bg); border-color: #2f6fdb; color: #2f6fdb; }
 .marker-shape.blue.rect { border-color: var(--red); color: var(--red); }
 .marker-shape.poo, .marker-shape.poo-priority { background: var(--card-bg); border-color: #c9a600; color: #c9a600; }
-.marker-shape.pb { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.7rem; }
-.marker-shape.pending { background: var(--card-bg); border-color: #8a5fc9; color: #8a5fc9; font-size: 0.62rem; }
+.marker-shape.pb { background: var(--card-bg); border-color: #c9a600; color: #c9a600; font-size: 0.85rem; }
+.marker-shape.pending { background: var(--card-bg); border-color: #8a5fc9; color: #8a5fc9; font-size: 0.85rem; }
 
 /* Drawn as an SVG (see ASTERISK_SVG in app.js), not a "*" glyph -- font
    asterisks sit high with inconsistent metrics across platforms, which no
@@ -591,7 +589,7 @@ svg.asterisk-icon { display: block; }
   background: var(--green);
   color: white;
   border-radius: 50%;
-  font-size: 0.6rem;
+  font-size: 0.6rem; /* text-size-ok: one or two characters inside a fixed-size dot */
   font-weight: 900;
   display: flex;
   align-items: center;
@@ -629,7 +627,7 @@ svg.asterisk-icon { display: block; }
   background: #1c1c1c;
   color: white;
   border-radius: 50%;
-  font-size: 0.55rem;
+  font-size: 0.55rem; /* text-size-ok: one or two characters inside a fixed-size dot */
   font-weight: 900;
   display: flex;
   align-items: center;
@@ -715,14 +713,14 @@ input[type="text"], input[type="number"], input[type="search"], input[type="time
   color: var(--text);
 }
 
-select.small { padding: 8px 10px; font-size: 0.82rem; min-height: 44px; }
+select.small { padding: 8px 10px; font-size: 0.85rem; min-height: 44px; }
 
 textarea { min-height: 90px; resize: vertical; }
 
 label { font-weight: 600; font-size: 0.9rem; display: block; margin-bottom: 6px; }
 
 .muted { color: var(--muted); }
-.small { font-size: 0.82rem; }
+.small { font-size: 0.85rem; }
 /* A short label glued to its value (like "ID 4213" or "🏠 A12") should
    always wrap onto the next line as a whole, never split between the label
    and the value it belongs to -- that split reads as confusing, orphaned
@@ -923,7 +921,7 @@ h2 { margin-top: 0; }
   color: var(--green-dark);
   border-radius: 999px;
   padding: 3px 10px;
-  font-size: 0.78rem;
+  font-size: 0.85rem;
   margin: 2px 4px 2px 0;
 }
 
@@ -960,7 +958,7 @@ h2 { margin-top: 0; }
 }
 
 .stat-tile .value { font-size: 1.6rem; font-weight: 800; color: var(--green-num); }
-.stat-tile .label { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+.stat-tile .label { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
 .stat-tile.shift-drilldown-tile.active { background: var(--green-dark); border-color: var(--green-dark); }
 .stat-tile.shift-drilldown-tile.active .value,
 .stat-tile.shift-drilldown-tile.active .label { color: white; }
@@ -978,12 +976,7 @@ h2 { margin-top: 0; }
   padding-top: 6px;
 }
 
-.note-item {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-.note-item:last-child { border-bottom: none; }
-.note-date { font-size: 0.78rem; color: var(--muted); }
+.note-date { font-size: 0.85rem; color: var(--muted); }
 
 .user-picker {
   position: fixed;
@@ -1004,24 +997,6 @@ h2 { margin-top: 0; }
   width: 100%;
   max-width: 360px;
   margin: auto;
-}
-
-.user-pick-btn {
-  width: 100%;
-  padding: 18px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--card-bg);
-  font-size: 1.1rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.user-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .celebrate-overlay {
@@ -1161,7 +1136,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 }
 .guide-body hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .guide-body a { color: var(--green-text); }
-.guide-body code, .md-help code { background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 5px; font-size: 0.85em; }
+.guide-body code { background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 5px; font-size: 0.85em; }
 .md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
 .md-toolbar .btn { width: auto; padding: 8px 12px; }
 #guideBody { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92rem; line-height: 1.45; min-height: 240px; }
@@ -1201,6 +1176,14 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .activity-chips { gap: 6px; }
 .activity-chips .btn { flex: 1 1 calc(50% - 6px); width: auto; }
 .activity-chips .btn[data-activity="walk"] { flex-basis: 100%; }
+/* Every chip the same: emoji and name on one line (audit 3: "💞" wrapped
+   above "Matchmaking" at 320 while the others didn't). */
+.activity-chips .btn { padding-left: 8px; padding-right: 8px; }
+.activity-chips .chip-main { white-space: nowrap; }
+@media (max-width: 360px) { .activity-chips .btn { font-size: 0.88rem; padding-left: 6px; padding-right: 6px; } }
+/* "Usual" / "Tap again to make usual" under a current-activity chip. */
+.activity-chips .btn:has(.chip-sub) { flex-wrap: wrap; row-gap: 0; }
+.activity-chips .chip-sub { display: block; flex-basis: 100%; font-size: 0.85rem; font-weight: 500; opacity: 0.85; margin-top: 1px; }
 /* My Account → Feedback & bug reports */
 .feedback-kinds { gap: 6px; }
 .feedback-kinds .btn { flex: 1 1 0; width: auto; }
@@ -1246,11 +1229,8 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .autostop-note { background: rgba(217, 164, 65, 0.15); border-radius: 10px; padding: 8px 10px; text-align: left; }
 
 /* Dog notes */
-.note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-actions { display: flex; gap: 14px; margin-top: 2px; }
-.link-btn { background: none; border: none; padding: 6px 0; color: var(--green-text); font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; min-height: 32px; }
-.tip-add { margin-top: 8px; gap: 8px; align-items: center; }
-.tip-add .tip-input { flex: 1; }
+.link-btn { background: none; border: none; padding: 6px 0; color: var(--green-text); font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; min-height: 32px; }
 .private-note-input { resize: vertical; }
 
 .together-day { cursor: pointer; }
@@ -1274,7 +1254,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .tip-text { flex: 1; overflow-wrap: anywhere; }
 .tip-text a, .note-body a, .note-cell a { color: var(--green-text); }
 .tip-item-walk .tip-text { opacity: 0.85; }
-.tip-date { font-size: 0.75rem; opacity: 0.6; white-space: nowrap; }
+.tip-date { font-size: 0.85rem; opacity: 0.8; white-space: nowrap; }
 
 /* Stay-log timeline (the 📜 popup): a vertical rail with a dot per day,
    same-day events grouped under that one dot, and the gap between days
@@ -1298,7 +1278,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .timeline-day-date { font-weight: 700; font-size: 0.85rem; margin-bottom: 2px; }
 .timeline-day-events { margin: 0; }
 .timeline-day-events.tip-list .tip-item.timeline-event { border-bottom: none; padding: 3px 2px; }
-.timeline-gap { list-style: none; font-size: 0.78rem; opacity: 0.65; margin: 2px 0 10px; }
+.timeline-gap { list-style: none; font-size: 0.85rem; opacity: 0.8; margin: 2px 0 10px; }
 
 /* All-notes view (Stats → Notes) */
 .all-notes-search { width: 100%; box-sizing: border-box; padding: 9px 12px; margin-bottom: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 0.95rem; }
@@ -1350,7 +1330,7 @@ html[data-theme="dark"] .toast.error { background: var(--red-fill); color: #fff;
 .notes-toggle-chevron { transition: transform 0.15s ease; color: var(--muted); }
 .notes-toggle.open .notes-toggle-chevron { transform: rotate(180deg); }
 
-.stat-tile .label.sub { margin-top: 0; font-size: 0.72rem; opacity: 0.85; }
+.stat-tile .label.sub { margin-top: 0; font-size: 0.85rem; opacity: 0.85; }
 
 .stat-grid.three { grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .stat-grid.three .stat-tile { padding-left: 6px; padding-right: 6px; }
@@ -1386,7 +1366,7 @@ html[data-theme="dark"] { --trend-listed: #3987e5; --trend-floor: #d95926; --tre
 .trend-chart { position: relative; touch-action: pan-y; }
 .trend-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .trend-grid { stroke: var(--trend-grid); stroke-width: 1; }
-.trend-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.trend-axis { fill: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .trend-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .trend-line.listed, .trend-dot.listed { stroke: var(--trend-listed); }
 .trend-line.floor, .trend-dot.floor { stroke: var(--trend-floor); }
@@ -1397,8 +1377,8 @@ html[data-theme="dark"] { --trend-listed: #3987e5; --trend-floor: #d95926; --tre
 .trend-dot { fill: var(--card-bg); stroke-width: 2.5; }
 .trend-cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .trend-chart .hidden { display: none; }
-.trend-tip { position: absolute; top: -6px; transform: translateY(-100%); background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 0.8rem; line-height: 1.4; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; z-index: 2; }
-.trend-legend { display: flex; gap: 14px; font-size: 0.8rem; color: var(--text); padding: 0 6px 6px; }
+.trend-tip { position: absolute; top: -6px; transform: translateY(-100%); background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 0.85rem; line-height: 1.4; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; z-index: 2; }
+.trend-legend { display: flex; gap: 14px; font-size: 0.85rem; color: var(--text); padding: 0 6px 6px; }
 .trend-swatch { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; background: var(--trend-listed); }
 .trend-swatch.in { background: var(--trend-in); }
 .trend-swatch.floor { background: var(--trend-floor); }
@@ -1418,7 +1398,7 @@ html[data-theme="dark"] { --trend-listed: #3987e5; --trend-floor: #d95926; --tre
 .bar-chart-bar { fill: var(--green); cursor: pointer; }
 .bar-chart-bar.active { fill: var(--green-dark); }
 .bar-chart-avg { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 3; }
-.bar-chart-avg-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bar-chart-avg-label { fill: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 
 /* Which species a card is, shown only to someone who sees dogs and cats. */
 .species-tag { font-size: 0.95em; vertical-align: -1px; }
@@ -1432,7 +1412,7 @@ html[data-theme="dark"] .badge.young { background: #4a3218; color: #ffd9ad; }
 .dog-card .dog-photo, .dog-card .dog-info { cursor: pointer; }
 .search-result .dog-info, .add-walk-dog-result .dog-info { cursor: default; }
 
-/* Play group notes popup: wider than the other popups, since each entry
+/* Playgroup notes popup: wider than the other popups, since each entry
    runs a few sentences. */
 #playgroupPopup .popup-card { max-width: 560px; }
 .pg-list { list-style: none; margin: 10px 0 0; padding: 0; }
@@ -1448,14 +1428,12 @@ html[data-theme="dark"] .badge.young { background: #4a3218; color: #ffd9ad; }
 .pg-entry-body li, .pg-preview li { margin-bottom: 2px; }
 .pg-entry-snippet { opacity: 0.85; }
 .pg-expand { display: block; padding-top: 0; margin-top: -2px; }
-.pg-entry-author { font-size: 0.8rem; opacity: 0.7; margin-top: 4px; text-align: right; }
+.pg-entry-author { font-size: 0.85rem; opacity: 0.8; margin-top: 4px; text-align: right; }
 .pg-entry-author::before { content: "— "; }
 .pg-tag { background: none; border: none; padding: 0; font: inherit; font-weight: 700; color: var(--green-text); cursor: pointer; }
 .pg-section { margin: 20px 0 0; font-size: 0.95rem; }
 .pg-back { display: block; margin-bottom: 4px; }
-.pg-add { margin-top: 4px; }
 .pg-editor { margin: 6px 0 8px; }
-.pg-date-label { display: block; margin-bottom: 6px; }
 .pg-date { margin-top: 4px; }
 .pg-md-toolbar { margin-bottom: 6px; }
 .pg-text-wrap { position: relative; }
@@ -1521,6 +1499,9 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .pg-suggest-item:hover, .pg-suggest-item:focus-visible { background: rgba(127, 127, 127, 0.12); }
 .pg-suggest-item img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
 .pg-suggest-name { flex: 1; font-weight: 600; }
+/* A dog who has left the shelter: faded photo, "Left <date>" in italics. */
+.pg-suggest-item.gone img { opacity: 0.55; filter: grayscale(0.6); }
+.pg-suggest-gone { font-style: italic; }
 
 /* Cat visits: the timer goes amber past the suggested length (species.js
    visitMinutes); a mid-adoption cat's locked condo; end-screen reminders. */
@@ -1532,7 +1513,7 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .wrap-up-checks label { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-weight: normal; }
 .wrap-up-checks input { width: auto; margin: 0; }
 
-/* Full-screen play group note editor: pinned to the top, sized by script to
+/* Full-screen playgroup note editor: pinned to the top, sized by script to
    the space above the keyboard, with the text box taking what's left. */
 .popup-overlay.pg-fs-overlay { z-index: 70; padding: 0; align-items: flex-start; background: var(--card-bg); }
 .pg-fs {
@@ -1565,18 +1546,18 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .tip-help { margin: 4px 0 0; }
 .notes-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .notes-card-head p { margin: 0; }
-.pg-mini-btn { width: auto; flex: 0 0 auto; padding: 4px 10px; min-height: 32px; font-size: 0.8rem; }
-.dog-notes-compact .notes-label { margin-top: 6px; font-size: 0.75rem; }
-.dog-notes-compact .notes-label .badge { font-size: 0.68rem; padding: 1px 6px; }
+.pg-mini-btn { width: auto; flex: 0 0 auto; padding: 4px 10px; min-height: 32px; font-size: 0.85rem; }
+.dog-notes-compact .notes-label { margin-top: 6px; font-size: 0.85rem; }
+.dog-notes-compact .notes-label .badge { font-size: 0.85rem; padding: 1px 6px; }
 .dog-notes-compact .tip-list { margin-top: 2px; }
-.dog-notes-compact .tip-item { padding: 3px 2px; font-size: 0.82rem; line-height: 1.3; }
+.dog-notes-compact .tip-item { padding: 3px 2px; font-size: 0.85rem; line-height: 1.3; }
 .dog-notes-compact .mini-icon-btn { min-height: 24px; padding: 2px 5px; font-size: 0.85rem; }
 .dog-notes-compact .tip-help { display: none; }
 .dog-notes-compact .tip-add-row { margin-top: 4px; gap: 6px; }
 .dog-notes-compact .tip-add-row .tip-input { padding: 5px 8px; font-size: 0.85rem; }
 .dog-notes-compact .tip-add-row .btn { padding: 5px 12px; min-height: 32px; font-size: 0.85rem; }
 
-/* Play group date: Today / Yesterday chips and a picker for older days. */
+/* Playgroup date: Today / Yesterday chips and a picker for older days. */
 .pg-date-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .pg-date-row .pg-date { width: auto; flex: 1 1 130px; padding: 6px 8px; margin: 0; }
 .pg-day-chip { border: 1px solid var(--border); background: var(--card-bg); color: var(--text); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 0.85rem; min-height: 34px; cursor: pointer; }
@@ -1602,10 +1583,14 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .bd-pct { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .bd-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin: 4px 0 2px; }
 .bd-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--green-btn); }
-.bd-meta { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.bd-meta { margin: 0; font-size: 0.85rem; color: var(--muted); }
+/* A split of the engagements above it (POO, kittens): indented on a rule. */
+.bd-sub { margin: 14px 0 0 6px; padding: 2px 0 2px 12px; border-left: 3px solid var(--border); }
+.bd-sub .bd-title { margin-top: 4px; font-size: 0.9rem; }
+.bd-sub .bd-head { font-weight: 500; }
 
-/* "@" tag boxes in tips, private notes and the end-of-walk notes: the play
-   group editor's rich text box, sized down to a note. */
+/* "@" tag boxes in tips, private notes and the end-of-walk notes: the
+   playgroup editor's rich text box, sized down to a note. */
 .note-tag-wrap { flex: 1; min-width: 0; }
 .pg-text.note-tag-text { min-height: 2.6em; padding: 8px 10px; font-size: 0.9rem; border-radius: 8px; }
 .pg-text.note-tag-text.end-note-text { min-height: 4.5em; font-size: 1rem; }
@@ -1671,10 +1656,32 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 .meta-item { position: relative; margin-left: 14px; }
 .meta-item::before { content: '·'; position: absolute; left: -10px; }
 .badge { max-width: 100%; }
-/* A long reason wraps as a tidy block (icon kept on the first line), not a
-   lopsided pill. */
-.avail-card .badge.blocked, .avail-card .badge.not-eligible { display: inline-flex; align-items: flex-start; gap: 4px; border-radius: 10px; line-height: 1.3; }
-.badge.blocked .badge-icon { display: inline-block; background: #fff; border-radius: 50%; line-height: 1; padding: 1px; flex: 0 0 auto; }
+/* Eligibility status row (app.js eligibilityStatusHtml): a solid strip with
+   a colored edge, the title on its own line and the reason under it. Solid
+   (never see-through) so it reads the same over the hazard stripes, in
+   either theme. All pairs are >= 7:1. */
+.elig-status {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 6px; padding: 6px 10px 6px 8px;
+  border-radius: 8px; border-left: 5px solid;
+  font-size: 0.85rem; line-height: 1.3; max-width: 100%;
+}
+.elig-status .elig-icon { flex: 0 0 auto; font-size: 1rem; line-height: 1.15; }
+.elig-status .elig-text { min-width: 0; overflow-wrap: anywhere; }
+.elig-status strong { display: block; font-weight: 700; }
+.elig-status .elig-why { display: block; font-weight: 600; }
+.elig-block { background: #fdecea; color: #7f1d14; border-left-color: #b3392c; }
+.elig-caution { background: #fff3c4; color: #4d3800; border-left-color: #d9a400; }
+.elig-hard { background: #9e2f22; color: #fff; border-left-color: #5c140e; }
+html[data-theme="dark"] .elig-block { background: #3b1f1c; color: #ffc4ba; border-left-color: #e6857a; }
+html[data-theme="dark"] .elig-caution { background: #3a3009; color: #ffe28c; border-left-color: #e6b800; }
+/* On an EVO card (already pink) the row goes a shade deeper to stand apart. */
+.avail-card.evo-caution .elig-block { background: #f6d4cf; }
+html[data-theme="dark"] .avail-card.evo-caution .elig-block { background: #4d221d; }
+/* Over the hazard stripes the scan screen's cards go solid: a see-through
+   card let pale stripes show through behind the text and the status row. */
+main#app.caution-stripes .walk-confirm .card:not(.hard-block-banner),
+main#app.evo-caution-bg .walk-confirm .card:not(.hard-block-banner) { background: var(--card-bg); backdrop-filter: none; }
 .topbar h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 /* The screen title wins the space: the name next to the account icon gives
    way first (down to just the icon), then the title starts to truncate. A
@@ -1697,6 +1704,7 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 /* Walk in progress: ID on its own line under the name, with room. */
 .walk-head-name { font-size: 1.35rem; line-height: 1.2; overflow-wrap: anywhere; }
 .walk-head-id { margin: 4px 0 6px; }
+.walk-head-photo { display: block; width: 80px; height: 80px; margin: 4px auto 8px; border-radius: 50%; }
 @media (max-width: 360px) {
   .topbar { padding: 10px 12px; }
   .tab-btn { padding: 7px 4px 6px; }
@@ -1707,4 +1715,83 @@ html[data-theme="dark"] .pg-autotag { background: rgba(111, 193, 148, 0.14); }
 @media (min-width: 720px) {
   main#app, .tabbar { padding-left: calc((100% - 680px) / 2); padding-right: calc((100% - 680px) / 2); }
   .topbar { padding-left: max(16px, calc((100% - 680px) / 2)); padding-right: max(16px, calc((100% - 680px) / 2)); }
+}
+
+/* ---- Audit 2 (ui) ---- */
+/* Scan confirm: the privileged ⚙ sits in the card's corner; the text keeps
+   clear of it instead of running under it (sex, age, foster). */
+.card.has-corner-gear .dog-card .dog-info { padding-right: 40px; }
+/* 320px with every header icon showing (audit 🔍, a walk running): the
+   icons give up a little width, never get clipped off the edge. The title
+   is the one that truncates. */
+@media (max-width: 360px) {
+  .topbar .icon-btn { padding: 4px 2px; font-size: 1.15rem; }
+  .topbar > div { flex: 0 0 auto; }
+}
+/* Profile sheet: once scrolled, the ✕ gets a bar of its own, so it never
+   sits on top of Start / Edit or a tip's ✎ ✕ (the bar covers what scrolls
+   under it). At the top it still floats over the photo. */
+.sheet-close-bar {
+  position: sticky;
+  top: -20px;
+  height: 0;
+  margin: -20px -18px 0;
+  z-index: 6;
+}
+.sheet-close-bar::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 62px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.sheet-close-bar.scrolled::before { opacity: 1; }
+.sheet-close-bar .sheet-close-btn { position: absolute; top: 9px; right: 10px; float: none; margin: 0; }
+/* What follows the bar flows as if the ✕ weren't there (it used to float). */
+.sheet-close-bar + * { margin-top: 20px; }
+/* 44px tap targets: Updates' kind chips (inline), And/Or, filter stickers. */
+.seg.seg-small .seg-btn[data-filter-match] { min-height: 44px; }
+.marker-shape.filter-chip { width: 44px; height: 44px; }
+.marker-shape.rect.filter-chip { width: auto; }
+/* Add a walk: Started / Ended each labelled above its time box. */
+.add-walk-time { display: flex; flex-direction: column; gap: 2px; flex: 1; margin: 0; }
+/* Search with matches the filters hide. */
+.search-hidden-note .btn { flex: 0 0 auto; }
+
+/* ---- Audit 3 (ui) ---- */
+/* Default activity, one row per species ("For dogs", "For cats"). */
+.default-activity-label { margin: 8px 0 4px; font-weight: 600; }
+/* Add a walk: the two time boxes share the row and may shrink (a time
+   input's own minimum width pushed "Ended" out of the card at 320); on a
+   very narrow card they wrap, one under the other. */
+.add-walk-times { flex-wrap: wrap; row-gap: 6px; }
+.add-walk-times .add-walk-time { min-width: 0; flex: 1 1 110px; }
+.add-walk-times .add-walk-time input { min-width: 0; padding-left: 8px; padding-right: 8px; }
+/* Presets: the text takes the room, Apply is just as wide as its word (it
+   used to take half the card). 44px tall. */
+.preset-apply-btn, .saved-filter-apply-btn { flex: 0 0 auto; width: auto; min-height: 44px; padding-left: 16px; padding-right: 16px; }
+/* 44px tap targets (audit 3): the cat wrap-up checklist rows (the whole
+   row ticks the box), the 📜 timeline link on the cards (its 44px area used
+   to be clipped to the line by the meta row's overflow: hidden; clip only
+   sideways now), and the sticker badges beside a name. */
+.wrap-up-checks label { min-height: 44px; margin: 0; cursor: pointer; }
+.wrap-up-checks input { width: 22px; height: 22px; flex: 0 0 auto; }
+.meta-wrap { overflow: clip visible; }
+.mini-icon-btn.stay-log-btn { z-index: 1; }
+.marker-badges-toggle { position: relative; }
+.marker-badges-toggle::after { content: ''; position: absolute; left: -4px; right: -4px; top: 50%; height: 44px; transform: translateY(-50%); }
+/* A locked sticker (only staff can take it off) carries a small 🔒 on its
+   corner; the hint under the stickers points at it. */
+.marker-shape .marker-lock {
+  position: absolute; top: -8px; right: -8px; font-size: 0.85rem; line-height: 1;
+}
+/* On a computer the sheets (a dog's profile, Settings, My account) are the
+   app's own width, centered, not 1366px wide with a cropped photo. */
+@media (min-width: 720px) {
+  .sheet { justify-content: center; }
+  .sheet-inner { max-width: 680px; }
 }

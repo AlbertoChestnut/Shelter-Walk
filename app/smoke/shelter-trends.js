@@ -43,7 +43,9 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('.seg-btn[data-scope="shelter"]');
     await p.waitForSelector('.trend-chart');
     ok(await p.locator('.trend-chart').count() === 3, 'at the shelter, in/out and in foster charts');
-    ok(await p.locator('.trend-line').count() === 2, 'brought in + adopted lines');
+    // 8 days ago has no count (counts began 10 days ago) and no events: no
+    // scrape that day, so a gap in both lines, not a 0 (audit 2).
+    ok(await p.locator('.trend-line').count() === 4, 'brought in + adopted lines, with a gap on the day with nothing on record');
     ok(await p.locator('.trend-point.floor').count() === 2, 'at the shelter shows as points on its two known days, gaps elsewhere');
     const tiles = await p.$$eval('.stat-tile .value', (els) => els.map((e) => e.textContent));
     ok(tiles[0] === '3' && tiles[1] === '1', 'at the shelter now (listed minus foster) and in foster now tiles');

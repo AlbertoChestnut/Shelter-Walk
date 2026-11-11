@@ -71,7 +71,7 @@ test('opening "/" on desktop sends a staff account straight to /staff, but never
   assert.equal(scanDesktop.status, 200, '/scan always opens the scanner, even for staff on desktop');
 });
 
-test('a chosen start page on a computer: play group desk, app, staff; /app is never redirected', async () => {
+test('a chosen start page on a computer: playgroup desk, app, staff; /app is never redirected', async () => {
   const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
   const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
   const root = (user, staff, ua = DESKTOP_UA, url = '/') => fetch(base + url, { headers: { 'x-auth-email': user, ...(staff ? { 'x-auth-staff': '1' } : {}), 'user-agent': ua }, redirect: 'manual' });
@@ -83,7 +83,7 @@ test('a chosen start page on a computer: play group desk, app, staff; /app is ne
   assert.equal((await me(WALKER_A, true)).desktop.start, 'staff');
   assert.equal((await me(WALKER_B, false)).desktop.start, 'app');
 
-  // Staff picks the play group desk.
+  // Staff picks the playgroup desk.
   assert.equal((await call('PUT', `/api/users/${ids.a}/settings`, { user: WALKER_A, staff: true, body: { desktopView: 'playgroup' } })).status, 200);
   let r = await root(WALKER_A, true);
   assert.equal(r.status, 302);
@@ -151,12 +151,18 @@ test('daycations are pulled out of the location grid, and outsToday buckets dogs
   await call('DELETE', `/api/walks/${dcStart.json.walkId}`, { user: WALKER_A });
 
   const db = new Database(dbFile);
-  const now = new Date();
+  // Times between the shelter's midnight and now, so they're today's at any
+  // clock (TEST_CLOCK=real or any TEST_CLOCK=<ISO>), not just around noon.
+  const { shelterClock, shelterTimeToDate } = require('../src/walkHours');
+  const now = Date.now();
+  const c = shelterClock(now);
+  const midnight = shelterTimeToDate(c.y, c.m, c.d, 0).getTime();
+  const todayAt = (f) => new Date(midnight + f * (now - midnight)).toISOString();
   const ins = db.prepare("INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, activity) VALUES (?, ?, ?, ?, 300, 'walk')");
   // Dog 1: out twice today. Dog 2: out once today.
-  ins.run(1, ids.a, new Date(now - 3600000).toISOString(), new Date(now - 3500000).toISOString());
-  ins.run(1, ids.a, new Date(now - 1800000).toISOString(), new Date(now - 1700000).toISOString());
-  ins.run(2, ids.a, new Date(now - 900000).toISOString(), new Date(now - 800000).toISOString());
+  ins.run(1, ids.a, todayAt(0.2), todayAt(0.3));
+  ins.run(1, ids.a, todayAt(0.4), todayAt(0.5));
+  ins.run(2, ids.a, todayAt(0.6), todayAt(0.7));
   db.close();
 
   const live2 = await call('GET', '/api/staff/live', { staff: true });
@@ -250,7 +256,7 @@ test('reports: byLocation, byDayOfWeek, byTimeOfDay, uniqueDogsServed, shelterCo
   assert.deepEqual(byLocation, {}, 'every wing has fewer than MIN_CELL engagements here, so none is listed (audit 2026-11-10: same rule as Together)');
 
   const byTimeOfDay = Object.fromEntries(report.json.tables.byTimeOfDay.rows.map((r) => [r[0], r[1]]));
-  // Same buckets as Together (impact.js): 7-10, 10-1, 1-4, 4-8.
+  // Same buckets as Together (impact.js): 7-10, 10-1, 1-4, 4-7 (to 7:15).
   assert.equal(byTimeOfDay['Midday (10am-1pm)'], 4, 'dog8, dog9, dog10 on day1 + dog12 on day2, 10am-12pm EDT');
   assert.equal(byTimeOfDay['Afternoon (1-4pm)'], undefined, 'dog11 alone at 1pm is below MIN_CELL');
 

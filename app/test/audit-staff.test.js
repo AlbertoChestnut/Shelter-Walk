@@ -1,9 +1,9 @@
-// Audit 2026-11-10, staff & play group area: the staff report and live board
+// Audit 2026-11-10, staff & playgroup area: the staff report and live board
 // count the same things Together (/api/impact) does -- dogs only unless asked,
 // finished engagements only, walk-only averages that skip misscans -- plus
 // labels (no raw activity keys anywhere, exports included), the "fewer than
 // 3" rule on every breakdown, "vs yesterday" by the same clock time (DST
-// safe), the branded /staff 403 page and the play group "Adopted" badge.
+// safe), the branded /staff 403 page and the playgroup "Adopted" badge.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
@@ -24,7 +24,7 @@ async function call(url, { user = STAFF, staff = true } = {}) {
 
 const FROM = '2026-10-05';
 const TO = '2026-10-07';
-const RAW_KEYS = ['walk', 'cuddle', 'matchmaking', 'playgroup', 'daycation', 'walking', 'cuddling', 'at play group', 'on a daycation'];
+const RAW_KEYS = ['walk', 'cuddle', 'matchmaking', 'playgroup', 'daycation', 'walking', 'cuddling', 'at playgroup', 'on a daycation'];
 // Every (finished, dog) engagement seeded in [FROM, TO], to work out what
 // the report should say independently of the code under test.
 const seededDogRows = [];
@@ -63,7 +63,7 @@ test.before(async () => {
   add(4, vid, '2026-10-05T16:00:00.000Z', 6 * 3600, 'daycation', null); // a 6h daycation
   add(5, sid, '2026-10-06T17:00:00.000Z', 20, 'walk'); // a 20 s misscan
   add(6, sid, '2026-10-07T18:00:00.000Z', 900, 'cuddle');
-  add(1, sid, '2026-10-07T23:30:00.000Z', 1500, 'walk'); // 7:30pm EDT: the 4-8pm bucket, like Together
+  add(1, sid, '2026-10-07T23:10:00.000Z', 1500, 'walk'); // 7:10pm EDT: before the 7:15 stop, so the 4-7pm bucket, like Together
   add(52, vid, '2026-10-06T20:00:00.000Z', 600, 'cuddle', null);
 
   // Today: three finished dog walks, one finished cat cuddle, a dog walk and
@@ -135,9 +135,9 @@ test('breakdowns hide rows under 3, time-of-day uses Together\'s buckets, and bu
   assert.deepEqual(activities, ['Walk'], 'only walks reach 3 here; the cuddle and daycation are hidden');
   const tod = Object.fromEntries(report.tables.byTimeOfDay.rows.map((r) => [r[0], r[1]]));
   assert.equal(tod['Midday (10am-1pm)'], 7, '10am and 11am EDT walks plus the noon daycation: Together\'s 10-1p slot');
-  assert.equal(tod['Evening (4-8pm)'], undefined, 'the lone 7:30pm walk is in the 4-8pm bucket (as on Together), hidden as < 3');
+  assert.equal(tod['Evening (4-7pm)'], undefined, 'the lone 7:10pm walk is in the 4-7pm bucket (as on Together), hidden as < 3');
   assert.equal(tod['Morning (7-10am)'], 3, '9am EDT walks: Together\'s 7-10a slot');
-  assert.deepEqual(staffDashboard.SESSIONS.map((s) => [s.from, s.to]), [[7, 10], [10, 13], [13, 16], [16, 20]], 'same hours as impact.js SLOTS');
+  assert.deepEqual(staffDashboard.SESSIONS.map((s) => [s.from, s.to]), [[7, 10], [10, 13], [13, 16], [16, 19.25]], 'same hours as impact.js SLOTS');
 
   // Oct 5: 4 dog engagements, Oct 6: 4, Oct 7: 5 (a tie for quietest goes to the earlier day).
   const h = report.stats.highlights;
@@ -160,7 +160,7 @@ test('activity labels everywhere: report tables, the one-dog table, CSV and Exce
   assert.equal(dog4.table.title, "Dog4's engagements");
   for (const dog of report.dogDetail) {
     for (const row of dog.table.rows) {
-      assert.ok(['Walk', 'Cuddle', 'Matchmaking', 'Play group', 'Daycation'].includes(row[1]), `label, not a raw key: ${row[1]}`);
+      assert.ok(['Walk', 'Cuddle', 'Matchmaking', 'Playgroup', 'Daycation'].includes(row[1]), `label, not a raw key: ${row[1]}`);
       assert.match(row[0], /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{4}$/, 'friendly date');
     }
   }
@@ -242,7 +242,7 @@ test('/staff for a non-staff account is a small branded page with a way back, st
   assert.equal(api.status, 403);
 });
 
-test('play group counts say when a dog with notes was adopted', async () => {
+test('playgroup counts say when a dog with notes was adopted', async () => {
   const { counts } = (await call('/api/playgroup-notes/counts', { user: VOL, staff: false })).json;
   assert.equal(counts[60].stillListed, false);
   assert.equal(counts[60].adopted, true);

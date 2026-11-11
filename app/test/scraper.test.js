@@ -8,6 +8,8 @@ const { isolateEnv } = require('./_helpers');
 const { dbFile } = isolateEnv('sw-scraper-');
 const db = require('../src/db');
 const { runScrape, IMAGES_DIR } = require('../src/scraper');
+// Cached photos must start like a real JPEG (scraper.js isJpeg).
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
 // A dog has to be unseen for ~50 minutes before a second miss delists it;
 // this stands in for the time between two real scheduled scrapes.
 const timePasses = () => db.prepare('UPDATE dogs SET last_seen_at = ? WHERE still_listed = 1').run(new Date(Date.now() - 2 * 3600000).toISOString());
@@ -122,7 +124,7 @@ test('a dog missing twice, delisted, then returning on a LATER day is a real ret
   assert.equal(eventsFor('returned', 1028), 1, 'a genuinely later-day return still logs normally');
   const row = db.prepare("SELECT title, detail FROM shelter_events WHERE kind = 'returned' AND dog_id = 1028").get();
   assert.equal(row.detail, 'floor_return');
-  assert.match(row.title, /back on the adoption floor/);
+  assert.match(row.title, /^Dog28 returned to the shelter after 1 day$/);
 });
 
 test('a dog on the shelter adopted list is delisted immediately with an adopted event', async () => {
@@ -288,19 +290,19 @@ test("a dog's cached photo is replaced once the shelter's photo URL changes (a n
   listing = dogs(28);
   // cacheImageIfNeeded refuses anything under 500 bytes (an HTML error page
   // mistaken for a real photo), so these fakes need to clear that bar.
-  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+  const fakeJpeg = (tag) => Buffer.concat([JPEG_MAGIC, Buffer.from(`${tag}:${'x'.repeat(500)}`)]);
 
   photoPaths[id] = ['../app_data/AnimalImages/1000/Large/1000_1.jpg'];
   imageBytes['AnimalImages/1000/Large/1000_1.jpg'] = fakeJpeg('intake-photo');
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'first photo gets cached');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('intake-photo'), 'first photo gets cached');
   assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg');
 
   // The shelter uploads a nicer photo; it gets its own URL.
   photoPaths[id] = ['../app_data/AnimalImages/1000/Large/1000_2.jpg'];
   imageBytes['AnimalImages/1000/Large/1000_2.jpg'] = fakeJpeg('better-photo');
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('better-photo'), 'the stale cached photo is overwritten once the URL changes');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('better-photo'), 'the stale cached photo is overwritten once the URL changes');
 
   delete photoPaths[id];
   delete imageBytes['AnimalImages/1000/Large/1000_1.jpg'];
@@ -318,26 +320,26 @@ test("a dog's cached photo is replaced when the shelter swaps the file at the sa
   fs.rmSync(file, { force: true });
   fs.rmSync(`${file}.lastmod`, { force: true });
   listing = dogs(28);
-  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+  const fakeJpeg = (tag) => Buffer.concat([JPEG_MAGIC, Buffer.from(`${tag}:${'x'.repeat(500)}`)]);
 
   photoPaths[id] = [`../app_data/${key}`];
   imageBytes[key] = fakeJpeg('intake-photo');
   imageLastModified[key] = 'Mon, 01 Jun 2026 12:00:00 GMT';
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'first photo gets cached');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('intake-photo'), 'first photo gets cached');
 
   // Scraping again with nothing changed shouldn't need to re-fetch the body
   // (the mock would 304 if asked, and overwrite the file with nothing useful
   // if it somehow got a stale If-Modified-Since) -- the cached file stays put.
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('intake-photo'), 'unchanged photo is left alone');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('intake-photo'), 'unchanged photo is left alone');
 
   // The shelter replaces the photo in place: same URL, new bytes, new
   // Last-Modified. The old URL-diff check would never have caught this.
   imageBytes[key] = fakeJpeg('better-photo');
   imageLastModified[key] = 'Tue, 10 Nov 2026 01:21:50 GMT';
   await runScrape();
-  assert.ok(fs.readFileSync(file).toString().startsWith('better-photo'), 'the stale cached photo is overwritten even though the URL never changed');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('better-photo'), 'the stale cached photo is overwritten even though the URL never changed');
   assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg', 'photo_url itself stays the same URL throughout');
 
   delete photoPaths[id];
@@ -350,7 +352,7 @@ test("a dog with several photos on the shelter's page gets the first one as phot
   const file = path.join(IMAGES_DIR, `${id}.jpg`);
   fs.rmSync(file, { force: true });
   listing = dogs(28);
-  const fakeJpeg = (tag) => Buffer.from(`${tag}:${'x'.repeat(500)}`);
+  const fakeJpeg = (tag) => Buffer.concat([JPEG_MAGIC, Buffer.from(`${tag}:${'x'.repeat(500)}`)]);
 
   // The shelter lists three photos for this dog; /api/photos/:id's array
   // order is the only signal of which one is "first".
@@ -364,7 +366,7 @@ test("a dog with several photos on the shelter's page gets the first one as phot
   imageBytes['AnimalImages/1000/Large/1000_3.jpg'] = fakeJpeg('photo-three');
   await runScrape();
   assert.equal(db.prepare('SELECT photo_url u FROM dogs WHERE shelter_buddy_id = 1000').get().u, 'https://pets.wake.gov/app_data/AnimalImages/1000/Large/1000_1.jpg', 'photo_url is the first photo in the list, not the last or some other one');
-  assert.ok(fs.readFileSync(file).toString().startsWith('photo-one'), 'the cached file is the first photo too');
+  assert.ok(fs.readFileSync(file).subarray(JPEG_MAGIC.length).toString().startsWith('photo-one'), 'the cached file is the first photo too');
 
   delete photoPaths[id];
   delete imageBytes['AnimalImages/1000/Large/1000_1.jpg'];

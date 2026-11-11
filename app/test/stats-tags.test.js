@@ -39,11 +39,18 @@ test.before(async () => {
   db.prepare("INSERT INTO shelter_events (kind, dog_id, title, detail, occurred_at) VALUES ('sticker_on', 1, 'POO', 'poo', ?)").run(new Date(Date.now() - 2 * 864e5).toISOString());
   const w = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, activity) VALUES (?, ?, ?, ?, ?, ?)');
   const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  // Today's walks fall between the shelter's midnight and now, so they're
+  // today's at any clock (TEST_CLOCK=real or any TEST_CLOCK=<ISO>).
+  const { shelterClock, shelterTimeToDate } = require('../src/walkHours');
+  const nowMs = Date.now();
+  const c = shelterClock(nowMs);
+  const midnight = shelterTimeToDate(c.y, c.m, c.d, 0).getTime();
+  const todayAt = (f) => new Date(midnight + f * (nowMs - midnight)).toISOString();
   w.run(1, ids.alice, ago(5 * 1440), ago(5 * 1440 - 20), 1200, 'walk');
-  w.run(1, ids.alice, ago(60), ago(40), 1200, 'walk');
-  w.run(2, ids.alice, ago(39), ago(30), 540, 'cuddle');
-  w.run(3, ids.alice, ago(25), ago(20), 300, 'cuddle');
-  w.run(4, ids.alice, ago(15), ago(10), 300, 'matchmaking');
+  w.run(1, ids.alice, todayAt(0.2), todayAt(0.4), 1200, 'walk');
+  w.run(2, ids.alice, todayAt(0.45), todayAt(0.6), 540, 'cuddle');
+  w.run(3, ids.alice, todayAt(0.65), todayAt(0.75), 300, 'cuddle');
+  w.run(4, ids.alice, todayAt(0.8), todayAt(0.9), 300, 'matchmaking');
   db.close();
 });
 test.after(async () => { if (server) await server.stop(); });
@@ -58,13 +65,13 @@ test('stats narrow to one species, and Both adds them up', async () => {
   assert.deepEqual(cats.perDog.map((d) => d.name).sort(), ['Pip', 'Tom']);
   assert.deepEqual(dogs.byActivity.map((a) => [a.activity, a.count]), [['walk', 2], ['cuddle', 1]]);
   assert.deepEqual(cats.byActivity.map((a) => a.activity).sort(), ['cuddle', 'matchmaking']);
-  assert.deepEqual(both.bySpecies.map((s) => [s.species, s.count]), [['dog', 3], ['cat', 2]]);
+  assert.equal(both.byActivity.reduce((s, a) => s + a.count, 0), 5, 'Both: every engagement of either species');
   assert.equal((await call('GET', '/api/stats?userId=1')).json.totals.totalWalks, 5, 'no species means both');
 });
 
 test('POO is counted as the sticker was at the time; cats split into kittens and adults', async () => {
   const dogs = (await call('GET', '/api/stats?userId=1&species=dog')).json;
-  assert.deepEqual(dogs.byPoo.map((p) => [p.status, p.count]), [['poo', 1], ['none', 2]]);
+  assert.deepEqual(dogs.byPoo.map((p) => [p.status, p.count]), [['poo', 1], ['none', 1]], "walks only: Fido's cuddle is left out");
   assert.deepEqual(dogs.byAge, []);
   const cats = (await call('GET', '/api/stats?userId=1&species=cat')).json;
   assert.deepEqual(cats.byPoo, []);
@@ -95,7 +102,7 @@ test('Together narrows by species too', async () => {
   assert.equal(cats.shelterNow.cat.inFoster, 1);
   const dogs = (await call('GET', '/api/impact?days=all&species=dog')).json;
   assert.equal(dogs.allTime.walks, 3);
-  assert.deepEqual(dogs.allTime.byPoo, [], 'slices under the minimum are left out');
+  assert.deepEqual(dogs.allTime.byPoo.map((x) => [x.status, x.count]), [['poo', 1], ['none', 1]], 'small slices are shown; walks only');
 });
 
 test('@ tags: unknown ones are dropped, tagged animals list the note, names come along', async () => {
@@ -127,6 +134,8 @@ test('end-of-walk notes keep good tags and show up in the walk list with names',
   const list = (await call('GET', '/api/walks?userId=1')).json;
   assert.equal(list.walks.find((x) => x.id === start.json.walkId).notes, 'Calmer next to @[3] and @12345');
   assert.equal(list.tagged[3].name, 'Pip');
-  const exp = (await call('GET', '/api/me/export')).json;
-  if (exp && exp.walks) assert.ok(exp.walks.some((x) => x.notes === 'Calmer next to @Pip and @12345'), 'exports read tags as names');
+  const exp = await call('GET', '/api/me/export');
+  assert.equal(exp.status, 200, JSON.stringify(exp.json));
+  assert.ok(Array.isArray(exp.json.walks) && exp.json.walks.length > 0, 'the export lists the walks');
+  assert.ok(exp.json.walks.some((x) => x.notes === 'Calmer next to @Pip and @12345'), 'exports read tags as names');
 });

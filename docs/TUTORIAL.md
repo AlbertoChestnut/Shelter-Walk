@@ -20,9 +20,21 @@ app/public/tutorial/. -->
 2. **Add it to your Home Screen.** On iPhone, use Safari's Share button,
    then Add to Home Screen. On Android, use Chrome's menu, then Install app.
    Walk alerts on iPhone only work from the Home Screen app.
-3. **Enter your name.** Other volunteers see it only while you are out with a dog.
-4. **Pick your experience level.** It decides which dogs show as ready for
-   you. If you're not sure, choose Beginner. You can change it later in Settings.
+3. **Enter your name.** Other volunteers see it only while you are out with a
+   dog. Tick **Keep my name private** to show "a Volunteer" instead.
+4. **Who do you volunteer with?** Pick Dogs, Cats, or Both. It decides which
+   animals your lists and Updates show. Scanning a kennel card works for any
+   animal either way.
+5. **Pick your experience level** (dogs only). It decides which dogs show as
+   ready for you. If you're not sure, choose Beginner. You can change it later
+   in Settings. Picked cats only? This step is skipped.
+6. **Pick what you usually do:** walk, cuddle, matchmaking, Playgroup or
+   daycation (cats: cuddle or matchmaking). The Start button offers it first,
+   and you can still switch each time.
+7. **Set up a passkey** for faster sign-in, or tap **Skip for now**.
+8. **Choose your notifications** (all optional).
+9. Read **Good to know**, then tap **Show me how it works** for this tutorial,
+   or go straight to the animals.
 
 <p>
 <img src="tutorial/01-welcome-name.png" width="260" alt="Welcome screen asking for your name">
@@ -31,9 +43,9 @@ app/public/tutorial/. -->
 
 | Level | Who | Dogs you're cleared for |
 | --- | --- | --- |
-| Beginner | Under 20 hours volunteering | 15+ days in the shelter, no blue behavior markers, no Potty break only dogs, no dogs mid-adoption |
-| Established | 20+ hours | 7+ days in the shelter, blue markers and PB dogs allowed |
-| Experienced Volunteer | 1 year and 100+ hours | Everything Established can walk, plus EVO (Experienced Volunteers Only) dogs |
+| Beginner | Under 20 hours volunteering | 15+ days in the shelter, no blue behavior stickers, no Potty break only dogs, no dogs mid-adoption |
+| Established | 20+ hours | 7+ days in the shelter, blue stickers and PB dogs allowed |
+| Experienced Volunteer | 1 year and 100+ hours | Everything Established can walk, plus EVO (Experienced volunteers only) dogs |
 
 Puppies under 6 months old can't be walked by anyone. Dogs on **stray hold**
 can't be walked at any level unless they also have a PB sticker (a PB walk, so
@@ -86,9 +98,12 @@ Match the name and ID number to the kennel card. Axel Rose's card says
 **Animal ID: 262826**, and so does the app. Then read the badge under the name:
 
 - Green **Eligible to walk ✓**: you're cleared for this dog.
-- **⚠ Warning** on a striped background: you're not cleared for this dog at
-  your level. The badge says why, such as "Experienced Volunteers Only" or
-  "Needs 4 more days in shelter". Pick a different dog.
+- A red **⛔ Not eligible** row: you're not cleared for this dog at your level.
+  The row says why, such as "Experienced volunteers only (EVO)" or "Needs 4 more
+  days in shelter". Pick a different dog.
+- An amber **⚠️ In foster care** row: the shelter's listing says the dog is in
+  foster. If you're looking at the dog, check the kennel card; Start asks you to
+  confirm.
 - Solid red with **🚫 Too young to walk**: puppies can't go out. The button is locked.
 - Yellow **Potty break only** banner: a short, potty-focused walk only.
 
@@ -117,19 +132,20 @@ dog. Tap a sticker to see what it means.
 
 If the kennel card's stickers or kennel letter differ from the app, tap them
 to match. **Save changes** appears only when something changed, and Start
-Walk saves it too.
+walk saves it too.
 
-Tap **Start walk**. If you're cuddling, at matchmaking, at play group, or
+Tap **Start walk**. If you're cuddling, at matchmaking, at Playgroup, or
 taking the dog on a 🚗 daycation instead, tap **⇄ Change** first and pick
 that. A daycation can last up to 12 hours, so it doesn't stop after 45
-minutes the way a walk does. Set your **usual activity** in Settings so the
-button starts with it. Already out and doing something different? Pick it
-under **Doing something else?** on the timer screen, or fix it later in
-Stats&Notes.
+minutes the way a walk does. Already out and doing something different? Pick
+it under **Doing something else?** on the timer screen, or fix it later in
+Stats&Notes. Wherever you pick one, one tap changes just this time; tap it
+again (or double tap) to set it as your **default activity**, the one the
+button starts with. You can also set it in Settings.
 
 <p>
 <img src="tutorial/09-scan-start-walk.png" width="260" alt="Markers, kennel location and Start walk button">
-<img src="tutorial/10-scan-change-activity.png" width="260" alt="Choosing walk, cuddle, matchmaking or play group">
+<img src="tutorial/10-scan-change-activity.png" width="260" alt="Choosing walk, cuddle, matchmaking or Playgroup">
 </p>
 
 ### 6. Write the check-out time on the kennel
@@ -148,8 +164,11 @@ time you open it.
 Bring the dog back and tap **End walk**. The walk ends when you tap it, not
 when you save. Add an optional note for other walkers (shared without your
 name) and a private note, using **@** to tag any other dog or cat the note
-is about, then tap **Save & finish**. **Scan next dog** takes
-you straight back to the camera.
+is about, then tap **Save & finish**. The screen says when the walk ended
+("Walk finished at 12:01 PM"). On **Walk complete**, **📷 Scan next dog**
+takes you straight back to the camera, and **Done** stops there. Started by
+mistake? **Cancel walk** under End walk, or **Delete this walk…** at the
+bottom of the finish screens, removes it.
 
 <p>
 <img src="tutorial/12-walk-end-notes.png" width="260" alt="Notes after ending a walk">
@@ -184,8 +203,8 @@ Tap **Filters** to narrow the list by kennel wing, sex, age, breed, stickers,
 "Dogs I've walked before", or hiding dogs with a walk logged this shift.
 **Advanced filters** add home compatibility (other dogs, cats, children),
 size, heartworm, stray hold, video and days in the shelter. Ready-made
-combinations are under **Presets**, such as Beginner, POO Dogs and Non-POO
-Dogs, and you can save your own there too.
+combinations are under **Presets**, such as Beginner, POO dogs and Non-POO
+dogs, and you can save your own there too.
 
 <p>
 <img src="tutorial/03-available.png" width="260" alt="Available dogs list">
@@ -195,20 +214,21 @@ Dogs, and you can save your own there too.
 
 ### 📝 Stats&Notes
 
-**My stats** shows your walks today and over your lifetime. Tap ✎ to fix a
-walk's times or 🗑 to delete it. **Together** shows anonymous totals for the
-whole shelter, with no names and no rankings. **Notes** gathers the tips and
-notes for every animal in one place (all of them, or just yours), and **Play
-group** has every dog's play group notes.
+Five views sit under the tab. **My stats** shows your walks today and over
+your lifetime. Tap ✎ to fix a walk's times or 🗑 to delete it. **Together**
+shows everyone's engagements combined, for the whole shelter, with no names
+and no rankings. **Shelter** shows how many animals are at the shelter now
+(including how many dogs are walkable at your level) and how many are in
+foster, and charts both day by day, along with how many come in and get
+adopted. **Notes** gathers the tips and notes for every animal in one place
+(all of them, or just yours), and **Playgroup** has every dog's Playgroup
+notes.
 
 If you volunteer with both dogs and cats, pick **🐕 Dogs** or **🐈 Cats** under
 the tabs to see one kind of animal at a time. Each view breaks the numbers
-down by engagement type (walks, cuddles, matchmaking, play group,
+down by engagement type (walks, cuddles, matchmaking, Playgroup,
 daycations). Dogs are also split into POO and non-POO, going by the sticker
-the dog had at the time, and cats into kittens and adults. **Shelter** shows
-how many are at the shelter now (including how many dogs are walkable at
-your level) and how many are in foster, and charts both day by day, along
-with how many come in and get adopted.
+the dog had at the time, and cats into kittens and adults.
 
 <p>
 <img src="tutorial/18-stats.png" width="260" alt="My stats">
@@ -217,11 +237,15 @@ with how many come in and get adopted.
 
 ### 📣 Updates, 📖 Guide, ⚙ Settings, 👤 My account
 
-- **Updates:** dogs that arrived, came back, or were adopted. Choose which
-  kinds show in Settings.
+- **Updates:** 📢 **Alerts** from shelter staff (a closure, changed hours,
+  anything urgent), and animals that arrived, came back, or were adopted. Tap
+  Alerts, Adopted, New or Returned to show only those, and All, Today or This
+  week for how far back. Staff alerts also come to your phone unless you turn
+  off **Shelter alerts** in Settings.
 - **Guide:** what every sticker means, tips for new volunteers, experience
   levels, and shelter contacts.
-- **Settings:** experience level, usual activity, light or dark theme,
+- **Settings:** **I volunteer with** (dogs, cats or both), experience level,
+  default activity, shelter alerts, light or dark theme,
   notifications (such as a reminder of where to return your dog), and
   walk-length alerts (up to 3, e.g. 7 and 10 minutes).
 - **My account:** change your name, hide your name while walking, download or
@@ -243,6 +267,7 @@ with how many come in and get adopted.
 | "Could not read a dog ID from that code" | You scanned something other than a kennel tag. Scan the dog's kennel card, or search by name. |
 | "New kennel card · We don't have this dog's details yet" | The shelter printed the card before adding the dog to its online listing. Pick the kennel letter and tap **Start walk** as usual, after checking the card's age and stickers yourself. The walk is kept under the card's Animal ID and added to the dog's record once the listing has them (it's checked every 30 minutes). |
 | The dog's screen shows the wrong dog | Tap **Scan a different dog** and scan again. Tell staff if a kennel card has the wrong dog's code. |
-| You forgot to end a walk | It stops by itself at the time limit. Next time you open the app, choose when it really ended: Just now, At the limit, or Pick a time. |
+| You forgot to end a walk | It stops by itself at the time limit. Next time you open the app, choose when it really ended: Just now, At and the time it stopped (such as At 10:48 AM), or Pick a time. |
 | A finished walk has the wrong times | Go to **Stats&Notes**, find the walk, tap ✎ and fix it. |
 | No walk alerts on iPhone | Add the app to your Home Screen, open it from there, and turn alerts on in Settings. |
+| No shelter alerts from staff | Turn on **Shelter alerts** in Settings and allow notifications (on iPhone, from the Home Screen app). Alerts always show under Updates, 📢 Alerts. |

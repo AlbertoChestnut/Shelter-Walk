@@ -35,7 +35,7 @@ test.before(async () => {
   const ins = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, notes) VALUES (?, ?, ?, ?, 1200, ?)');
   const start = new Date(Date.now() - 3600 * 1000);
   // Alice: 4 walks, Bob: 1 walk, all today. (Bob alone would be a "quiet" contribution.)
-  for (let i = 0; i < 4; i += 1) ins.run(1 + i, ids.alice, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'alice private note');
+  for (let i = 0; i < 4; i += 1) ins.run(1 + i, ids.alice, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'first walker shared note');
   ins.run(5, ids.bob, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'bob private note');
   db.close();
 });
@@ -89,17 +89,16 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
   // shelterNow is the listing alone (no volunteer data); species is the filter asked for.
   assert.deepEqual(Object.keys(r.json).sort(), ['allTime', 'days', 'minCell', 'shelterNow', 'species', 'today']);
   // avgActivity: what the average is of (its label); avgCount: how many it's
-  // over (the rest were under a minute). Both totals, held to minCell.
-  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgActivity', 'avgSeconds', 'byActivity', 'byAge', 'byPoo', 'bySpecies', 'dogs', 'seconds', 'since', 'walks']);
+  // over (the rest were under a minute). Both totals.
+  // avgSkipped: how many of the averaged kind were under a minute (audit3).
+  assert.deepEqual(Object.keys(r.json.allTime).sort(), ['avgActivity', 'avgCount', 'avgSeconds', 'avgSkipped', 'byActivity', 'byAge', 'byPoo', 'dogs', 'seconds', 'since', 'walks']);
   for (const a of r.json.allTime.byActivity) {
     assert.deepEqual(Object.keys(a).sort(), ['activity', 'avgCount', 'avgSeconds', 'count', 'totalSeconds']);
-    assert.ok(a.count >= r.json.minCell, 'an activity type below the threshold must not be broken out');
   }
-  // Species / POO / kitten slices: same threshold, counts and times only.
-  for (const [list, key] of [[r.json.allTime.bySpecies, 'species'], [r.json.allTime.byPoo, 'status'], [r.json.allTime.byAge, 'group']]) {
+  // POO / kitten slices: counts and times only, however small.
+  for (const [list, key] of [[r.json.allTime.byPoo, 'status'], [r.json.allTime.byAge, 'group']]) {
     for (const slice of list) {
       assert.deepEqual(Object.keys(slice).sort(), ['animals', 'avgCount', 'avgSeconds', 'count', key, 'totalSeconds'].sort());
-      assert.ok(slice.count >= r.json.minCell, 'a slice below the threshold must not be broken out');
     }
   }
   for (const kind of Object.values(r.json.shelterNow)) {
@@ -107,8 +106,8 @@ test('Together stats contain only totals: no names, emails, ids, or per-person n
     assert.equal(kind.today, null, 'Together never says how many were (or were not) walked today');
   }
   for (const day of r.json.days) {
-    assert.deepEqual(Object.keys(day).sort(), ['avgActivity', 'avgSeconds', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
-    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['avgActivity', 'avgSeconds', 'dogs', 'label', 'seconds', 'walks']);
+    assert.deepEqual(Object.keys(day).sort(), ['avgActivity', 'avgCount', 'avgSeconds', 'avgSkipped', 'byActivity', 'dateKey', 'dogs', 'seconds', 'sessions', 'walks']);
+    for (const s of day.sessions) assert.deepEqual(Object.keys(s).sort(), ['avgActivity', 'avgCount', 'avgSeconds', 'avgSkipped', 'dogs', 'label', 'seconds', 'walks']);
   }
   assert.equal(r.json.allTime.walks, 5, 'everyone\'s walks are combined');
   assert.equal(r.json.allTime.avgSeconds, 1200, 'the seeded walks are all 20 minutes');
@@ -137,7 +136,7 @@ test('quiet days and sessions are not listed, so nobody can be singled out', asy
   const db2 = new Database(dbFile);
   const start = new Date(Date.now() - 3600 * 1000);
   const ins = db2.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, notes) VALUES (?, ?, ?, ?, 1200, ?)');
-  for (let i = 0; i < 4; i += 1) ins.run(1 + i, ids.alice, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'alice private note');
+  for (let i = 0; i < 4; i += 1) ins.run(1 + i, ids.alice, start.toISOString(), new Date(start.getTime() + 1200000).toISOString(), 'first walker shared note');
   db2.close();
 });
 
@@ -146,6 +145,8 @@ test('you cannot read anyone else\'s walks or stats, whatever id you send', asyn
   assert.equal(mine.json.walks.length, 1);
   assert.ok(mine.json.walks.every((w) => w.user_id === ids.bob));
   const spoof = await call('GET', `/api/walks?userId=${ids.alice}`, { user: BOB });
+  // every() on an empty list passes; Bob's own walk must be what comes back.
+  assert.equal(spoof.json.walks.length, 1, 'Bob still gets his own walk');
   assert.ok(spoof.json.walks.every((w) => w.user_id === ids.bob), 'a userId in the query is ignored');
   assert.equal((await call('GET', `/api/stats?userId=${ids.alice}`, { user: BOB })).json.totals.totalWalks, 1);
   assert.equal((await call('GET', `/api/walks/active?userId=${ids.alice}`, { user: BOB })).status, 200);
@@ -224,10 +225,10 @@ test('shared tips carry no author, private notes are visible only to their write
   const kinds = (r) => r.json.dogs.flatMap((g) => g.notes);
   const myAlice = kinds(await call('GET', '/api/notes?scope=mine', { user: ALICE }));
   assert.ok(myAlice.some((n) => n.kind === 'private' && n.body === SECRET));
-  assert.ok(myAlice.some((n) => n.kind === 'walk' && n.body === 'alice private note'), 'her own walk notes');
+  assert.ok(myAlice.some((n) => n.kind === 'walk' && n.body === 'first walker shared note'), 'her own walk notes');
   assert.ok(!myAlice.some((n) => n.kind === 'tip'), 'no tips, even the one she wrote');
   const myBob = await call('GET', '/api/notes?scope=mine', { user: BOB });
-  assert.ok(!myBob.text.includes(SECRET) && !myBob.text.includes('alice private note'), 'nothing of Alice\'s in Bob\'s');
+  assert.ok(!myBob.text.includes(SECRET) && !myBob.text.includes('first walker shared note'), 'nothing of Alice\'s in Bob\'s');
   assert.ok(kinds(myBob).every((n) => n.kind !== 'tip'));
 });
 
@@ -301,7 +302,8 @@ test('a day\'s walks are listed in order with no walker identity; only your own 
   // Round 4: your own keep their times; anyone else's has only its session
   // (slot) and a length to the nearest 5 minutes.
   for (const w of asCarol.json.walks) {
-    const common = ['activity', 'blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'slot', 'starFlag'];
+    // averaged: in the day's average or not (audit3).
+    const common = ['activity', 'averaged', 'blueMarkers', 'dogId', 'dogName', 'durationSeconds', 'mine', 'order', 'pbFlag', 'photoUrl', 'pooStatus', 'slot', 'starFlag'];
     assert.deepEqual(Object.keys(w).sort(), (w.mine ? [...common, 'endedAt', 'startedAt'] : common).sort());
     if (!w.mine) assert.equal(w.durationSeconds % 300, 0);
   }

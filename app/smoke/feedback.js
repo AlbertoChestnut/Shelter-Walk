@@ -1,6 +1,6 @@
 // My Account → Feedback & bug reports: a volunteer sends one anonymously,
 // staff read and resolve it in the Feedback inbox. Also checks the activity
-// picker: Walk on its own full-width line, Play Group with the ball.
+// picker: Walk on its own full-width line, Playgroup with the ball.
 // Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/feedback.js
 const { startSmoke, launch } = require('./_harness'); const Database = require('better-sqlite3');
@@ -34,7 +34,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(walk.width > cuddle.width * 1.8 && walk.y < cuddle.y, 'Walk is double wide on its own line');
     ok(Math.abs(cuddle.y - match.y) < 2 && Math.abs(play.y - day.y) < 2 && play.y > cuddle.y, 'the other four are two per line');
     ok(Math.abs(cuddle.width - day.width) < 2, 'the other four are the same width');
-    ok(/🥎/.test(await p.textContent('#activityPickRow [data-activity="playgroup"]')), 'Play Group shows the ball');
+    ok(/🥎/.test(await p.textContent('#activityPickRow [data-activity="playgroup"]')), 'Playgroup shows the ball');
     await p.locator('#backToScanBtn2').scrollIntoViewIfNeeded();
     await p.screenshot({ path: h.shot('fb1.png') });
 

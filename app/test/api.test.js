@@ -134,7 +134,7 @@ test('stats break down by activity, and the average length is walk-only', async 
   assert.equal((await call('GET', `/api/stats?userId=${userId}&activity=nap`, { user })).status, 200);
 });
 
-test('a note left at the end of a play group session is tagged "playgroup", not folded into "walk"', async () => {
+test('a note left at the end of a playgroup session is tagged "playgroup", not folded into "walk"', async () => {
   const user = 'pgnotes@example.com';
   const userId = (await call('GET', '/api/me', { user })).json.id;
   const now = Date.now();
@@ -476,7 +476,8 @@ test('each sticker that actually changes gets its own timeline event, and the ti
   // Turning PB back off the same day cancels out with the earlier "on" --
   // the timeline should show neither. The star stayed on all day, so its
   // lone "on" event still shows when stickers are included.
-  const off = await call('PUT', '/api/dogs/104/markers', { body: { blueMarkers: [], pooStatus: 'none', starFlag: true, pbFlag: false } });
+  // (By staff: PB keeps Beginners off a dog, so a Beginner can't take it off, audit2.)
+  const off = await call('PUT', '/api/dogs/104/markers', { staff: true, body: { blueMarkers: [], pooStatus: 'none', starFlag: true, pbFlag: false } });
   assert.equal(off.status, 200);
 
   const history = await call('GET', '/api/dogs/104/stay-history');
@@ -672,7 +673,7 @@ test('a daycation runs up to 12 hours: no +10 min, no 45 minute stop', async () 
   assert.equal(read(mid).duration_seconds, 70 * 60);
 });
 
-test('the usual activity is saved in Settings and play group is an activity', async () => {
+test('the usual activity is saved in Settings and playgroup is an activity', async () => {
   const user = 'usual@example.com';
   const me = (await call('GET', '/api/me', { user })).json;
   assert.equal(me.defaultActivity, 'walk', 'walk until changed');

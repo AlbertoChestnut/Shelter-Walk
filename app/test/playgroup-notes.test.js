@@ -1,4 +1,4 @@
-// Play group notes: dated entries, anonymous unless signed, @[id] tags that
+// Playgroup notes: dated entries, anonymous unless signed, @[id] tags that
 // show up as mentions on the tagged dog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -135,15 +135,35 @@ test('the desk: every note with filters, counts, and the Excel export', async ()
   assert.match(res.headers.get('content-disposition'), /playgroup-notes-2026-09-01_to_2026-09-30\.xlsx/);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(Buffer.from(await res.arrayBuffer()));
-  const sheet = wb.getWorksheet('Play group notes');
+  const sheet = wb.getWorksheet('Playgroup notes');
   assert.equal(sheet.rowCount, 3);
-  assert.equal(sheet.getRow(1).getCell(5).value, 'Note');
+  const header = sheet.getRow(1).values.slice(1);
+  assert.deepEqual(header, ['Date', 'Dog', 'Animal ID', 'Still at the shelter', 'Note', 'Dogs tagged']);
+  assert.ok(!header.includes('Signed by'), 'who signed stays out of the export');
   const row = [2, 3].map((i) => sheet.getRow(i)).find((r) => r.getCell(2).value === 'Max');
   assert.equal(row.getCell(5).value, 'Desk: zoomies with @Bella');
-  assert.equal(row.getCell(6).value, 'Bella');
-  assert.equal(row.getCell(7).value, ids.alice.name);
+  assert.equal(row.getCell(6).value, 'Bella (2)');
+  assert.ok(!row.values.includes(ids.alice.name));
   const byDog = wb.getWorksheet('By dog');
   const bella = [2, 3].map((i) => byDog.getRow(i)).find((r) => r.getCell(1).value === 'Bella');
-  assert.equal(bella.getCell(4).value, 1); // her own note
-  assert.equal(bella.getCell(5).value, 1); // tagged in Max's
+  assert.ok(!byDog.getRow(1).values.includes('Kennel'));
+  assert.equal(bella.getCell(3).value, 1); // her own note
+  assert.equal(bella.getCell(4).value, 1); // tagged in Max's
+});
+
+test('Excel export: each labelled bullet is a column named by its label, tagged dogs last', async () => {
+  const ExcelJS = require('exceljs');
+  await call('POST', '/api/dogs/2/playgroup-notes', { body: { body: '\u2022\tFemales: No\n\u2022\tGroup Play: No\n\u2022\tSession notes: with @[1] and @[3]', noteDate: '2026-08-03' } });
+  await call('POST', '/api/dogs/3/playgroup-notes', { body: { body: '\u2022\tFemales: Yes\n\u2022\tMales: No\n\u2022\tGroup play: Yes\n\u2022\tSession notes: chased @[2]', noteDate: '2026-08-02', signed: true } });
+  await call('POST', '/api/dogs/1/playgroup-notes', { body: { body: 'Good day.\nTired after.\n\n- **mouthy** at first\n1. settled', noteDate: '2026-08-01' } });
+  const res = await fetch(`${base}/api/playgroup-notes/export.xlsx?from=2026-08-01&to=2026-08-31`, { headers: { 'x-auth-email': ALICE } });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(Buffer.from(await res.arrayBuffer()));
+  const sheet = wb.getWorksheet('Playgroup notes');
+  const cols = (r) => sheet.getRow(r).values.slice(5).map((v) => v ?? '');
+  assert.deepEqual(cols(1), ['Females', 'Group Play', 'Session notes', 'Males', 'Note', 'Dogs tagged']);
+  assert.deepEqual(cols(2), ['No', 'No', 'with @Max and @Maxine', '', '', 'Max (1), Maxine (3)']);
+  assert.deepEqual(cols(3), ['Yes', 'Yes', 'chased @Bella', 'No', '', 'Bella (2)']);
+  assert.deepEqual(cols(4), ['', '', '', '', 'Good day.\nTired after.\n**mouthy** at first\nsettled', '']);
+  assert.ok(!JSON.stringify(sheet.getSheetValues()).includes(ids.alice.name));
 });

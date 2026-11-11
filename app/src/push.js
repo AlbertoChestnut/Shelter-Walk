@@ -28,13 +28,17 @@ const getPref = db.prepare('SELECT enabled FROM notification_prefs WHERE user_id
 // days after the walk ended; a day is the default here, and walk alerts pass
 // a few minutes with urgency 'high'.
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+// Resolves to how many of this user's devices the push service accepted
+// (0 when push is off), so callers can report real sends.
 async function sendPushToUser(userId, payload, { TTL = DEFAULT_TTL_SECONDS, urgency = 'normal' } = {}) {
-  if (!enabled) return;
+  if (!enabled) return 0;
   const subs = getSubscriptionsForUser.all(userId);
+  let delivered = 0;
   for (const sub of subs) {
     const subscription = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
     try {
       await webpush.sendNotification(subscription, JSON.stringify(payload), { TTL, urgency });
+      delivered += 1;
     } catch (err) {
       if (err.statusCode === 404 || err.statusCode === 410) {
         deleteSubscription.run(sub.id);
@@ -43,6 +47,7 @@ async function sendPushToUser(userId, payload, { TTL = DEFAULT_TTL_SECONDS, urge
       }
     }
   }
+  return delivered;
 }
 
 function hasPref(userId, prefKey) {
@@ -53,4 +58,4 @@ function hasPref(userId, prefKey) {
 // For walk notices: useless once the moment has passed.
 const WALK_ALERT_PUSH = { TTL: 300, urgency: 'high' };
 
-module.exports = { sendPushToUser, hasPref, isPushEnabled: () => enabled, VAPID_PUBLIC_KEY, WALK_ALERT_PUSH };
+module.exports = { sendPushToUser, hasPref, VAPID_PUBLIC_KEY, WALK_ALERT_PUSH };

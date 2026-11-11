@@ -22,16 +22,12 @@ const { MIN_CELL } = require('./impact');
 const { DOG_EVENTS_WHERE } = require('./shelterTrends');
 const statsBreakdown = require('./statsBreakdown');
 
-const TZ = 'America/New_York';
-const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
-function dateKeyOf(iso) {
-  const p = Object.fromEntries(fmt.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
-  return `${p.year}-${p.month}-${p.day}`;
-}
-const hourFmt = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: 'numeric', hourCycle: 'h23' });
-function hourOf(iso) {
-  return Number(hourFmt.format(new Date(iso)));
-}
+const { SHELTER_TZ: TZ, WALK_SLOTS, MIN_AVG_SECONDS } = require('./constants');
+// Shelter date and hour of a walk, cached per UTC hour (shelterTime.js):
+// a year's report converts every walk in it.
+const { shelterDateKey: dateKeyOf, shelterHour: hourOf, shelterTimeOfDay } = require('./shelterTime');
+const { realDateKey } = require('./validate');
+const asyncRoute = require('./asyncRoute');
 
 // The calendar day before dateKey (noon UTC keeps DST out of it).
 function previousDateKey(dateKey) {
@@ -68,7 +64,7 @@ const nounsFor = (species) => NOUNS[species] || NOUNS.dog;
 
 // What people see for each activity, everywhere on the staff side (tables,
 // exports, the live board). Never the raw keys.
-const ACTIVITY_LABELS = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Play group', daycation: 'Daycation' };
+const ACTIVITY_LABELS = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Playgroup', daycation: 'Daycation' };
 function activityLabel(activity) {
   const a = activity || 'walk';
   return ACTIVITY_LABELS[a] || a.charAt(0).toUpperCase() + a.slice(1);
@@ -76,16 +72,15 @@ function activityLabel(activity) {
 
 // Walk-length averages: walk activity only, finished walks only, and never
 // a walk under a minute (a misscan), same rule as personal stats and Together.
-const MIN_AVERAGED_SECONDS = statsBreakdown.MIN_AVG_SECONDS || 60;
+const MIN_AVERAGED_SECONDS = MIN_AVG_SECONDS;
 function walkOnlyAvgSeconds(rows) {
   const walks = rows.filter((r) => (r.activity || 'walk') === 'walk' && (r.duration_seconds || 0) >= MIN_AVERAGED_SECONDS);
   return walks.length ? walks.reduce((s, r) => s + r.duration_seconds, 0) / walks.length : null;
 }
 
-const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
-function validDateKey(v) {
-  return typeof v === 'string' && DATE_KEY_RE.test(v) ? v : null;
-}
+// A real calendar date or null (2026-13-45 used to reach new Date() and
+// throw, hanging the Excel export and 500ing the rest).
+const validDateKey = realDateKey;
 
 // Monday of the week dateKey falls in, as its own YYYY-MM-DD key. Noon UTC
 // avoids any DST edge when doing day-of-week arithmetic.
@@ -102,16 +97,15 @@ function dayOfWeekOf(dateKey) {
   return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay();
 }
 
-// The same four sessions as Together (impact.js SLOTS) and the Available
-// list's slot grid, so a walk lands in the same bucket on every screen. The
-// last one runs to 8pm (Together labels it "4-7p"; here it says 4-8pm).
-// "other" catches anything outside those hours (daycations mostly).
+// The same four sessions as Together and the Available list's slot grid
+// (constants.js WALK_SLOTS), so a walk lands in the same bucket on every
+// screen. "other" catches anything outside those hours (daycations mostly).
 const SESSIONS = [
-  { key: 'morning', label: 'Morning (7-10am)', from: 7, to: 10 },
-  { key: 'midday', label: 'Midday (10am-1pm)', from: 10, to: 13 },
-  { key: 'afternoon', label: 'Afternoon (1-4pm)', from: 13, to: 16 },
-  { key: 'evening', label: 'Evening (4-8pm)', from: 16, to: 20 }
-];
+  { key: 'morning', label: 'Morning (7-10am)' },
+  { key: 'midday', label: 'Midday (10am-1pm)' },
+  { key: 'afternoon', label: 'Afternoon (1-4pm)' },
+  { key: 'evening', label: 'Evening (4-7pm)' }
+].map((s, i) => ({ ...s, from: WALK_SLOTS[i].from, to: WALK_SLOTS[i].to }));
 const OTHER_SESSION = { key: 'other', label: 'Other hours' };
 function sessionOf(hour) {
   return SESSIONS.find((s) => hour >= s.from && hour < s.to) || OTHER_SESSION;
@@ -137,6 +131,33 @@ function periodLabel(periodKey, granularity) {
   }
   if (granularity === 'week') return `Week of ${dayLabel(periodKey)}`;
   return dayLabel(periodKey);
+}
+// A week or month that the report range cuts into only counts the days
+// inside the range, so its label says which days: "Week of Mon, Sep 28, 2026
+// (Oct 1 to Oct 4 only)". Whole periods keep the plain label.
+const SHORT_DAY_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
+function shortDay(dateKey) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return SHORT_DAY_FMT.format(new Date(Date.UTC(y, m - 1, d, 12)));
+}
+function periodLabelInRange(periodKey, granularity, from, to) {
+  const label = periodLabel(periodKey, granularity);
+  if (granularity === 'day') return label;
+  let start; let end;
+  if (granularity === 'week') {
+    start = periodKey;
+    const e = new Date(`${periodKey}T12:00:00Z`);
+    e.setUTCDate(e.getUTCDate() + 6);
+    end = e.toISOString().slice(0, 10);
+  } else {
+    const [y, m] = periodKey.split('-').map(Number);
+    start = `${periodKey}-01`;
+    end = new Date(Date.UTC(y, m, 0, 12)).toISOString().slice(0, 10);
+  }
+  if (start >= from && end <= to) return label;
+  const a = start < from ? from : start;
+  const b = end > to ? to : end;
+  return `${label} (${a === b ? shortDay(a) : `${shortDay(a)} to ${shortDay(b)}`} only)`;
 }
 
 const GRANULARITIES = ['day', 'week', 'month'];
@@ -202,7 +223,7 @@ function walksInRange(db, from, to, species = 'dog') {
   const { paddedFrom, paddedTo } = paddedWindow(from, to);
   const kinds = statsBreakdown.filterKinds(species);
   const rows = db.prepare(`
-    SELECT w.dog_id, w.user_id, w.activity, w.duration_seconds, w.started_at, w.location, d.name AS dog_name
+    SELECT w.dog_id, w.user_id, w.activity, w.duration_seconds, w.started_at, w.location, d.name AS dog_name, d.species
     FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id
     WHERE w.ended_at IS NOT NULL AND w.started_at >= ? AND w.started_at < ?
       AND d.species IN (${kinds.map(() => '?').join(', ')})
@@ -280,7 +301,9 @@ function buildReportMetrics(db, { from, to, granularity, dogIds, kennelLetter, a
     walks: rows.length,
     hours: hoursOf(rows.reduce((sum, r) => sum + (r.duration_seconds || 0), 0)),
     uniqueDogs: new Set(rows.map((r) => r.dog_id)).size,
-    volunteerHeadcount: new Set(rows.map((r) => r.user_id)).size
+    // A deleted account's walks keep counting (user_id is NULL) but aren't
+    // a volunteer: they'd all collapse into one phantom "volunteer".
+    volunteerHeadcount: new Set(rows.map((r) => r.user_id).filter((id) => id != null)).size
   };
 
   const byActivityRows = privacyFloor(activities.map((activity) => {
@@ -308,7 +331,7 @@ function buildReportMetrics(db, { from, to, granularity, dogIds, kennelLetter, a
   const byPeriodRows = [...periodBuckets.entries()]
     .filter(([, b]) => b.walks >= MIN_CELL)
     .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([periodKey, b]) => [periodLabel(periodKey, granularity), b.walks, hoursOf(b.seconds), b.dogs.size]);
+    .map(([periodKey, b]) => [periodLabelInRange(periodKey, granularity, from, to), b.walks, hoursOf(b.seconds), b.dogs.size]);
 
   const locationBuckets = new Map();
   for (const r of rows) {
@@ -334,7 +357,7 @@ function buildReportMetrics(db, { from, to, granularity, dogIds, kennelLetter, a
 
   const sessionBuckets = new Map();
   for (const r of rows) {
-    const key = sessionOf(hourOf(r.started_at)).key;
+    const key = sessionOf(shelterTimeOfDay(r.started_at)).key;
     if (!sessionBuckets.has(key)) sessionBuckets.set(key, bucket());
     addToBucket(sessionBuckets.get(key), r);
   }
@@ -345,21 +368,24 @@ function buildReportMetrics(db, { from, to, granularity, dogIds, kennelLetter, a
 
   const dogTotals = new Map();
   for (const r of rows) {
-    if (!dogTotals.has(r.dog_id)) dogTotals.set(r.dog_id, { name: r.dog_name, walks: 0, seconds: 0 });
+    if (!dogTotals.has(r.dog_id)) dogTotals.set(r.dog_id, { id: r.dog_id, name: r.dog_name, species: r.species, walks: 0, seconds: 0 });
     const d = dogTotals.get(r.dog_id);
     d.walks += 1; d.seconds += r.duration_seconds || 0;
   }
+  // Name, ID and species: two animals can share a name (two Onyxes, a dog
+  // and a cat called Simba), so the ID tells them apart.
   const uniqueDogsServedRows = [...dogTotals.values()]
-    .sort((a, b) => b.walks - a.walks)
-    .map((d) => [d.name, d.walks, hoursOf(d.seconds)]);
+    .sort((a, b) => b.walks - a.walks || String(a.name).localeCompare(String(b.name)) || a.id - b.id)
+    .map((d) => [d.name, d.id, d.species === 'cat' ? 'Cat' : 'Dog', d.walks, hoursOf(d.seconds)]);
 
-  const shelterContext = shelterContextInRange(db, from, to);
-  const shelterContextRows = [
+  // Dogs only, so a Cats report leaves it out (see tables below).
+  const shelterContext = species === 'cat' ? null : shelterContextInRange(db, from, to);
+  const shelterContextRows = shelterContext ? [
     ['New dogs listed', shelterContext.new_dog],
     ['Adopted', shelterContext.adopted],
     ['Returned', shelterContext.returned],
     ['Removed (other)', shelterContext.removed]
-  ];
+  ] : [];
 
   // quietestDay is floored at MIN_CELL so a single-volunteer day is never
   // the one spotlighted; the avg* figures are whole-range-only (dividing two
@@ -378,32 +404,44 @@ function buildReportMetrics(db, { from, to, granularity, dogIds, kennelLetter, a
   const highlights = {
     busiestDay: busiest ? { dateKey: busiest.dateKey, label: dayLabel(busiest.dateKey), walks: busiest.walks } : null,
     quietestDay: quietest ? { dateKey: quietest.dateKey, label: dayLabel(quietest.dateKey), walks: quietest.walks } : null,
-    avgWalksPerVolunteer: totals.volunteerHeadcount ? Math.round((totals.walks / totals.volunteerHeadcount) * 10) / 10 : null,
-    // Walk activity only, finished, a minute or longer (see walkOnlyAvgSeconds).
-    avgWalkMinutes: avgWalkSeconds == null ? null : Math.round(avgWalkSeconds / 60)
+    avgWalksPerVolunteer: totals.volunteerHeadcount ? Math.round((totals.walks / totals.volunteerHeadcount) * 10) / 10 : null
   };
+  // Walk activity only, finished, a minute or longer (see walkOnlyAvgSeconds).
+  // Cats aren't walked, so a Cats report has no such figure at all.
+  if (species !== 'cat') highlights.avgWalkMinutes = avgWalkSeconds == null ? null : Math.round(avgWalkSeconds / 60);
 
   const periodNoun = { day: 'Day', week: 'Week', month: 'Month' }[granularity] || 'Period';
   const unique = `Unique ${nouns.many}`;
+  const tables = {
+    byActivity: { title: 'By activity', columns: ['Activity', 'Engagements', 'Hours'], rows: byActivityRows },
+    byPeriod: { title: `By ${periodNoun.toLowerCase()}`, columns: [periodNoun, 'Engagements', 'Hours', unique], rows: byPeriodRows },
+    byLocation: { title: 'By location', columns: ['Location', 'Engagements', 'Hours', unique], rows: byLocationRows },
+    byDayOfWeek: { title: 'By day of week', columns: ['Day', 'Engagements', 'Hours', unique], rows: byDayOfWeekRows },
+    byTimeOfDay: { title: 'By time of day', columns: ['Time of day', 'Engagements', 'Hours', unique], rows: byTimeOfDayRows }
+  };
+  // Shelter context counts dogs only: shown for Dogs, marked for Dogs and
+  // cats, and left out of a Cats report.
+  if (shelterContext) tables.shelterContext = { title: species === 'dog' ? 'Shelter context' : 'Shelter context (dogs only)', columns: ['Event', 'Count'], rows: shelterContextRows };
+  tables.uniqueDogsServed = { title: `${unique} served`, columns: [nouns.Many.replace(/s$/, ''), 'ID', 'Species', 'Engagements', 'Hours'], rows: uniqueDogsServedRows };
+  // One-animal detail follows the species too: a dog picked earlier doesn't
+  // show up in a Cats report (or a cat in a Dogs one).
+  const kinds = statsBreakdown.filterKinds(species);
+  const pickedIds = (dogIds || []).length
+    ? db.prepare(`SELECT shelter_buddy_id AS id FROM dogs WHERE shelter_buddy_id IN (${dogIds.map(() => '?').join(',')}) AND species IN (${kinds.map(() => '?').join(',')})`)
+      .all(...dogIds, ...kinds).map((r) => r.id)
+    : [];
+  const pickedSet = new Set(pickedIds);
   return {
     range: { from, to }, granularity, species, minCell: MIN_CELL,
     // Shown under the tables and in every export.
     notes: [
-      `Counts ${species === 'all' ? 'dogs and cats' : `${nouns.many} only`}. An engagement is any walk, cuddle, matchmaking, play group or daycation that has finished.`,
+      `Counts ${species === 'all' ? 'dogs and cats' : `${nouns.many} only`}. An engagement is any walk, cuddle, matchmaking, playgroup or daycation that has finished.`,
       `Rows with fewer than ${MIN_CELL} engagements are left out of the breakdowns (they still count in the totals), so no one volunteer can be singled out.`,
       'Hours are rounded to one decimal in each row, so rows may not add up exactly to the total.'
     ],
     stats: { totals, highlights },
-    tables: {
-      byActivity: { title: 'By activity', columns: ['Activity', 'Engagements', 'Hours'], rows: byActivityRows },
-      byPeriod: { title: `By ${periodNoun.toLowerCase()}`, columns: [periodNoun, 'Engagements', 'Hours', unique], rows: byPeriodRows },
-      byLocation: { title: 'By location', columns: ['Location', 'Engagements', 'Hours', unique], rows: byLocationRows },
-      byDayOfWeek: { title: 'By day of week', columns: ['Day', 'Engagements', 'Hours', unique], rows: byDayOfWeekRows },
-      byTimeOfDay: { title: 'By time of day', columns: ['Time of day', 'Engagements', 'Hours', unique], rows: byTimeOfDayRows },
-      shelterContext: { title: species === 'dog' ? 'Shelter context' : 'Shelter context (dogs only)', columns: ['Event', 'Count'], rows: shelterContextRows },
-      uniqueDogsServed: { title: `${unique} served`, columns: [nouns.Many.replace(/s$/, ''), 'Engagements', 'Hours'], rows: uniqueDogsServedRows }
-    },
-    dogDetail: dogDetailInRange(db, from, to, dogIds || [])
+    tables,
+    dogDetail: dogDetailInRange(db, from, to, (dogIds || []).filter((id) => pickedSet.has(id)))
   };
 }
 
@@ -413,12 +451,14 @@ function csvEscape(value) {
 }
 
 function highlightLines(h) {
-  return [
+  const lines = [
     ['Busiest day', h.busiestDay ? `${dayLabel(h.busiestDay.dateKey)} (${h.busiestDay.walks} engagements)` : 'n/a'],
     ['Quietest day', h.quietestDay ? `${dayLabel(h.quietestDay.dateKey)} (${h.quietestDay.walks} engagements)` : 'n/a'],
-    ['Avg engagements per active volunteer', h.avgWalksPerVolunteer ?? 'n/a'],
-    ['Avg walk length (minutes, walks only)', h.avgWalkMinutes ?? 'n/a']
+    ['Avg engagements per active volunteer', h.avgWalksPerVolunteer ?? 'n/a']
   ];
+  // Left out of a Cats report (no avgWalkMinutes key at all).
+  if ('avgWalkMinutes' in h) lines.push(['Avg walk length (minutes, walks only)', h.avgWalkMinutes ?? 'n/a']);
+  return lines;
 }
 
 const rangeText = (range) => `${dayLabel(range.from)} to ${dayLabel(range.to)}`;
@@ -545,23 +585,38 @@ function reportToPdf(report, res) {
     doc.moveDown(1);
   }
 
-  const colX = [50, 250, 350, 450];
+  // Column x positions: 4 columns for the breakdowns, 5 for "Each animal
+  // served" (name, ID, species, engagements, hours). Each cell is clipped to
+  // its column so a long name can't run into the next one.
+  const COLS = { 4: [50, 250, 350, 450], 5: [50, 210, 300, 380, 470] };
+  const RIGHT = 562; // page width 612 minus the 50 margin
   function table(title, columns, rows) {
+    const colX = COLS[columns.length] || COLS[columns.length > 4 ? 5 : 4];
+    // One line per cell: a long name ends in "…" instead of wrapping into the next row.
+    const cellOpts = (i) => ({ width: (colX[i + 1] || RIGHT) - (colX[i] || 50) - 6, height: doc.currentLineHeight(), ellipsis: true });
+    function header() {
+      doc.font('Helvetica-Bold').fontSize(10);
+      const headerY = doc.y;
+      columns.forEach((cell, i) => doc.text(cell, colX[i] || 50, headerY, cellOpts(i)));
+      doc.x = 50;
+      doc.moveDown(0.3);
+      doc.font('Helvetica');
+    }
     if (doc.y > 650) doc.addPage();
-    doc.fontSize(13).text(title);
-    doc.fontSize(10);
-    const headerY = doc.y;
-    columns.forEach((cell, i) => doc.text(cell, colX[i] || 50, headerY));
-    doc.moveDown(0.3);
+    // x = 50: after a table row the cursor sits under the last column.
+    doc.fontSize(13).text(title, 50);
+    header();
     if (!rows.length) {
       doc.fillColor('#777').text('Nothing to show in this range.', 50).fillColor('#000');
       doc.moveDown(0.5);
       return;
     }
     for (const row of rows) {
-      if (doc.y > 700) doc.addPage();
+      // A long table carries on with its column headers on the new page.
+      if (doc.y > 700) { doc.addPage(); header(); }
       const rowY = doc.y;
-      row.forEach((cell, i) => doc.text(String(cell), colX[i] || 50, rowY));
+      row.forEach((cell, i) => doc.text(String(cell), colX[i] || 50, rowY, cellOpts(i)));
+      doc.x = 50;
       doc.moveDown(0.2);
     }
     doc.moveDown(0.8);
@@ -710,7 +765,8 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
   // Minimal list for the report builder's dog picker -- every dog ever seen
   // (not just currently listed), since a report can cover dogs no longer
   // on the shelter's site.
-  const allDogsStmt = db.prepare("SELECT shelter_buddy_id AS id, name FROM dogs WHERE awaiting_listing = 0 ORDER BY name COLLATE NOCASE");
+  // kennel + listed tell same-name animals apart in the picker ("Duke · ID 272583 · kennel E").
+  const allDogsStmt = db.prepare("SELECT shelter_buddy_id AS id, name, kennel_location AS kennel, species, still_listed AS listed FROM dogs WHERE awaiting_listing = 0 ORDER BY name COLLATE NOCASE");
   app.get('/api/staff/dogs', requireStaff, (req, res) => {
     res.json({ dogs: allDogsStmt.all() });
   });
@@ -747,7 +803,7 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
     res.send(reportToCsv(report));
   });
 
-  app.get('/api/staff/reports/export.xlsx', requireStaff, async (req, res) => {
+  app.get('/api/staff/reports/export.xlsx', requireStaff, asyncRoute(async (req, res) => {
     const params = parseReportParams(req, res);
     if (!params) return;
     const report = buildPickedReport(params);
@@ -755,7 +811,7 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
     res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.set('Content-Disposition', `attachment; filename="shelter-walk-report-${report.range.from}-to-${report.range.to}.xlsx"`);
     res.send(buffer);
-  });
+  }));
 
   app.get('/api/staff/reports/export.pdf', requireStaff, (req, res) => {
     const params = parseReportParams(req, res);
@@ -774,6 +830,7 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
       name: row.name,
       sections: JSON.parse(row.sections),
       granularity: row.granularity,
+      species: row.species || 'dog',
       dogIds: JSON.parse(row.dog_ids),
       createdAt: row.created_at,
       updatedAt: row.updated_at
@@ -799,12 +856,13 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
     if (!sections) return res.status(400).json({ error: 'sections must be a list of section keys' });
     const granularity = GRANULARITIES.includes(req.body.granularity) ? req.body.granularity : 'day';
     const dogIds = validDogIdsBody(req.body.dogIds);
+    const species = parseSpecies(req.body.species);
     const count = db.prepare('SELECT COUNT(*) AS c FROM saved_staff_reports').get().c;
     if (count >= MAX_SAVED_REPORTS) return res.status(400).json({ error: `You can save up to ${MAX_SAVED_REPORTS} report formats.` });
     const now = new Date().toISOString();
     const info = db.prepare(
-      'INSERT INTO saved_staff_reports (name, sections, granularity, dog_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(name, JSON.stringify(sections), granularity, JSON.stringify(dogIds), now, now);
+      'INSERT INTO saved_staff_reports (name, sections, granularity, species, dog_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(name, JSON.stringify(sections), granularity, species, JSON.stringify(dogIds), now, now);
     res.json(serializeSavedReport(db.prepare('SELECT * FROM saved_staff_reports WHERE id = ?').get(info.lastInsertRowid)));
   });
 
@@ -820,8 +878,9 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
       ? (GRANULARITIES.includes(req.body.granularity) ? req.body.granularity : existing.granularity)
       : existing.granularity;
     const dogIds = req.body.dogIds !== undefined ? validDogIdsBody(req.body.dogIds) : JSON.parse(existing.dog_ids);
-    db.prepare('UPDATE saved_staff_reports SET name = ?, sections = ?, granularity = ?, dog_ids = ?, updated_at = ? WHERE id = ?')
-      .run(name, JSON.stringify(sections), granularity, JSON.stringify(dogIds), new Date().toISOString(), id);
+    const species = req.body.species !== undefined ? parseSpecies(req.body.species) : (existing.species || 'dog');
+    db.prepare('UPDATE saved_staff_reports SET name = ?, sections = ?, granularity = ?, species = ?, dog_ids = ?, updated_at = ? WHERE id = ?')
+      .run(name, JSON.stringify(sections), granularity, species, JSON.stringify(dogIds), new Date().toISOString(), id);
     res.json(serializeSavedReport(db.prepare('SELECT * FROM saved_staff_reports WHERE id = ?').get(id)));
   });
 
@@ -833,6 +892,6 @@ function register(app, { db, enforceWalkLimits, kennelLetter, cachedPhotoUrl, AC
 }
 
 module.exports = {
-  register, buildReportMetrics, pickSections, dateKeyOf,
-  previousDateKey, sameTimeYesterday, computeActivityAverages, SESSIONS, ACTIVITY_LABELS
+  register, dateKeyOf,
+  previousDateKey, sameTimeYesterday, computeActivityAverages, SESSIONS
 };

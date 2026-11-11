@@ -11,8 +11,10 @@
 // (db.js), the earliest point it can honestly be pinned to.
 const species = require('./species');
 const { FOSTER_LOCATION } = require('./shelterTrends');
+// The shelter's clock, and the under-a-minute rule for averages: they still
+// count everywhere else (constants.js, the one copy).
+const { SHELTER_TZ: TZ, MIN_AVG_SECONDS } = require('./constants');
 
-const TZ = 'America/New_York'; // the shelter's clock
 const POO_STATUSES = ['priority', 'poo', 'none'];
 
 const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -51,9 +53,6 @@ function pooResolver(db, dogIds) {
   };
 }
 
-// Averages leave out engagements under a minute (an accidental scan, ended
-// right away); they still count everywhere else.
-const MIN_AVG_SECONDS = 60;
 function bucket() { return { count: 0, totalSeconds: 0, animals: new Set(), avgCount: 0, avgTotal: 0 }; }
 function addTo(map, key, row) {
   if (!map.has(key)) map.set(key, bucket());
@@ -75,22 +74,22 @@ function rowsOf(map, keyName, order) {
 }
 
 // rows: completed walks with dog_id, species, tags, activity, started_at,
-// duration_seconds. pooAt: pooResolver(db). The species breakdown covers
-// every row; the rest only the rows of the species they're about.
+// duration_seconds. pooAt: pooResolver(db). POO and kittens split only the
+// rows of the species they're about. POO is about walks only (a POO dog's
+// sticker means nothing for a cuddle), so it splits just the walks (owner,
+// 2026-11-10). (A species split was computed here until audit3; nothing
+// showed it.)
 function breakdown(rows, pooAt) {
-  const bySpecies = new Map();
   const byActivity = new Map();
   const byPoo = new Map();
   const byAge = new Map();
   for (const r of rows) {
     const kind = species.validSpecies(r.species) ? r.species : species.DEFAULT_SPECIES;
-    addTo(bySpecies, kind, r);
     addTo(byActivity, r.activity || 'walk', r);
-    if (species.speciesInfo(kind).stickers) addTo(byPoo, pooAt(r.dog_id, r.started_at), r);
+    if (species.speciesInfo(kind).stickers && (r.activity || 'walk') === 'walk') addTo(byPoo, pooAt(r.dog_id, r.started_at), r);
     if (species.speciesInfo(kind).youngFirst) addTo(byAge, species.isYoung(r) ? 'young' : 'adult', r);
   }
   return {
-    bySpecies: rowsOf(bySpecies, 'species', species.SPECIES_KEYS),
     byActivity: rowsOf(byActivity, 'activity'),
     byPoo: rowsOf(byPoo, 'status', POO_STATUSES),
     byAge: rowsOf(byAge, 'group', ['young', 'adult'])
@@ -127,4 +126,4 @@ function shelterNow(db, filter, { isWalkable, walkedIds }) {
   return out;
 }
 
-module.exports = { shelterDateKey, speciesFilter, filterKinds, pooResolver, breakdown, shelterNow, POO_STATUSES, MIN_AVG_SECONDS };
+module.exports = { shelterDateKey, speciesFilter, filterKinds, pooResolver, breakdown, shelterNow };

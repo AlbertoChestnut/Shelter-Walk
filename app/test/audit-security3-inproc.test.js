@@ -27,7 +27,7 @@ global.fetch = async (url, opts = {}) => {
     if (u.includes('/api/animals/adopted')) return json({ data: [] });
     if (/\/api\/photos\//.test(u)) return json({ large: ['/img/x.jpg'] });
     if (/\/img\/x\.jpg/.test(u)) return new Response(Buffer.from('jpg'), { status: 200, headers: { 'content-type': 'image/jpeg' } });
-    if (/\/api\/animals\/adopt\//.test(u)) return json({ primaryBreed: 'Mix', summary: 'Nice', tags: [], sex: 'Male', age: '3 Years' });
+    if (/\/api\/animals\/adopt\//.test(u)) return json({ primaryBreed: 'Mix', location: 'Kennel', summary: 'Nice', tags: [], sex: 'Male', age: '3 Years' });
     return new Response('{}', { status: 404 });
   }
   if (/youtube\.com|youtu\.be/.test(u)) {

@@ -5,12 +5,18 @@
 // v10: personal API answers are no longer kept (mayKeepApiCopy), and the
 // version bump drops any that v9 stored.
 const CACHE_NAME = 'shelter-walk-v10';
-// Versioned css/js (?v=, which changes on every restart; see ASSET_VERSION
-// in server.js) and photos each get their own cache, so old versions can be
+// Versioned css/js (?v=, a hash of the public files that changes whenever
+// one of them does; see ASSET_VERSION in server.js) and photos each get their own cache, so old versions can be
 // dropped and photos capped without touching the rest.
 const ASSET_CACHE = 'shelter-walk-assets-v1';
 const PHOTO_CACHE = 'shelter-walk-photos-v1';
-const KEEP_CACHES = [CACHE_NAME, ASSET_CACHE, PHOTO_CACHE];
+// An "End walk" tapped on a notification while the app was closed: the tap
+// is kept here with a one-off nonce, and the app is opened at
+// /?endWalk=<id>&nonce=<nonce>. The app ends the walk only when the nonce
+// matches what's kept, so a crafted /?endWalk link can't end anyone's walk
+// (audit 3). The tap time comes from here, never from the URL.
+const END_TAP_CACHE = 'shelter-walk-end-taps';
+const KEEP_CACHES = [CACHE_NAME, ASSET_CACHE, PHOTO_CACHE, END_TAP_CACHE];
 // Cap on cached API responses -- URLs with per-request timestamps in them
 // (walks/for-day) would otherwise pile up forever.
 const MAX_API_ENTRIES = 150;
@@ -19,14 +25,39 @@ const MAX_API_ENTRIES = 150;
 const MAX_PHOTO_ENTRIES = 400;
 // Only truly static, unversioned assets are pre-cached here -- app.js/
 // style.css are served with a cache-busting ?v= query string that changes
-// on every deploy (see ASSET_VERSION in server.js), so pre-caching a bare
+// whenever their content does (see ASSET_VERSION in server.js), so pre-caching a bare
 // URL for them would just cache the wrong version. The fetch handler below
 // caches whatever versioned URL actually gets requested instead.
 const STATIC_ASSETS = ['/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/badge-96.png'];
 
+// The app page itself, kept at install: the first visit after an update goes
+// through the old worker, and this one then drops the old cache, so without
+// it a reload offline would have no page at all until the next online visit.
+// Every app navigation falls back to it offline (see navigationKey).
+const APP_SHELL = '/app';
+function cacheAppShell(cache) {
+  // redirect:'manual': a signed-out fetch is the login gate's redirect, which
+  // must never be kept as the app page.
+  return fetch(APP_SHELL, { redirect: 'manual', credentials: 'same-origin' })
+    .then((res) => (res.ok && res.type === 'basic' && !res.redirected ? cache.put(APP_SHELL, res) : null))
+    .catch(() => {});
+}
+
+// The QR scanner library: loaded only when a scan opens (app.js
+// loadScannerLib), at this fixed URL, so it's kept at install too -- Scan
+// then works offline even if it was never opened online (audit 3).
+const SCANNER_LIB = '/js/html5-qrcode.min.js';
+function cacheScannerLib(cache) {
+  return fetch(SCANNER_LIB, { redirect: 'manual', credentials: 'same-origin' })
+    .then((res) => (res.ok && res.type === 'basic' && !res.redirected ? cache.put(SCANNER_LIB, res) : null))
+    .catch(() => {});
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => {})
+    caches.open(CACHE_NAME)
+      .then((cache) => Promise.all([cache.addAll(STATIC_ASSETS).catch(() => {}), cacheScannerLib(cache), cacheAppShell(cache)]))
+      .catch(() => {})
   );
   self.skipWaiting();
 });
@@ -83,17 +114,24 @@ self.addEventListener('fetch', (event) => {
   // asset URLs, with no way to notice. Network-first (falling back to the
   // cached shell only when actually offline) fixes that while still
   // satisfying the offline-resilience goal.
+  // Kept by path, not by full URL: notification taps open /?endWalk=…&at=…,
+  // /?open=updates and the like, each a one-off URL that would otherwise pile
+  // up as its own copy and never be found again offline. Offline, a page
+  // that was never kept falls back to the app page (APP_SHELL).
   if (req.mode === 'navigate') {
+    const pathKey = navigationKey(url);
     event.respondWith(
       fetch(req)
         .then((res) => {
-          if (res.ok) {
+          if (res.ok && !res.redirected) {
             const copy = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+            caches.open(CACHE_NAME).then((cache) => cache.put(pathKey, copy)).catch(() => {});
           }
           return res;
         })
-        .catch(() => caches.match(req))
+        .catch(() => caches.match(pathKey, { cacheName: CACHE_NAME })
+          .then((hit) => hit || (isAppPage(url) ? caches.match(APP_SHELL, { cacheName: CACHE_NAME }) : undefined))
+          .then((hit) => hit || caches.match(req, { ignoreSearch: true })))
     );
     return;
   }
@@ -142,6 +180,15 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+
+// A page's cache key: its path on this origin, without the query string.
+function navigationKey(url) {
+  return `${url.origin}${url.pathname}`;
+}
+// Pages that are the volunteer app (server.js sendIndex): /, /app, /scan.
+function isAppPage(url) {
+  return ['/', '/app', '/scan'].includes(url.pathname.replace(/\/+$/, '') || '/');
+}
 
 // Personal answers are never kept for offline use: the server marks them
 // no-store (or private), and the data export is never kept whatever it says.
@@ -263,7 +310,21 @@ async function openApp(url, message) {
   return clients.openWindow(url);
 }
 
-const clockLabel = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+// Keeps an End tap for the app to pick up (END_TAP_CACHE); resolves to its
+// nonce, or null if it couldn't be kept.
+function stashEndTap(walkId, at) {
+  const bytes = new Uint8Array(16);
+  self.crypto.getRandomValues(bytes);
+  const nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const body = JSON.stringify({ walkId: String(walkId), at, nonce });
+  return caches.open(END_TAP_CACHE)
+    .then((cache) => cache.put(`/__end-tap/${encodeURIComponent(walkId)}`, new Response(body, { headers: { 'Content-Type': 'application/json' } })))
+    .then(() => nonce, () => null);
+}
+
+// The shelter's clock (like the app's), not the phone's time zone.
+// "6:09 pm", the app's clock style.
+const clockLabel = (iso) => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }).replace(/\s?([AP])M$/, (m, h) => ` ${h.toLowerCase()}m`);
 
 // "+10 min" on a walk alert: extend the walk without opening the app, then
 // replace the alert with the new stop time (or say why it couldn't).
@@ -285,7 +346,7 @@ async function extendFromNotification(data) {
     const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     windows.forEach((c) => c.postMessage({ type: 'walk-extended', walkId: data.walkId, stopsAt: body.stopsAt }));
     return self.registration.showNotification(`${name}: added ${body.addedMinutes} minutes`, {
-      body: `Now stops automatically at ${clockLabel(body.stopsAt)}.`,
+      body: `Now stops automatically at ${clockLabel(body.shownStopsAt || body.stopsAt)}.`,
       icon: '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
       tag: 'walk',
@@ -312,8 +373,8 @@ self.addEventListener('notificationclick', (event) => {
   } else if (event.action === 'end' && data.walkId) {
     // The walk ended when the button was tapped, not when the app finishes opening.
     const at = new Date().toISOString();
-    event.waitUntil(openApp(`/?endWalk=${encodeURIComponent(data.walkId)}&at=${encodeURIComponent(at)}`,
-      { type: 'end-walk', walkId: data.walkId, at }));
+    event.waitUntil(stashEndTap(data.walkId, at).then((nonce) => openApp(`/?endWalk=${encodeURIComponent(data.walkId)}&nonce=${encodeURIComponent(nonce || '')}`,
+      { type: 'end-walk', walkId: data.walkId, at })));
   } else if (data.page === 'feedback') {
     event.waitUntil(openApp(url, { type: 'open-feedback' }));
   } else if (data.page === 'updates') {

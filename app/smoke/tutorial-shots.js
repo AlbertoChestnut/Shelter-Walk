@@ -155,7 +155,14 @@ async function main() {
   }
   fs.mkdirSync(outDir, { recursive: true });
   for (const f of fs.readdirSync(outDir)) if (f.endsWith('.png')) fs.rmSync(path.join(outDir, f));
-  const server = await startSmoke({ prefix: 'sw-shots-' });
+  // The server runs on the same pinned clock as this script and the browser
+  // (_harness.js loads test/_clock.js here; smoke:all also passes it to the
+  // server, but this script runs on its own). Without it the server stamped
+  // Start with this computer's real time while the page counted from noon,
+  // and "Walk in progress" read "1:57:40" when run at 10am.
+  const clockRequire = '--require=./test/_clock.js'; // relative: the app path has a space
+  const nodeOptions = (process.env.NODE_OPTIONS || '').includes('_clock') ? process.env.NODE_OPTIONS : `${process.env.NODE_OPTIONS || ''} ${clockRequire}`.trim();
+  const server = await startSmoke({ prefix: 'sw-shots-', env: { NODE_OPTIONS: nodeOptions } });
   ({ base, dir, dbFile } = server);
   let browser;
   try {
@@ -245,6 +252,15 @@ async function main() {
     await page.click('#changeActivityBtn');
     await page.click('#startWalkBtn');
     await page.waitForSelector('#endWalkBtn');
+    // The walk was started a moment ago on the pinned clock, so the timer
+    // must read seconds, never hours (a wrong clock would ruin the shot).
+    const check = new Database(dbFile, { readonly: true });
+    const open = check.prepare('SELECT started_at FROM walks WHERE ended_at IS NULL AND user_id = ? ORDER BY id DESC LIMIT 1').get(me.id);
+    check.close();
+    const startedAt = open && open.started_at;
+    if (!startedAt || Math.abs(Date.now() - new Date(startedAt).getTime()) > 5 * 60000) {
+      throw new Error(`The walk started at ${startedAt}, not on the pinned clock (${new Date().toISOString()}); the in-progress shot would show the wrong time.`);
+    }
     await shot(page, 'walk-in-progress', { wait: 4000, top: true });
     await page.waitForTimeout(58000); // so the finished walk reads 1 min, not 0
     await page.click('#endWalkBtn');

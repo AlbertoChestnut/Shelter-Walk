@@ -8,7 +8,7 @@
 // switcher on it (public/js/desk-nav.js).
 const VIEWS = [
   { key: 'app', label: 'Volunteer app', path: '/app' },
-  { key: 'playgroup', label: 'Play group desk', path: '/playgroup' },
+  { key: 'playgroup', label: 'Playgroup desk', path: '/playgroup' },
   { key: 'staff', label: 'Staff dashboard', path: '/staff', staffOnly: true }
 ];
 
@@ -28,4 +28,4 @@ function startView(chosen, isStaff) {
 }
 const pathFor = (key) => (VIEWS.find((v) => v.key === key) || VIEWS[0]).path;
 
-module.exports = { VIEWS, available, isValid, startView, pathFor, isMobile };
+module.exports = { available, isValid, startView, pathFor, isMobile };

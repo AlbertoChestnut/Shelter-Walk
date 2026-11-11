@@ -1,16 +1,16 @@
-// The play group desk (/playgroup): a computer-sized page for play group
+// The playgroup desk (/playgroup): a computer-sized page for playgroup
 // volunteers to type up notes dog by dog, and to look over and export every
 // session. Same notes and rules as the phone app (playgroupNotes.js); tagging
 // and the date row come from pg-tags.js.
 (function () {
-  const { esc, toEditable, bodyHtml, fmtDate, today, daysAgo, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools } = window.PgTags;
+  const { esc, thumbHtml, toEditable, bodyHtml, fmtDate, today, daysAgo, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools } = window.PgTags;
   // Keyboard tips only where there's a keyboard-and-mouse (not on a phone or tablet).
   const hasKeyboard = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
   if (hasKeyboard) document.getElementById('dogSearch').placeholder = 'Find a dog  ( / )';
 
   const state = {
     me: null,
-    dogs: [],          // listed dogs that can go to play group (the sidebar list)
+    dogs: [],          // listed dogs that can go to playgroup (the sidebar list)
     tagDogs: null,     // dogs offered by @ tagging -- also includes delisted foster dogs
     counts: {},        // dogId -> { notes, last, name, ... }
     dogId: null,       // the dog open on the Write tab
@@ -18,27 +18,10 @@
     view: 'write'
   };
 
-  async function api(url, opts = {}) {
-    let res;
-    try {
-      res = await fetch(url, { headers: { 'content-type': 'application/json' }, ...opts });
-    } catch (err) {
-      throw new Error("Couldn't reach the server. Check the connection and try again.");
-    }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(httpErrorMessage(res.status, data));
-    return data;
-  }
-  // Same wording as app.js's httpErrorMessage(): a 4xx's own `error` (written
-  // for people), else a plain line -- never "Request failed (500)".
-  function httpErrorMessage(status, body) {
-    if (status < 500 && body && typeof body.error === 'string' && body.error) return body.error;
-    if (status === 404) return "That couldn't be found. It may have been removed.";
-    if (status === 401 || status === 403) return "You don't have access to that. Reload the page to sign in again.";
-    if (status === 429) return 'Too many tries in a row. Wait a moment and try again.';
-    if (status >= 502 && status <= 504) return "The server isn't responding right now. Try again in a minute.";
-    return 'Something went wrong on our end. Try again in a moment.';
-  }
+  // Friendly errors and the signed-out bar come from the shared helper
+  // (js/http-errors.js). Callers here read fields off the answer, so a
+  // non-JSON success is an empty object rather than null.
+  const api = (url, opts) => window.ShelterHttp.request(url, opts).then((data) => data || {});
   // Same as app.js's fmtAge(): the listing's "2 Years" reads "2 years".
   const fmtAge = (age) => String(age || '').replace(/\b(Years?|Months?|Weeks?|Days?)\b/g, (u) => u.toLowerCase());
   let toastTimer = null;
@@ -55,17 +38,18 @@
   const notPlaygroupReason = (d) => (d.pbFlag ? 'PB only' : d.isPendingAdoption ? 'Pending adoption'
     : (d.tags || []).includes('Best in Home without Dogs') ? 'Best without other dogs' : '');
 
-  // Dogs that can be tagged in a note: every dog that can go to play group,
+  // Dogs that can be tagged in a note: every dog that can go to playgroup,
   // including ones currently in foster -- even once the shelter's own
-  // listing drops them, volunteers still write play group notes about a
-  // foster dog. Separate from `state.dogs` (the sidebar list, listed dogs
-  // only): `all=true` is needed to see delisted foster dogs, and pulling
+  // listing drops them, volunteers still write playgroup notes about a
+  // foster dog -- plus dogs that left in the last 3 months, marked and
+  // listed last (PgTags.taggableFrom). Separate from `state.dogs` (the
+  // sidebar list, listed dogs only): `all=true` is needed to see delisted foster dogs, and pulling
   // every dog ever seen into the sidebar too would bury it in dogs long gone.
   async function taggableDogs() {
     if (state.tagDogs) return state.tagDogs;
     try {
-      const { dogs } = await api('/api/dogs?all=true');
-      state.tagDogs = dogs.filter((d) => canPlay(d) && (d.stillListed || d.location === 'In Foster'));
+      const { dogs } = await api('/api/dogs?all=true&fields=names');
+      state.tagDogs = window.PgTags.taggableFrom(dogs, canPlay);
     } catch (e) { state.tagDogs = state.dogs; }
     return state.tagDogs;
   }
@@ -74,7 +58,7 @@
   function allDogs() {
     const byId = new Map(state.dogs.map((d) => [String(d.id), d]));
     for (const [id, c] of Object.entries(state.counts)) {
-      if (!byId.has(id)) byId.set(id, { id: Number(id), name: c.name, kennelLocation: c.kennelLocation, gone: !c.stillListed, adopted: !!c.adopted });
+      if (!byId.has(id)) byId.set(id, { id: Number(id), name: c.name, kennelLocation: c.kennelLocation, photoUrl: c.photoUrl, gone: !c.stillListed, adopted: !!c.adopted });
     }
     return [...byId.values()];
   }
@@ -94,16 +78,52 @@
     const el = document.getElementById('dogList');
     el.innerHTML = list.length ? list.map((d) => `
       <li><button type="button" class="dog-row${String(d.id) === String(state.dogId) ? ' active' : ''}" data-dog="${d.id}" role="option" aria-selected="${String(d.id) === String(state.dogId)}">
+        ${thumbHtml(d)}
         <span class="dog-row-name">${esc(d.name)}${d.gone ? ` <span class="badge">${d.adopted ? 'Adopted' : 'Left shelter'}</span>` : ''}</span>
-        <span class="dog-row-meta">${d.kennelLocation ? `🏠 ${esc(d.kennelLocation)}` : ''}</span>
+        <span class="dog-row-meta">#${esc(d.id)}${d.kennelLocation ? ` · 🏠 ${esc(d.kennelLocation)}` : ''}</span>
         <span class="dog-row-count${n(d) ? '' : ' none'}">${n(d) || ''}</span>
       </button></li>`).join('') : '<li class="muted small" style="padding:10px;">No dogs match.</li>';
   }
 
+  // ---------- Unsaved notes ----------
+  // Same as the phone app: leaving a dog, or the page by the view switcher,
+  // with a note typed but not saved asks first: Save, Discard or Keep
+  // editing. Resolves true when it's fine to go on. (Closing the tab or
+  // reloading gets the browser's own prompt, from pg-tags.js.)
+  const unsavedDialog = document.getElementById('unsavedDialog');
+  function askUnsaved(count) {
+    unsavedDialog.querySelector('h2').textContent = count > 1 ? 'Unsaved notes' : 'Unsaved note';
+    unsavedDialog.querySelector('p').textContent = count > 1 ? "You haven't saved what you wrote in these notes." : "You haven't saved what you wrote in this note.";
+    unsavedDialog.returnValue = '';
+    return new Promise((resolve) => {
+      unsavedDialog.addEventListener('close', () => resolve(unsavedDialog.returnValue || 'stay'), { once: true });
+      unsavedDialog.showModal();
+    });
+  }
+  async function okToLeaveNotes() {
+    const open = window.PgTags.unsavedNotes();
+    if (!open.length) return true;
+    const answer = await askUnsaved(open.length);
+    if (answer === 'stay') { open[0].focus(); return false; }
+    if (answer === 'discard') { open.forEach((g) => g.forget()); return true; }
+    for (const g of open) await g.save();
+    // A save that failed has said why (toast) and left its text in place.
+    const left = window.PgTags.unsavedNotes();
+    if (left.length) { left[0].focus(); return false; }
+    return true;
+  }
+  document.addEventListener('click', async (e) => {
+    const link = e.target.closest && e.target.closest('#deskNav a[href]');
+    if (!link || !window.PgTags.unsavedNotes().length || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    if (await okToLeaveNotes()) location.href = link.href;
+  });
+
   // Back to the list. On a narrow screen the list and the open dog take
   // turns filling the screen (.has-dog); on a wide one this just clears it.
   const EMPTY_PANE = document.getElementById('dogPane').innerHTML;
-  function closeDog() {
+  async function closeDog() {
+    if (!(await okToLeaveNotes())) return;
     state.dogId = null;
     const url = new URL(location.href);
     url.searchParams.delete('dog');
@@ -114,7 +134,9 @@
   }
 
   // ---------- One dog: notes and the editor ----------
-  async function openDog(id, { focus = true } = {}) {
+  // `reload`: the same dog again after a save, nothing to ask about.
+  async function openDog(id, { focus = true, reload = false } = {}) {
+    if (!reload && !(await okToLeaveNotes())) return;
     state.dogId = String(id);
     const url = new URL(location.href);
     url.searchParams.set('dog', state.dogId);
@@ -129,8 +151,10 @@
     renderDog(data, focus);
   }
 
-  function editorHtml({ text = '', date, signed = false, showSign = true, saveLabel = 'Save note', cancel = false } = {}) {
-    const placeholder = 'How did play group go? Type @ to tag another dog, or just their name. Paste in earlier notes too.';
+  // signLocked: the writer's own note that someone else has since edited,
+  // which can't be signed any more (the server refuses it too).
+  function editorHtml({ text = '', date, signed = false, showSign = true, signLocked = false, saveLabel = 'Save note', cancel = false } = {}) {
+    const placeholder = 'How did playgroup go? Type @ to tag another dog, or just their name. Paste in earlier notes too.';
     return `<div class="desk-editor">
       ${dateRowHtml(date || state.lastDate || today())}
       ${mdToolbarHtml()}
@@ -140,7 +164,8 @@
       </div>
       <div class="pg-preview"></div>
       <div class="desk-editor-foot">
-        ${showSign ? `<label class="small"><input type="checkbox" class="pg-signed"${signed ? ' checked' : ''} /> Sign with my name <span class="muted">(otherwise anonymous)</span></label>` : '<span></span>'}
+        ${signLocked ? '<span class="small muted">Someone else edited this note, so it can\'t be signed.</span>'
+    : showSign ? `<label class="small"><input type="checkbox" class="pg-signed"${signed ? ' checked' : ''} /> Sign with my name <span class="muted">(otherwise anonymous)</span></label>` : '<span></span>'}
         ${hasKeyboard ? '<span class="muted small kbd-tip">Ctrl+Enter to save</span>' : ''}
         ${cancel ? '<button type="button" class="btn" data-act="cancel">Cancel</button>' : ''}
         <button type="button" class="btn primary" data-act="save">${saveLabel}</button>
@@ -165,6 +190,7 @@
       try { await onSave(v); } catch (err) { toast(err.message, 'error'); saveBtn.disabled = false; }
     };
     saveBtn.addEventListener('click', save);
+    window.PgTags.guardNote(ta, { body: tags.body, save });
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } });
     const cancel = root.querySelector('[data-act="cancel"]');
     if (cancel) cancel.addEventListener('click', onCancel);
@@ -209,17 +235,17 @@
         ${info.photoUrl ? `<img src="${esc(info.photoUrl)}" alt="" />` : ''}
         <div>
           <h2>${esc(info.name)}</h2>
-          <p class="muted small">ID ${esc(dogId)}${listed ? ` · 🏠 ${esc(listed.kennelLocation || '?')} · ${esc(listed.breed || '')} · ${esc(listed.sex || '')} · ${esc(fmtAge(listed.age))}` : ' · no longer listed at the shelter'}</p>
-          ${why ? `<p class="small warn">Not play group eligible right now: ${esc(why)}</p>` : ''}
+          <p class="muted small"><span class="dog-id">ID ${esc(dogId)}</span>${listed ? ` · 🏠 ${esc(listed.kennelLocation || '?')} · ${esc(listed.breed || '')} · ${esc(listed.sex || '')} · ${esc(fmtAge(listed.age))}` : ' · no longer listed at the shelter'}</p>
+          ${why ? `<p class="small warn">Not playgroup eligible right now: ${esc(why)}</p>` : ''}
         </div>
       </div>
       <div class="card new-note">${editorHtml()}</div>
       <h3>Notes (${data.notes.length})</h3>
-      ${data.notes.length ? `<ul class="notes">${data.notes.map((n) => entry(n)).join('')}</ul>` : '<p class="muted small">No play group notes yet.</p>'}
+      ${data.notes.length ? `<ul class="notes">${data.notes.map((n) => entry(n)).join('')}</ul>` : '<p class="muted small">No playgroup notes yet.</p>'}
       ${data.mentions.length ? `<h3>Mentioned in other dogs' notes (${data.mentions.length})</h3>
         <ul class="notes">${data.mentions.map((n) => entry(n, data.dogs[n.dogId] || { id: n.dogId, name: 'another dog' })).join('')}</ul>` : ''}`;
 
-    const reload = () => Promise.all([refreshCounts(), openDog(dogId, { focus: false })]);
+    const reload = () => Promise.all([refreshCounts(), openDog(dogId, { focus: false, reload: true })]);
     const ta = wireEditor(pane.querySelector('.new-note'), {
       ownId: dogId,
       onSave: async (v) => {
@@ -260,7 +286,7 @@
       });
       li.querySelector('[data-act="edit"]').addEventListener('click', () => {
         const { text, picks } = toEditable(n.body, data.dogs);
-        li.innerHTML = editorHtml({ text, date: n.noteDate, signed: n.signed, showSign: n.mine, saveLabel: 'Save changes', cancel: true });
+        li.innerHTML = editorHtml({ text, date: n.noteDate, signed: n.signed, showSign: n.mine, signLocked: n.mine && n.canSign === false, saveLabel: 'Save changes', cancel: true });
         const eta = wireEditor(li, {
           picks,
           ownId: dogId,
@@ -268,13 +294,13 @@
           onSave: async (v) => {
             await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'PUT', body: JSON.stringify(v) });
             toast('Note updated');
-            reload();
+            await reload();
           }
         });
         eta.focus();
       });
       li.querySelector('[data-act="erase"]').addEventListener('click', async () => {
-        if (!window.confirm(`Delete this play group note from ${fmtDate(n.noteDate)}?`)) return;
+        if (!window.confirm(`Delete this playgroup note from ${fmtDate(n.noteDate)}?`)) return;
         try { await api(`/api/dogs/${dogId}/playgroup-notes/${n.id}`, { method: 'DELETE' }); toast('Note deleted'); reload(); }
         catch (err) { toast(err.message, 'error'); }
       });

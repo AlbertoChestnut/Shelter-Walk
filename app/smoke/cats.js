@@ -69,7 +69,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(!!(await p.$('[data-filter-key="pendingAdoption"]')), 'cats get a Being adopted chip');
     await p.click('[data-filters-tab="presets"]'); await p.waitForSelector('.preset-apply-btn');
     const presets = await p.textContent('#app');
-    ok(/Kittens/.test(presets) && /Long-stay Cats/.test(presets) && !/POO Dogs|Beginner|Playgroup/.test(presets), 'cat presets only: ' + presets.replace(/\s+/g, ' ').slice(0, 600));
+    ok(/Kittens/.test(presets) && /Long-stay cats/.test(presets) && !/POO Dogs|Beginner|Playgroup/.test(presets), 'cat presets only: ' + presets.replace(/\s+/g, ' ').slice(0, 600));
     await p.click('[data-filters-tab="filters"]');
     const wings = await p.$$eval('[data-location-key]', (els) => els.map((e) => e.dataset.locationKey).join(''));
     ok(wings === 'ABCD', 'cat rooms filter: A-D (' + wings + ')');
@@ -115,7 +115,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('.tab-btn[data-tab="stats"]'); await p.waitForTimeout(800);
     const statsText = await p.textContent('#app');
     // Wording follows what was actually done (only a cat today), not "engage".
-    ok(/Cats cuddled/.test(statsText) && /Total time cuddling/.test(statsText) && !/Dogs walked/.test(statsText), 'Both, cats only today: stats say cuddled');
+    ok(/Cats? cuddled/.test(statsText) && /Total time cuddling/.test(statsText) && !/Dogs walked/.test(statsText), 'Both, cats only today: stats say cuddled');
     await p.click('.tab-btn[data-tab="available"]'); await p.waitForSelector('.avail-card[data-id="6002"]');
     await p.click('.avail-card[data-id="6002"] .view-profile-btn'); await p.waitForSelector('#profileEditBtn');
     const prof = await p.textContent('#profileSheet');
@@ -157,7 +157,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await names() === 'Mittens,Pip,Socks', 'cats only');
     ok(!(await p.textContent('.avail-card[data-id="6001"]')).includes('🐈'), 'no species tag when everything is a cat');
     await p.click('.tab-btn[data-tab="stats"]'); await p.waitForTimeout(800);
-    ok(/Cats cuddled/.test(await p.textContent('#app')), 'Cats only: stats say cuddled');
+    ok(/Cats? cuddled/.test(await p.textContent('#app')), 'Cats only: stats say cuddled');
     await p.click('#settingsBtn'); await p.waitForTimeout(300);
     ok(/a cat I've cuddled is adopted/.test(await p.textContent('#settingsSheet')) && /Alert me when a cuddle reaches/.test(await p.textContent('#settingsSheet')), 'Settings wording follows cats');
     await p.click('#closeSettingsBtn').catch(() => p.keyboard.press('Escape'));

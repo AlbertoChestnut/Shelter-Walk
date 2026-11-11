@@ -20,7 +20,7 @@ global.fetch = async (url, opts = {}) => {
   if (u.endsWith('/api/animals/adopt/') && opts.method === 'POST') return json({ data: JSON.parse(opts.body).species === 'Dog' ? listing : [] });
   if (u.includes('/api/animals/adopted')) return json({ data: [] });
   if (u.includes('/api/photos/')) return json({ large: [] });
-  if (/\/api\/animals\/adopt\/\d+$/.test(u)) return json({ primaryBreed: 'Mix', tags: [] });
+  if (/\/api\/animals\/adopt\/\d+$/.test(u)) return json({ primaryBreed: 'Mix', location: 'Kennel', tags: [] });
   return realFetch(url, opts);
 };
 

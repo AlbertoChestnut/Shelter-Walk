@@ -16,4 +16,16 @@ chmod 700 "$BACKUP_DIR"
 sqlite3 "$DB_PATH" ".backup '$BACKUP_DIR/db-$STAMP.sqlite3'"
 gzip "$BACKUP_DIR/db-$STAMP.sqlite3"
 
-find "$BACKUP_DIR" -name 'db-*.sqlite3.gz' -mtime "+$KEEP_DAYS" -delete
+# find's -mtime +N means "more than N+1 days old" (it counts whole days and
+# rounds down), so +13 is what keeps 14 days.
+PRUNE_MTIME="+$((KEEP_DAYS - 1))"
+find "$BACKUP_DIR" -name 'db-*.sqlite3.gz' -mtime "$PRUNE_MTIME" -delete
+# The copies taken before each deploy (pre-deploy-<UTC timestamp>/: a code
+# tarball and a copy of the database) follow the same 14-day policy.
+# Create them as the dogwalk user (sudo -u dogwalk mkdir ..., or chown -R
+# dogwalk: the folder afterwards) so this script, which runs as dogwalk, can
+# prune them. One it can't remove (left root-owned) is reported but never
+# stops the nightly backup above from being kept.
+if ! find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -name 'pre-deploy-*' -mtime "$PRUNE_MTIME" -exec rm -rf -- {} +; then
+  echo "backup-db: some pre-deploy-* folders could not be removed (owned by root?). Prune them as root, or create them as dogwalk." >&2
+fi

@@ -1,39 +1,12 @@
 // The Settings tab: lists every discovered module (app/modules/*) with a
 // toggle and any config fields it declares, and saves changes straight
 // through -- a module takes effect (or stops) on its very next request/job
-// tick, no restart. Its own small IIFE, same reasoning as staff.js's own
-// comment: no module system to import from, so the api()/escapeHtml()
-// helpers are copied rather than shared.
+// tick, no restart. Its own small IIFE; requests go through the shared
+// helper in js/http-errors.js (friendly errors, signed-out bar).
 (function () {
   'use strict';
 
-  async function api(path, opts = {}) {
-    const { timeout = 20000, ...fetchOpts } = opts;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    let res;
-    try {
-      res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...fetchOpts, signal: controller.signal });
-    } catch (err) {
-      clearTimeout(timer);
-      throw new Error(err.name === 'AbortError' ? "That's taking too long." : "Couldn't reach the server.");
-    }
-    clearTimeout(timer);
-    const isJson = res.headers.get('content-type')?.includes('application/json');
-    const body = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) throw new Error(httpErrorMessage(res.status, body));
-    return body;
-  }
-  // Same wording as app.js's httpErrorMessage(): a 4xx's own `error` (written
-  // for people), else a plain line -- never "Request failed (500)".
-  function httpErrorMessage(status, body) {
-    if (status < 500 && body && typeof body.error === 'string' && body.error) return body.error;
-    if (status === 404) return "That couldn't be found. It may have been removed.";
-    if (status === 401 || status === 403) return "You don't have access to that. Reload the page to sign in again.";
-    if (status === 429) return 'Too many tries in a row. Wait a moment and try again.';
-    if (status >= 502 && status <= 504) return "The server isn't responding right now. Try again in a minute.";
-    return 'Something went wrong on our end. Try again in a moment.';
-  }
+  const api = (path, opts) => window.ShelterHttp.request(path, opts);
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }

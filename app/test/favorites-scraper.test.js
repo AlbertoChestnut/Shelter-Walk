@@ -26,7 +26,7 @@ global.fetch = async (url, opts = {}) => {
   if (u.includes('/api/animals/adopted')) return json({ data: adopted.map((id) => ({ shelterBuddyId: id })) });
   if (u.includes('/api/photos/')) return json({ large: [] });
   const m = /\/api\/animals\/adopt\/(\d+)$/.exec(u);
-  if (m) return json({ primaryBreed: 'Mix', tags: pendingIds.has(Number(m[1])) ? [PENDING] : [] });
+  if (m) return json({ primaryBreed: 'Mix', location: 'Kennel', tags: pendingIds.has(Number(m[1])) ? [PENDING] : [] });
   return realFetch(url, opts);
 };
 

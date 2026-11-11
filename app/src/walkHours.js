@@ -11,7 +11,7 @@
 // means no walking-hours limit at all (the API tests use it so they pass at
 // any time, including walks that run past midnight); a day staff closed is
 // still closed then.
-const SHELTER_TZ = 'America/New_York';
+const { SHELTER_TZ } = require('./constants');
 
 function parseHours(spec) {
   const m = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
@@ -92,17 +92,27 @@ const HOURS_LABEL = `${OPEN_LABEL} to ${CLOSE_LABEL}`;
 // Why a walk from startedAt to endedAt (endedAt may be null for one still
 // running) falls outside walking hours, or null if it's inside them.
 // Other checks (end after start, not in the future) live in server.js.
-function walkHoursError(startedAt, endedAt) {
+// opts.closesAt: the closing time the walk was held to when it started (a
+// later one of the two counts); opts.graceMinutes: how far past closing an
+// end may be (server.js; the message still names the official time).
+function walkHoursError(startedAt, endedAt, { closesAt = null, graceMinutes = 0 } = {}) {
   const start = new Date(startedAt);
   if (Number.isNaN(start.getTime())) return 'That start time is not a valid time.';
   const w = walkWindow(start);
   if (w.closed) return `The shelter is closed that day${w.note ? ` (${w.note})` : ''}, so there are no walks.`;
   if (start < w.opensAt || start >= w.closesAt) return `Walks can only happen from ${w.hoursLabel}.`;
-  if (endedAt != null && new Date(endedAt) > w.closesAt) return `Walks end by ${w.closeLabel}, so the end time can't be later than that.`;
+  if (endedAt != null) {
+    const stored = closesAt && Number.isFinite(closesAt.getTime()) ? closesAt.getTime() : -Infinity;
+    const closesMs = Math.max(w.closesAt.getTime(), stored);
+    if (new Date(endedAt).getTime() > closesMs + graceMinutes * 60000) {
+      const label = closesMs === w.closesAt.getTime() ? w.closeLabel : fmtMinutes(shelterClock(closesMs).minutes);
+      return `Walks end by ${label}, so the end time can't be later than that.`;
+    }
+  }
   return null;
 }
 
 module.exports = {
-  walkWindow, walkHoursError, setScheduleSource, shelterClock, shelterTimeToDate, fmtMinutes, parseHours,
-  OPEN_MINUTES, CLOSE_MINUTES, OPEN_LABEL, CLOSE_LABEL, HOURS_LABEL
+  walkWindow, walkHoursError, setScheduleSource, shelterClock, shelterTimeToDate, fmtMinutes,
+  OPEN_MINUTES, CLOSE_MINUTES, CLOSE_LABEL, HOURS_LABEL
 };

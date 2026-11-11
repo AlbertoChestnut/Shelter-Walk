@@ -1,4 +1,4 @@
-// A server-side port of the play group note editor's auto-tag matcher
+// A server-side port of the playgroup note editor's auto-tag matcher
 // (public/js/pg-tags.js's findMatches, added this session) for free text
 // that isn't being typed into a live editor: given a video's title +
 // description and the current dog roster, finds every (1-3 word) phrase

@@ -26,7 +26,7 @@ function video(file) {
     await p.goto(base, { waitUntil: 'networkidle' });
     await p.click('.tab-btn[data-tab="walk"]');
     await p.waitForSelector('#appDialogOk', { state: 'visible', timeout: 15000 });
-    ok(/not in the database anymore/.test(await p.textContent('#appDialogMessage')), 'warning popup shows first');
+    ok(/isn't on the shelter's site anymore/.test(await p.textContent('#appDialogMessage')), 'warning popup shows first');
     await p.screenshot({ path: h.shot('ret0.png') });
     await p.click('#appDialogCancel'); await p.waitForTimeout(800);
     ok(!(await p.$('.walk-confirm')), 'Scan again goes back instead of opening the dog');

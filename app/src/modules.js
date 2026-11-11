@@ -16,6 +16,8 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cron = require('node-cron');
+const asyncRoute = require('./asyncRoute');
+const { SHELTER_TZ } = require('./constants');
 
 function requireStaff(req, res, next) {
   if (req.headers['x-auth-staff'] !== '1') return res.status(403).json({ error: 'Staff only.' });
@@ -87,7 +89,7 @@ function migrate(db, moduleId, migrations) {
 const jobsInFlight = new Set();
 function schedule(moduleId, state, jobId, cronExpr, fn, opts = {}) {
   if (process.env.DISABLE_MODULE_JOBS) return;
-  const { timezone = 'America/New_York', runOnBoot = false, bootDelayMs = 5000 } = opts;
+  const { timezone = SHELTER_TZ, runOnBoot = false, bootDelayMs = 5000 } = opts;
   const key = `${moduleId}:${jobId}`;
   const run = () => {
     if (!(state.modules.get(moduleId) || {}).enabled) return;
@@ -204,7 +206,7 @@ function registerModuleAdminRoutes(app, modules, state, db) {
   app.get('/api/modules', requireStaff, (req, res) => {
     res.json({ modules: modules.map(shape) });
   });
-  app.put('/api/modules/:id', requireStaff, async (req, res) => {
+  app.put('/api/modules/:id', requireStaff, asyncRoute(async (req, res) => {
     const m = modules.find((x) => x.id === req.params.id);
     if (!m) return res.status(404).json({ error: 'No such module.' });
     const current = state.modules.get(m.id);
@@ -226,7 +228,7 @@ function registerModuleAdminRoutes(app, modules, state, db) {
     db.prepare('UPDATE modules SET enabled = ?, config = ? WHERE id = ?').run(enabled ? 1 : 0, JSON.stringify(config), m.id);
     state.modules.set(m.id, { enabled, config });
     res.json({ module: shape(m) });
-  });
+  }));
 }
 
 module.exports = {

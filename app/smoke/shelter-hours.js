@@ -35,7 +35,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await s.fill('#alertTitle', 'Volunteers please stay home');
     await s.fill('#alertBody', 'The parking lot is flooded.');
     await s.click('#alertForm button[type="submit"]');
-    await s.waitForFunction(() => /Sent/.test(document.getElementById('alertStatus').textContent));
+    await s.waitForFunction(() => /Alert sent/.test(document.getElementById('alertStatus').textContent));
     await s.waitForFunction(() => document.querySelectorAll('#alertList li').length === 2);
     ok(true, 'two alerts listed (the closure one and the typed one)');
     await s.fill('#weeklyRows tr[data-dow="0"] .wk-open', '09:00');
@@ -65,7 +65,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(await p.locator('.update-alert').count() === 2, 'both alerts are in Updates');
     ok(/parking lot is flooded/.test(await p.textContent('.update-alert >> nth=0')), 'the alert message shows');
     await p.click('[data-updates-kind="alert"]');
-    await p.waitForFunction(() => /2 alerts/.test((document.querySelector('.result-count') || {}).textContent || ''));
+    // One kind picked: just the total, no "· 2 alerts" repeating it (audit 2).
+    await p.waitForFunction(() => /^2 updates/.test(((document.querySelector('.result-count') || {}).textContent || '').trim()) && document.querySelectorAll('.card:not(.update-alert) [data-dog-id], .card[data-dog-id]').length === 0);
     ok(true, 'the Alerts chip filters to alerts');
     await p.screenshot({ path: h.shot('updates-alerts.png') });
 

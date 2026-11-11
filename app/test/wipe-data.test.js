@@ -57,6 +57,17 @@ test('will not wipe without the typed confirmation', async () => {
   db.close();
 });
 
+test('not while a walk is open (audit2): the dog would look free while still out', async () => {
+  const r = await call('DELETE', '/api/me/data', { user: WIPER, body: { confirm: 'DELETE' } });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /still out with Fido/);
+  const db = new Database(dbFile);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM walks WHERE user_id = ?').get(ids.wiper).c, 3, 'nothing touched');
+  // The walker cancels it; the rest of this file runs without one open.
+  db.prepare('DELETE FROM walks WHERE user_id = ? AND ended_at IS NULL').run(ids.wiper);
+  db.close();
+});
+
 test('staff can wipe their own walk data too (unlike full account deletion)', async () => {
   const db = new Database(dbFile);
   const now = new Date().toISOString();

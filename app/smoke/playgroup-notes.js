@@ -1,4 +1,4 @@
-// Play group notes: the button on every dog's profile, the full-screen editor,
+// Playgroup notes: the button on every dog's profile, the full-screen editor,
 // the small button and compact notes on the scan screen (no green bar there),
 // adding a dated note with an @ tag picked from the list,
 // the tag showing on the tagged dog as a mention, and tapping through.
@@ -45,32 +45,32 @@ const pgFill = async (p, sel, text) => {
     };
 
     await openProfile(99913);
-    ok(await p.isVisible('#profileSheet .playgroup-notes-btn'), 'every dog has the play group button, PB-only too');
+    ok(await p.isVisible('#profileSheet .playgroup-notes-btn'), 'every dog has the playgroup button, PB-only too');
 
-    // Scan screen: no green bar, small play group button, compact notes.
+    // Scan screen: no green bar, small playgroup button, compact notes.
     await p.goto(base, { waitUntil: 'networkidle' });
     await p.waitForSelector('.avail-card[data-id="99913"]');
     ok(await p.isVisible('.topbar'), 'green bar on Available');
     await p.click('.avail-card[data-id="99913"] .walk-edit-btn');
     await p.waitForSelector('#startWalkBtn');
     ok(!(await p.isVisible('.topbar')), 'no green bar on the scanned-dog screen');
-    ok(await p.isVisible('.notes-card-head .pg-mini-btn'), 'small play group button on the scanned-dog screen');
+    ok(await p.isVisible('.notes-card-head .pg-mini-btn'), 'small playgroup button on the scanned-dog screen');
     await p.waitForSelector('.dog-notes-compact .tip-input');
     ok(!(await p.isVisible('.dog-notes-compact .tip-help')), 'notes are compact there');
     if (SHOTS) await p.screenshot({ path: `${SHOTS}/scan-confirm.png` });
     await p.click('.notes-card-head .pg-mini-btn');
     await p.waitForSelector('#playgroupPopup:not(.hidden) .pg-add-btn');
-    ok((await p.textContent('#playgroupPopupContent')).includes("Potty's play group notes"), 'it opens the notes popup');
+    ok((await p.textContent('#playgroupPopupContent')).includes("Potty's playgroup notes"), 'it opens the notes popup');
     await p.click('#closePlaygroupPopupBtn');
     await p.click('[data-tab="available"]');
     await p.waitForTimeout(400);
     ok(await p.isVisible('.topbar'), 'green bar back on leaving the scan screen');
 
     await openProfile(99911);
-    ok(await p.isVisible('#profileSheet .playgroup-notes-btn'), 'eligible dog: play group button on the profile');
+    ok(await p.isVisible('#profileSheet .playgroup-notes-btn'), 'eligible dog: playgroup button on the profile');
     await p.click('#profileSheet .playgroup-notes-btn');
     await p.waitForSelector('#playgroupPopup:not(.hidden) .pg-add-btn');
-    ok((await p.textContent('#playgroupPopupContent')).includes('No play group notes yet'), 'popup opens, empty');
+    ok((await p.textContent('#playgroupPopupContent')).includes('No playgroup notes yet'), 'popup opens, empty');
     await p.click('.pg-add-btn');
     await p.waitForSelector('#pgEditorOverlay:not(.hidden) .pg-text');
     const box = await p.locator('#pgEditorOverlay .pg-text').boundingBox();
@@ -99,32 +99,46 @@ const pgFill = async (p, sel, text) => {
     await p.click('#playgroupPopup .pg-entry-body .pg-tag');
     await p.waitForSelector('#playgroupPopup .pg-section');
     const bella = await p.textContent('#playgroupPopupContent');
-    ok(bella.includes("Bella's play group notes") && bella.includes("Mentioned in other dogs' notes (1)") && bella.includes("Max's notes"), 'tag opens Bella with the mention');
+    ok(bella.includes("Bella's playgroup notes") && bella.includes("Mentioned in other dogs' notes (1)") && bella.includes("Max's notes"), 'tag opens Bella with the mention');
     if (SHOTS) await p.screenshot({ path: `${SHOTS}/pg-bella.png` });
     await p.click('#playgroupPopup .pg-back');
     await p.waitForTimeout(400);
-    ok((await p.textContent('#playgroupPopupContent')).includes("Max's play group notes"), 'back link returns to Max');
+    ok((await p.textContent('#playgroupPopupContent')).includes("Max's playgroup notes"), 'back link returns to Max');
 
     // Edit keeps the tag as @Bella and round-trips it.
     await p.click('#playgroupPopup .pg-entry [data-act="edit"]');
     await p.waitForSelector('#pgEditorOverlay:not(.hidden) .pg-text');
     const editText = await pgText(p, '#pgEditorOverlay .pg-text');
     ok(editText.includes('@Bella for 20') && !editText.includes('@['), 'editor shows @Bella, not the raw id');
+    // A long note with blank lines, typed with pauses so the auto-tag rescan
+    // re-renders: the caret has to stay put (it used to jump back one
+    // character per blank line above it, splitting the "@" mid-word).
+    await pgFill(p, ta, 'One.');
+    for (const line of ['Two.', 'Three.', 'Played with']) {
+      await p.waitForTimeout(500); await p.keyboard.press('Enter');
+      await p.waitForTimeout(500); await p.keyboard.press('Enter');
+      await p.waitForTimeout(500); await p.keyboard.type(line);
+    }
+    await p.waitForTimeout(500); await p.keyboard.type(' @');
+    await p.waitForTimeout(500); await p.keyboard.type('Bel');
+    ok(await p.isVisible('#pgEditorOverlay .pg-suggest:not(.hidden) .pg-suggest-item'), '@ still suggests after blank lines and pauses');
+    ok(await pgText(p, ta) === 'One.\n\nTwo.\n\nThree.\n\nPlayed with @Bel', 'caret stays put through rescans');
+    await p.keyboard.press('Escape');
     await pgFill(p, '#pgEditorOverlay .pg-text', editText + ' Better with @Bella than most.');
     await p.click('#pgEditorOverlay [data-act="save"]');
     await p.waitForTimeout(500);
     const notes = await (await fetch(base + '/api/dogs/99911/playgroup-notes', { headers: { 'x-auth-email': EMAIL } })).json();
     ok(notes.notes[0].body.includes('@[99912] for 20') && notes.notes[0].body.includes('Better with @[99912] than'), 'saved with the tags as ids');
 
-    // During play group: the button on the active screen, and a note box
-    // (with tagging) on the end screen that saves to play group notes.
+    // During playgroup: the button on the active screen, and a note box
+    // (with tagging) on the end screen that saves to playgroup notes.
     await p.close();
     const started = await (await fetch(base + '/api/walks/start', { method: 'POST', headers: { 'content-type': 'application/json', 'x-auth-email': EMAIL }, body: JSON.stringify({ dogId: 99912, userId: me.id, activity: 'playgroup', location: 'C' }) })).json();
-    ok(started.walkId || started.id, 'started play group with Bella');
+    ok(started.walkId || started.id, 'started playgroup with Bella');
     const q = await ctx.newPage(); q.on('pageerror', (e) => errs.push(e.message));
     await q.goto(base, { waitUntil: 'networkidle' });
     await q.waitForSelector('#endWalkBtn');
-    ok(await q.isVisible('#walkPlaygroupBtn'), 'active play group: play group notes button shown');
+    ok(await q.isVisible('#walkPlaygroupBtn'), 'active playgroup: playgroup notes button shown');
     await q.click('#endWalkBtn');
     await q.waitForSelector('#walkPlaygroupNote .pg-text');
     await q.click('#walkPlaygroupNote .pg-text');

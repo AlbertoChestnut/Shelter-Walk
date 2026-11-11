@@ -1,4 +1,4 @@
-// Play group desk (/playgroup) on a computer screen: pick a dog, write a
+// Playgroup desk (/playgroup) on a computer screen: pick a dog, write a
 // backdated note with an @ tag using only the keyboard, the date carries over
 // to the next note, move a note to another day, All sessions + Excel export.
 // Also the phone's Yesterday chip and tap-the-date-to-move.
@@ -98,7 +98,7 @@ const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); retur
     const wb = new ExcelJS.Workbook();
     const fail = await dl.failure(); if (fail) throw new Error('download failed: ' + fail + ' ' + dl.url());
     await wb.xlsx.readFile(await dl.path());
-    const sheet = wb.getWorksheet('Play group notes');
+    const sheet = wb.getWorksheet('Playgroup notes');
     ok(sheet.rowCount === 2 && sheet.getRow(2).getCell(5).value === 'Great with @Juniper, then tired.', `Excel export has the filtered notes (${dl.suggestedFilename()})`);
     await p.click('#sessionRows [data-open-dog="99921"]');
     await p.waitForFunction(() => document.querySelector('#dogPane h2') && document.querySelector('#dogPane h2').textContent === 'Biscuit');

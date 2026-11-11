@@ -136,7 +136,7 @@ const run = (sql, ...args) => { const db = new Database(DB); try { return db.pre
     swap = true;
     await p.click('#extendWalkBtn');
     await p.waitForSelector('#newBuildBanner', { timeout: 5000 });
-    ok(/reload when you finish/i.test(await p.textContent('#newBuildBanner')), 'mid-walk: "A new version is ready, reload when you finish"');
+    ok(/A new version is ready\. Reload when you're done\./.test(await p.textContent('#newBuildBanner')), 'mid-walk: "A new version is ready. Reload when you\'re done."');
     await p.waitForTimeout(500);
     ok(loads === 1 && await p.isVisible('#endWalkBtn'), 'and the walk screen stays (no reload)');
     await p.screenshot({ path: h.shot('03-new-build-banner.png') });

@@ -1,4 +1,4 @@
-// Play group notes, shared by the phone app (app.js) and the desk page
+// Playgroup notes, shared by the phone app (app.js) and the desk page
 // (playgroup.js): "@" tagging of other dogs, showing tags, and the date row.
 //
 // A note's body stores a tag as @[dogId]. In an editor it reads "@Name";
@@ -12,6 +12,64 @@
     return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   const nameMatches = (dog, q) => [dog.name, ...(dog.previousNames || [])].some((n) => String(n).toLowerCase().includes(q));
+
+  // A dog's small round photo for a pick list, so two dogs with the same
+  // name can be told apart. The list size comes from the server's thumbs;
+  // data-full is the full photo the hover preview below shows.
+  function thumbHtml(d) {
+    if (!d.photoUrl || d.photoUrl.startsWith('/dog-silhouettes/')) {
+      return `<img class="pg-thumb" src="${esc(d.photoUrl || `/dog-silhouettes/${d.id}.svg`)}" alt="" loading="lazy" />`;
+    }
+    const small = d.photoUrl.replace(/^\/cached-images\/(\d+\.jpg)/, '/cached-images/thumbs/$1');
+    return `<img class="pg-thumb" src="${esc(small)}" data-full="${esc(d.photoUrl)}" data-fallback="/dog-silhouettes/${d.species === 'cat' ? 'cat-' : ''}${Number(d.id) || 0}.svg" alt="" loading="lazy" />`;
+  }
+  // A photo that won't load (gone from the cache, or the shelter's link is
+  // dead) shows the drawn silhouette instead of a blank circle. 'error'
+  // doesn't bubble, so this listens in the capture phase; one try only.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.classList.contains('pg-thumb')) return;
+    if (img.dataset.fallbackApplied || !img.dataset.fallback) return;
+    img.dataset.fallbackApplied = '1';
+    delete img.dataset.full;
+    img.src = img.dataset.fallback;
+  }, true);
+
+  // Hovering a .pg-thumb with a mouse shows the photo large beside it. One
+  // listener for the whole page, so lists repainted on every keystroke need
+  // no wiring of their own. Skipped where there's no hover (phones).
+  (function wirePhotoPreview() {
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    let pop = null;
+    const hide = () => { if (pop) pop.style.display = 'none'; };
+    document.addEventListener('mouseover', (e) => {
+      const img = e.target.closest && e.target.closest('img.pg-thumb[data-full]');
+      if (!img) return hide();
+      if (!pop) {
+        pop = document.createElement('img');
+        pop.className = 'pg-photo-preview';
+        pop.alt = '';
+        Object.assign(pop.style, {
+          position: 'fixed', zIndex: 200, width: '240px', height: '240px', objectFit: 'cover', borderRadius: '12px',
+          border: '3px solid var(--card-bg, #fff)', boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)', pointerEvents: 'none', background: 'var(--border, #ddd)'
+        });
+        document.body.appendChild(pop);
+      }
+      if (pop.getAttribute('src') !== img.dataset.full) pop.src = img.dataset.full;
+      const r = img.getBoundingClientRect();
+      const size = 240, gap = 12;
+      // Beside the list (right of it when there's room, otherwise left),
+      // level with the row, kept on screen.
+      const box = img.closest('.pg-suggest, .dog-list') || img;
+      const b = box.getBoundingClientRect();
+      const left = b.right + gap + size <= window.innerWidth ? b.right + gap : Math.max(8, b.left - gap - size);
+      const top = Math.min(Math.max(8, r.top + r.height / 2 - size / 2), window.innerHeight - size - 8);
+      pop.style.left = `${left}px`;
+      pop.style.top = `${top}px`;
+      pop.style.display = 'block';
+    });
+    document.addEventListener('scroll', hide, true);
+  })();
 
   // Turn a YouTube link into a clickable one. Only YouTube: letting every
   // URL in a note become a link would make notes an easy spot to plant a
@@ -116,7 +174,10 @@
   // "Today" is the shelter's date (America/New_York), whatever time zone this
   // device is in -- the server rejects a note dated after the shelter's
   // today, so a device ahead of New York (or a UTC clock) must not offer it.
-  const shelterKeyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+  // This page's copy of GET /api/config's shelterTz (src/constants.js);
+  // test/audit3-eng.test.js fails if it drifts.
+  const SHELTER_TZ = 'America/New_York';
+  const shelterKeyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: SHELTER_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
   const today = () => shelterKeyFmt.format(new Date()); // YYYY-MM-DD
   const daysAgo = (n) => {
     const d = new Date(`${today()}T12:00:00Z`);
@@ -131,14 +192,14 @@
     return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString(undefined, opts);
   }
 
-  // The date of the play group: Today / Yesterday chips and a picker for
+  // The date of the playgroup: Today / Yesterday chips and a picker for
   // anything older, so backdating is one or two taps.
   function dateRowHtml(date) {
     return `<div class="pg-date-row">
-      <span class="small muted">Play group date</span>
+      <span class="small muted">Playgroup date</span>
       <button type="button" class="pg-day-chip" data-pg-day="0">Today</button>
       <button type="button" class="pg-day-chip" data-pg-day="1">Yesterday</button>
-      <input type="date" class="pg-date" value="${esc(date || today())}" max="${today()}" aria-label="Play group date" />
+      <input type="date" class="pg-date" value="${esc(date || today())}" max="${today()}" aria-label="Playgroup date" />
     </div>`;
   }
   function wireDateRow(root) {
@@ -219,10 +280,15 @@
     (function walk(node) {
       if (startSet && endSet) return;
       if (node.nodeType === 3) {
-        const len = node.nodeValue.length;
-        if (!startSet && remaining <= len) { range.setStart(node, Math.max(0, remaining)); startSet = true; }
+        // Offsets are into richText(), which leaves out renderModel()'s
+        // caret anchors -- so skip them here too, or every anchor before
+        // the caret would put it back one character early.
+        const v = node.nodeValue;
+        const len = v.replace(/﻿/g, '').length;
+        const raw = (n) => { let i = 0; for (let seen = 0; i < v.length && seen < n; i += 1) if (v[i] !== '﻿') seen += 1; return i; };
+        if (!startSet && remaining <= len) { range.setStart(node, raw(Math.max(0, remaining))); startSet = true; }
         else if (!startSet) remaining -= len;
-        if (!endSet && endRemaining <= len) { range.setEnd(node, Math.max(0, endRemaining)); endSet = true; }
+        if (!endSet && endRemaining <= len) { range.setEnd(node, raw(Math.max(0, endRemaining))); endSet = true; }
         else if (!endSet) endRemaining -= len;
         return;
       }
@@ -453,6 +519,35 @@
     update();
   }
 
+  // Who can be tagged: every dog still here (or in foster), plus dogs that
+  // left in the last 3 months -- a note often looks back at a dog who has
+  // just gone. `keep` narrows by species/activity. The ones who left are
+  // marked `gone` and listed after everyone still here.
+  const GONE_MONTHS = 3;
+  function taggableFrom(dogs, keep = () => true) {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - GONE_MONTHS);
+    return (dogs || []).filter(keep).flatMap((d) => {
+      if (d.stillListed || d.location === 'In Foster') return [{ ...d, gone: false }];
+      return d.leftAt && new Date(d.leftAt) >= cutoff ? [{ ...d, gone: true }] : [];
+    });
+  }
+  // Pick-list order: dogs still here first, then the gone ones, most
+  // recently left first. Within those, names starting with what's typed
+  // come before ones that merely contain it.
+  function tagOrder(q = '') {
+    const starts = (d) => Number(!d.name.toLowerCase().startsWith(q));
+    return (a, b) => Number(!!a.gone) - Number(!!b.gone)
+      || (a.gone && b.gone ? String(b.leftAt || '').localeCompare(String(a.leftAt || '')) : 0)
+      || starts(a) - starts(b) || a.name.localeCompare(b.name);
+  }
+  // The small line next to a name in a pick list: the kennel, or when a
+  // gone dog left.
+  function whereHtml(d) {
+    if (d.gone) return `<span class="pg-suggest-gone">Left ${d.leftAt ? esc(fmtDate(shelterKeyFmt.format(new Date(d.leftAt)))) : 'the shelter'}</span>`;
+    return d.kennelLocation ? `🏠 ${esc(d.kennelLocation)}` : '';
+  }
+
   // Wires "@" tagging on a rich text box. `box` is the suggestion list's
   // element; getDogs() returns (a promise of) the dogs that can be tagged.
   function wireTagPicker(el, box, { getDogs, picks = new Map(), ownId = null, onChange } = {}) {
@@ -464,10 +559,10 @@
     let sel = 0;
     const close = () => { box.classList.add('hidden'); at = -1; };
     const paint = () => {
-      box.innerHTML = shown.map((d, i) => `<button type="button" class="pg-suggest-item${i === sel ? ' active' : ''}" role="option" aria-selected="${i === sel}" data-id="${d.id}">
-          <img src="${d.photoUrl ? esc(d.photoUrl.replace(/^\/cached-images\/(\d+\.jpg)/, '/cached-images/thumbs/$1')) : `/dog-silhouettes/${d.id}.svg`}" alt="" loading="lazy" />
+      box.innerHTML = shown.map((d, i) => `<button type="button" class="pg-suggest-item${i === sel ? ' active' : ''}${d.gone ? ' gone' : ''}" role="option" aria-selected="${i === sel}" data-id="${d.id}">
+          ${thumbHtml(d)}
           <span class="pg-suggest-name">${esc(d.name)}</span>
-          <span class="small muted nowrap">🏠 ${esc(d.kennelLocation || '?')}</span>
+          <span class="small muted nowrap">#${esc(d.id)} · ${d.gone ? whereHtml(d) : `🏠 ${esc(d.kennelLocation || '?')}`}</span>
         </button>`).join('');
     };
     const update = () => {
@@ -477,7 +572,7 @@
       if (!m) return close();
       const q = m[1].toLowerCase();
       shown = dogs.filter((d) => String(d.id) !== String(ownId) && nameMatches(d, q))
-        .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || a.name.localeCompare(b.name))
+        .sort(tagOrder(q))
         .slice(0, 6);
       if (!shown.length) return close();
       at = upto.length - m[1].length - 1;
@@ -562,7 +657,7 @@
           if (!trimmed) continue;
           const needle = trimmed.toLowerCase();
           if (declined.has(needle)) continue;
-          const matches = dogs.filter((d) => String(d.id) !== String(ownId) && d.name.toLowerCase() === needle);
+          const matches = dogs.filter((d) => String(d.id) !== String(ownId) && d.name.toLowerCase() === needle).sort(tagOrder());
           if (matches.length) {
             const trimStart = start + raw.indexOf(trimmed);
             found.push({ start: trimStart, end: trimStart + trimmed.length, text: trimmed, matches });
@@ -608,9 +703,10 @@
       const rect = span.getBoundingClientRect();
       popover = document.createElement('div');
       popover.className = 'pg-suggest pg-autotag-pop';
-      popover.innerHTML = `${matches.map((d) => `<button type="button" class="pg-suggest-item" data-id="${d.id}">
+      popover.innerHTML = `${matches.map((d) => `<button type="button" class="pg-suggest-item${d.gone ? ' gone' : ''}" data-id="${d.id}">
+          ${thumbHtml(d)}
           <span class="pg-suggest-name">Tag as ${esc(d.name)}</span>
-          <span class="small muted nowrap">${d.kennelLocation ? `🏠 ${esc(d.kennelLocation)}` : ''}</span>
+          <span class="small muted nowrap">#${esc(d.id)}${whereHtml(d) ? ` · ${whereHtml(d)}` : ''}</span>
         </button>`).join('')}
         <button type="button" class="pg-suggest-item pg-autotag-decline">${esc(declineLabel)}</button>`;
       document.body.appendChild(popover);
@@ -642,25 +738,62 @@
     let timer = null;
     function rescan() {
       const text = richText(el);
-      const caret = caretOffset(el);
+      // Only touch the caret while this box still has focus. On blur (tap,
+      // click or Tab into another box) or a debounce firing after focus
+      // moved, setting the selection here would pull the cursor back into
+      // this box, and the next keystrokes meant for the other box (say, a
+      // private note) would land in this one. -1 = no word is "being typed".
+      const focused = document.activeElement === el;
+      const caret = focused ? caretOffset(el) : -1;
       const found = findMatches(text, caret);
       // renderModel()'s span attrs go through setAttribute, which does its
       // own escaping -- the raw JSON (not esc()'d) is correct here.
       const ranges = found.map((f) => ({
         start: f.start, end: f.end, className: 'pg-autotag',
-        attrs: { 'data-start': f.start, 'data-end': f.end, 'data-matches': JSON.stringify(f.matches.map((d) => ({ id: d.id, name: d.name, kennelLocation: d.kennelLocation || '' }))) }
+        attrs: { 'data-start': f.start, 'data-end': f.end, 'data-matches': JSON.stringify(f.matches.map((d) => ({ id: d.id, name: d.name, kennelLocation: d.kennelLocation || '', photoUrl: d.photoUrl || '', gone: !!d.gone, leftAt: d.leftAt || null }))) }
       }));
       renderModel(el, text, ranges);
-      setCaretOffset(el, caret);
+      if (focused && document.activeElement === el) setCaretOffset(el, caret);
     }
     el.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(rescan, SCAN_DEBOUNCE); });
     el.addEventListener('pg-pasted', () => { clearTimeout(timer); rescan(); });
     el.addEventListener('blur', () => { clearTimeout(timer); rescan(); });
   }
 
+  // ---------- Unsaved notes ----------
+  // Every note box that's open for writing signs up here with how to read
+  // what's in it (`body`) and, when it has one, how to save it. Leaving the
+  // screen with text that wasn't saved asks first (each page has its own
+  // Save / Discard / Keep editing dialog); closing or reloading the page
+  // gets the browser's own "Leave site?" prompt, which can't offer Save.
+  const openNotes = new Set();
+  function guardNote(el, { body, save = null } = {}) {
+    const g = { el, save, start: body().trim() };
+    g.dirty = () => openNotes.has(g) && g.el.isConnected && body().trim() !== g.start;
+    g.forget = () => openNotes.delete(g);
+    g.focus = () => { try { g.el.focus(); } catch (e) { /* gone */ } };
+    openNotes.add(g);
+    return g;
+  }
+  // The unsaved notes inside `within` (an element or a list of them; the
+  // whole page when left out).
+  function unsavedNotes(within) {
+    openNotes.forEach((g) => { if (!g.el.isConnected) openNotes.delete(g); });
+    const scopes = within == null ? [document.body] : [].concat(within);
+    return [...openNotes].filter((g) => g.dirty() && scopes.some((s) => s && s.contains(g.el)));
+  }
+  // (Not in the unit tests' bare window.)
+  if (window.addEventListener) {
+    window.addEventListener('beforeunload', (e) => {
+      if (!unsavedNotes().length) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+  }
+
   window.PgTags = {
     TAG_RE, esc, pickLabel, toEditable, fromEditable, bodyHtml, bodyText, bodySnippet, linkifyYouTube,
     fmtDate, today, daysAgo, dateRowHtml, wireDateRow, wireTagPicker, mdToolbarHtml, wireMarkdownTools, wireAutoTagger,
-    richText
+    richText, thumbHtml, taggableFrom, guardNote, unsavedNotes
   };
 })();

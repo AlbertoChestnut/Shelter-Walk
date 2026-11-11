@@ -4,35 +4,10 @@
 (function () {
   'use strict';
 
-  // Same shape as app.js's api() helper (timeout + friendly network errors),
-  // copied rather than shared since there's no module system to import from.
-  async function api(path, opts = {}) {
-    const { timeout = 20000, ...fetchOpts } = opts;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    let res;
-    try {
-      res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...fetchOpts, signal: controller.signal });
-    } catch (err) {
-      clearTimeout(timer);
-      throw new Error(err.name === 'AbortError' ? "That's taking too long." : "Couldn't reach the server.");
-    }
-    clearTimeout(timer);
-    const isJson = res.headers.get('content-type')?.includes('application/json');
-    const body = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) throw new Error(httpErrorMessage(res.status, body));
-    return body;
-  }
-  // Same wording as app.js's httpErrorMessage(): a 4xx's own `error` (written
-  // for people), else a plain line -- never "Request failed (500)".
-  function httpErrorMessage(status, body) {
-    if (status < 500 && body && typeof body.error === 'string' && body.error) return body.error;
-    if (status === 404) return "That couldn't be found. It may have been removed.";
-    if (status === 401 || status === 403) return "You don't have access to that. Reload the page to sign in again.";
-    if (status === 429) return 'Too many tries in a row. Wait a moment and try again.';
-    if (status >= 502 && status <= 504) return "The server isn't responding right now. Try again in a minute.";
-    return 'Something went wrong on our end. Try again in a moment.';
-  }
+  // Timeout, friendly errors and the signed-out bar all come from the shared
+  // helper (js/http-errors.js), the same one staff-settings.js and the
+  // Playgroup desk use.
+  const api = (path, opts) => window.ShelterHttp.request(path, opts);
 
   function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -98,15 +73,61 @@
     currentZoom = 1;
     document.documentElement.style.zoom = 1;
   }
+  // Only on a big screen (1600px and up) or with TV mode switched on: on a
+  // phone or a laptop (1280x720, 1440x900), shrinking to fit made 13px text
+  // read like 8px. TV mode is ignored under 600px wide, where its button is
+  // hidden: a remembered TV mode must not shrink a phone with no way back.
+  const FIT_MIN_WIDTH = 1600;
+  const TV_MIN_WIDTH = 600;
+  let tvMode = false;
+  try { tvMode = localStorage.getItem('staffTvMode') === '1'; } catch (e) { /* private mode */ }
+  function fitAllowed() {
+    if (window.innerWidth >= FIT_MIN_WIDTH) return true;
+    return tvMode && window.innerWidth >= TV_MIN_WIDTH;
+  }
+  // The page's layout height at the current zoom: the bottom of #app, in
+  // CSS px (shown on screen at that times the zoom). The document's
+  // scrollHeight can't be used: body's min-height: 100vh keeps it from ever
+  // dropping, so the zoom only ever shrank and never grew back.
+  function pageLayoutHeight() {
+    const app = document.getElementById('app');
+    return app ? app.offsetTop + app.offsetHeight : 0;
+  }
+  const clampZoom = (z) => Math.min(FIT_MAX_ZOOM, Math.max(FIT_MIN_ZOOM, z));
   function fitToScreen() {
-    if (!zoomCapable || !isLiveTabVisible()) return;
-    const scrollHeight = document.documentElement.scrollHeight;
-    if (!scrollHeight) return;
-    const naturalHeight = scrollHeight / currentZoom;
-    const target = Math.min(FIT_MAX_ZOOM, Math.max(FIT_MIN_ZOOM, window.innerHeight / naturalHeight));
-    if (Math.abs(target - currentZoom) < 0.01) return;
-    currentZoom = target;
-    document.documentElement.style.zoom = target;
+    if (!zoomCapable) return;
+    if (!isLiveTabVisible() || !fitAllowed()) { resetZoom(); return; }
+    if (!pageLayoutHeight()) return;
+    // Zooming changes the layout width, so text rewraps and the height moves
+    // with it: settle in a few synchronous steps (no paint in between, so no
+    // flash), keeping the largest zoom tried that fits.
+    const screenH = window.innerHeight;
+    const apply = (zoom) => {
+      document.documentElement.style.zoom = zoom;
+      // The hourly chart is drawn to its container's width, which the zoom
+      // just changed: redraw it before measuring (it sets the chart's height).
+      if (lastLiveData) renderSparkline(lastLiveData.hourlyToday);
+    };
+    let z = clampZoom(screenH / pageLayoutHeight());
+    let best = null;
+    for (let i = 0; i < 5; i += 1) {
+      apply(z);
+      const shown = pageLayoutHeight() * z;
+      let next;
+      if (shown <= screenH + 1) {
+        best = best == null ? z : Math.max(best, z);
+        next = clampZoom(screenH / pageLayoutHeight());
+        if (next - z < 0.01) break;
+      } else {
+        next = clampZoom(z * (screenH / shown) * 0.995);
+        if (best != null && next <= best) break;
+        if (z <= FIT_MIN_ZOOM) break;
+      }
+      z = next;
+    }
+    const final = best == null ? z : best;
+    if (final !== z) apply(final);
+    currentZoom = final;
   }
   let resizeTimer = null;
   window.addEventListener('resize', () => {
@@ -137,7 +158,7 @@
       document.getElementById('reportsSection').classList.toggle('hidden', section !== 'reports');
       document.getElementById('hoursSection').classList.toggle('hidden', section !== 'hours');
       document.getElementById('settingsSection').classList.toggle('hidden', section !== 'settings');
-      if (section === 'hours') loadSchedule();
+      if (section === 'hours') { loadSchedule(); syncWeeklyScrollHint(); }
       if (section === 'settings' && window.loadModuleSettings) window.loadModuleSettings();
       if (section === 'live') fitToScreen();
       else resetZoom();
@@ -173,8 +194,13 @@
     return { pct, state: 'good', note: '' };
   }
 
+  // "25m", or "2h 5m" (not "125m") past an hour; "2h" on the hour.
   function formatMinutes(seconds) {
-    return `${Math.round(seconds / 60)}m`;
+    const total = Math.round(seconds / 60);
+    if (total < 60) return `${total}m`;
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    return m ? `${h}h ${m}m` : `${h}h`;
   }
 
   function entryHtml(entry, activityAverages) {
@@ -223,12 +249,40 @@
     return `${h - 12}p`;
   }
 
-  // The shelter only ever lets a walk/activity start from 7am to ~7pm
-  // (walkHours.js), so hours outside that are always zero in practice --
-  // showing all 24 just wastes most of the chart on a flat empty stretch.
-  // Restricting the axis to the hours that can ever have data lets the real
-  // bars actually fill the width.
-  const DISPLAY_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 7am..7pm
+  // The x axis runs over today's walking hours (staff set them on Hours &
+  // alerts; 7am to 7pm by default), widened to take in any hour that has
+  // engagements, so a 6:30am walk always gets its bar. Showing all 24 hours
+  // would waste most of the chart on a flat empty stretch.
+  const DEFAULT_AXIS = { first: 7, last: 19 };
+  let dayAxis = null; // today's { first, last } hour, from /api/shelter/today
+  const shelterHourFmt = new Intl.DateTimeFormat('en-US', { timeZone: SHELTER_TZ, hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });
+  function shelterHourOf(iso) {
+    const parts = Object.fromEntries(shelterHourFmt.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+    return { hour: Number(parts.hour) % 24, minute: Number(parts.minute) };
+  }
+  async function loadDayAxis() {
+    try {
+      const { today } = await api('/api/shelter/today');
+      if (!today || today.closed) { dayAxis = null; return; }
+      const open = shelterHourOf(today.opensAt);
+      const close = shelterHourOf(today.closesAt);
+      const span = (new Date(today.closesAt) - new Date(today.opensAt)) / 3600000;
+      // "All day" (or a window that wraps) tells us nothing useful: keep the default.
+      dayAxis = span > 0 && span < 20 ? { first: open.hour, last: close.minute ? close.hour : Math.max(open.hour, close.hour - 1) } : null;
+    } catch (err) { dayAxis = null; }
+    if (lastLiveData) renderSparkline(lastLiveData.hourlyToday);
+  }
+  function displayHours(hourly) {
+    const base = dayAxis || DEFAULT_AXIS;
+    let first = base.first;
+    let last = Math.max(base.last, base.first);
+    hourly.forEach((n, h) => {
+      if (!n) return;
+      first = Math.min(first, h);
+      last = Math.max(last, h);
+    });
+    return Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  }
 
   // Hand-rolled inline SVG bar chart (same house style as app.js's
   // trendChartHtml) -- a y-axis with clean round gridlines and x-axis hour
@@ -238,6 +292,7 @@
   // green) per the dataviz skill's mark spec.
   function renderSparkline(hourlyToday) {
     const hourly = hourlyToday || new Array(24).fill(0);
+    const DISPLAY_HOURS = displayHours(hourly);
     const values = DISPLAY_HOURS.map((h) => hourly[h] || 0);
     const dataMax = Math.max(0, ...values);
     const niceMax = dataMax === 0 ? 2 : Math.ceil(dataMax / 2) * 2;
@@ -269,7 +324,9 @@
       return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(0, barW - 2).toFixed(1)}" height="${height.toFixed(1)}" class="spark-bar"><title>${hourLabel(h)} - ${n} engagement${n === 1 ? '' : 's'}</title></rect>`;
     }).join('');
 
-    const xLabels = [7, 9, 11, 13, 15, 17, 19].map((h) => {
+    // A label every other hour (every third on a long day), from the first.
+    const step = DISPLAY_HOURS.length > 16 ? 3 : 2;
+    const xLabels = DISPLAY_HOURS.filter((h, i) => i % step === 0).map((h) => {
       const i = DISPLAY_HOURS.indexOf(h);
       const x = padL + i * barW + barW / 2;
       return `<text x="${x.toFixed(1)}" y="${H - 2}" class="spark-x-label" text-anchor="middle">${hourLabel(h)}</text>`;
@@ -278,7 +335,7 @@
     const baseline = `<line x1="${padL}" y1="${(padT + plotH).toFixed(1)}" x2="${W}" y2="${(padT + plotH).toFixed(1)}" class="spark-axis-line" />`;
 
     document.getElementById('sparklineBars').innerHTML = `
-      <svg viewBox="0 0 ${W} ${H}" class="spark-svg" role="img" aria-label="Finished engagements per hour they started, today, 7am to 7pm">
+      <svg viewBox="0 0 ${W} ${H}" class="spark-svg" role="img" aria-label="Finished engagements per hour they started, today, ${hourLabel(DISPLAY_HOURS[0])}m to ${hourLabel(DISPLAY_HOURS[DISPLAY_HOURS.length - 1])}m">
         ${gridLines}${bars}${baseline}${xLabels}
       </svg>`;
   }
@@ -305,7 +362,7 @@
     document.getElementById('daycationEntries').innerHTML = list.map((e) => entryHtml(e, activityAverages)).join('');
   }
 
-  const ACTIVITY_TITLES = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Play group' };
+  const ACTIVITY_TITLES = { walk: 'Walk', cuddle: 'Cuddle', matchmaking: 'Matchmaking', playgroup: 'Playgroup' };
   let viewMode = 'location';
 
   function renderGrid(data) {
@@ -353,7 +410,8 @@
       liveSpecies = btn.dataset.species;
       document.querySelectorAll('.species-btn').forEach((b) => b.classList.toggle('active', b === btn));
       document.querySelectorAll('#liveSection .noun-many').forEach((el) => { el.textContent = NOUNS[liveSpecies]; });
-      refreshLive();
+      if (demoMode) renderLive(buildDemoData());
+      else refreshLive();
     });
   });
 
@@ -385,32 +443,59 @@
     fitToScreen();
   }
 
+  // A failed poll leaves the last good numbers up (and their timers ticking),
+  // so a banner on the board itself says they're stale, at every width (the
+  // "Updated" line in the tab bar is hidden on smaller screens).
+  let lastGoodAt = null;
+  function showLiveError(message) {
+    const el = document.getElementById('liveError');
+    if (!message) { el.classList.add('hidden'); el.textContent = ''; return; }
+    const head = lastGoodAt
+      ? `Not updating: this is the board as of ${lastGoodAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}, so times and counts may be out of date.`
+      : "Couldn't load the board.";
+    el.innerHTML = `<strong>${escapeHtml(head)}</strong> <span>${escapeHtml(message)} It keeps trying every few seconds.</span>`;
+    el.classList.remove('hidden');
+    fitToScreen();
+  }
+
   async function refreshLive() {
     if (demoMode) return;
+    // A tab nobody is looking at doesn't poll (it catches up the moment it's
+    // shown again, see visibilitychange below).
+    if (document.hidden) return;
     try {
       const species = liveSpecies;
       const data = await api(`/api/staff/live?species=${encodeURIComponent(species)}`);
-      if (species === liveSpecies && !demoMode) renderLive(data);
+      if (species === liveSpecies && !demoMode) {
+        lastGoodAt = new Date();
+        showLiveError(null);
+        renderLive(data);
+      }
     } catch (err) {
-      document.getElementById('lastUpdated').textContent = err.message;
+      if (demoMode) return;
+      document.getElementById('lastUpdated').textContent = "Couldn't update";
+      showLiveError(err.message);
     }
   }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshLive();
+  });
 
   // ---- Demo mode: a fabricated, clearly-labeled roster for showing the
   // board off (e.g. to the county) without exposing real shelter data.
   // Entirely client-side -- never touches the server or the database. ----
-  const DEMO_ACTIVITY_LABELS = { walk: 'Walk', playgroup: 'Play group', matchmaking: 'Matchmaking', daycation: 'Daycation' };
+  const DEMO_ACTIVITY_LABELS = { walk: 'Walk', cuddle: 'Cuddle', playgroup: 'Playgroup', matchmaking: 'Matchmaking', daycation: 'Daycation' };
   // Made-up "running average" durations for the demo, in the same shape the
   // real /api/staff/live sends -- realistic, on the short side (most walks
   // and sessions are quick), not the old 30-min time-limit-ish numbers.
   const DEMO_AVERAGES = { walk: 18 * 60, cuddle: 15 * 60, matchmaking: 12 * 60, playgroup: 15 * 60, daycation: 360 * 60 };
-  function buildDemoData() {
-    const now = Date.now();
-    // 3 walking, 2 playgroup, 1 matchmaking, 1 daycation = 7, as requested.
-    // Only Rocky is above average (slightly); everyone else is either just
-    // starting out or roughly halfway through, so the board reads as a
-    // normal, calm moment rather than everyone being overdue at once.
-    const roster = [
+  // One made-up roster per species, so the Show switch works in demo mode
+  // too: dogs walk, go to Playgroup and on daycations; cats get cuddles and
+  // matchmaking. "Dogs and cats" shows both.
+  // Dogs: 3 walking, 2 Playgroup, 1 matchmaking, 1 daycation = 7. Only Rocky
+  // is above average (slightly), so the board reads as a normal, calm moment.
+  const DEMO_ROSTERS = {
+    dog: [
       { dogName: 'Buddy', activity: 'walk', location: 'A', minutesAgo: 3 },
       { dogName: 'Luna', activity: 'walk', location: 'B', minutesAgo: 9 },
       { dogName: 'Rocky', activity: 'walk', location: 'C', minutesAgo: 22 },
@@ -418,7 +503,22 @@
       { dogName: 'Max', activity: 'playgroup', location: 'A', minutesAgo: 8 },
       { dogName: 'Daisy', activity: 'matchmaking', location: 'E', minutesAgo: 2 },
       { dogName: 'Charlie', activity: 'daycation', location: 'B', minutesAgo: 150 }
-    ];
+    ],
+    cat: [
+      { dogName: 'Mittens', activity: 'cuddle', location: 'C', minutesAgo: 5, cat: true },
+      { dogName: 'Oliver', activity: 'cuddle', location: 'C', minutesAgo: 11, cat: true },
+      { dogName: 'Cleo', activity: 'matchmaking', location: 'unassigned', minutesAgo: 3, cat: true }
+    ]
+  };
+  // Per-species "today" numbers, so the tiles add up for each switch position.
+  const DEMO_TODAY = {
+    dog: { peak: 6, dogsOut: 19, outs: { 1: 11, 2: 5, 3: 2, '4plus': 1 } },
+    cat: { peak: 2, dogsOut: 6, outs: { 1: 5, 2: 1, 3: 0, '4plus': 0 } }
+  };
+  function buildDemoData(species = liveSpecies) {
+    const now = Date.now();
+    const kinds = species === 'all' ? ['dog', 'cat'] : [species === 'cat' ? 'cat' : 'dog'];
+    const roster = kinds.flatMap((k) => DEMO_ROSTERS[k]);
     const locations = { A: [], B: [], C: [], D: [], E: [], unassigned: [] };
     const daycation = [];
     roster.forEach((r, i) => {
@@ -426,7 +526,7 @@
       const entry = {
         dogId,
         dogName: r.dogName,
-        photoUrl: `/dog-silhouettes/${dogId}.svg`,
+        photoUrl: `/dog-silhouettes/${r.cat ? 'cat-' : ''}${dogId}.svg`,
         activity: r.activity,
         activityLabel: DEMO_ACTIVITY_LABELS[r.activity],
         startedAt: new Date(now - r.minutesAgo * 60000).toISOString(),
@@ -437,17 +537,19 @@
       else locations[r.location].push(entry);
     });
     // A plausible bell-ish curve across the walking day (7am-7pm).
-    const hourlyToday = Array.from({ length: 24 }, (_, h) =>
-      (h >= 7 && h <= 19 ? Math.max(0, Math.round(6 + 5 * Math.sin(((h - 7) / 12) * Math.PI))) : 0));
+    const hourlyToday = Array.from({ length: 24 }, (_, h) => kinds.reduce((sum, k) => sum
+      + (h >= 7 && h <= 19 ? Math.max(0, Math.round(DEMO_TODAY[k].peak * (0.5 + 0.5 * Math.sin(((h - 7) / 12) * Math.PI)))) : 0), 0));
     const walksToday = hourlyToday.reduce((s, n) => s + n, 0);
+    const outsToday = {};
+    for (const key of ['1', '2', '3', '4plus']) outsToday[key] = kinds.reduce((s, k) => s + DEMO_TODAY[k].outs[key], 0);
     return {
       generatedAt: new Date().toISOString(),
       activeWalkerCount: roster.length,
       walksToday,
       walksYesterday: Math.max(1, walksToday - 6),
       hourlyToday,
-      dogsOutToday: 19,
-      outsToday: { 1: 11, 2: 5, 3: 2, '4plus': 1 },
+      dogsOutToday: kinds.reduce((s, k) => s + DEMO_TODAY[k].dogsOut, 0),
+      outsToday,
       daycation,
       activityAverages: DEMO_AVERAGES,
       locations
@@ -458,10 +560,24 @@
     demoMode = on;
     document.getElementById('demoToggleBtn').classList.toggle('active', on);
     document.getElementById('demoBanner').classList.toggle('hidden', !on);
-    if (on) renderLive(buildDemoData());
-    else refreshLive();
+    if (on) { showLiveError(null); renderLive(buildDemoData()); } else refreshLive();
   }
   document.getElementById('demoToggleBtn').addEventListener('click', () => setDemoMode(!demoMode));
+
+  // TV mode: fit the live board to one screen at any width (a TV that
+  // reports itself as 1024 wide, say). Remembered on this browser only.
+  const tvBtn = document.getElementById('tvModeBtn');
+  function syncTvButton() {
+    tvBtn.classList.toggle('active', tvMode);
+    tvBtn.setAttribute('aria-pressed', tvMode ? 'true' : 'false');
+  }
+  tvBtn.addEventListener('click', () => {
+    tvMode = !tvMode;
+    try { localStorage.setItem('staffTvMode', tvMode ? '1' : '0'); } catch (e) { /* private mode */ }
+    syncTvButton();
+    fitToScreen();
+  });
+  syncTvButton();
 
   // Ticks every visible elapsed timer and progress bar from their cached
   // data attributes every second, so the display stays smooth between the
@@ -497,6 +613,8 @@
 
   refreshLive();
   setInterval(refreshLive, 5000);
+  loadDayAxis();
+  setInterval(() => { if (!document.hidden) loadDayAxis(); }, 30 * 60 * 1000); // a new day, new hours
 
   // ==================== Reports ====================
   const fromInput = document.getElementById('reportFrom');
@@ -517,7 +635,7 @@
     return !bad;
   }
   [fromInput, toInput].forEach((el) => el.addEventListener('change', rangeIsValid));
-  speciesSelect.addEventListener('change', () => refreshReport());
+  speciesSelect.addEventListener('change', () => { renderDogChips(); refreshReport(); });
 
   function allSectionKeys() {
     return [...document.querySelectorAll('#sectionsGrid input[type=checkbox]')].map((cb) => cb.value);
@@ -538,23 +656,49 @@
       const { dogs } = await api('/api/staff/dogs');
       dogsIndex = dogs;
       document.getElementById('dogPickerList').innerHTML =
-        dogs.map((d) => `<option value="${escapeHtml(d.name)}" data-id="${d.id}"></option>`).join('');
+        dogs.map((d) => `<option value="${escapeHtml(pickerLabel(d))}"></option>`).join('');
     } catch (err) { /* non-fatal: picker just stays empty */ }
   }
 
+  // Many names repeat (two Dukes, one adopted long ago), so every option
+  // carries the shelter ID and kennel, and the pick is matched on the ID:
+  // "Duke · ID 272583 · kennel E", "Duke · ID 270585 · no longer listed".
+  function pickerLabel(d) {
+    const where = !d.listed ? 'no longer listed' : d.kennel ? `kennel ${d.kennel}` : 'kennel unknown';
+    return `${d.name} · ID ${d.id} · ${where}${d.species === 'cat' ? ' · cat' : ''}`;
+  }
+  // The typed or picked text -> one animal, or an error message.
+  function findPickedDog(text) {
+    const idMatch = /\bID\s*#?(\d+)\b/i.exec(text) || /^#?(\d+)$/.exec(text);
+    if (idMatch) {
+      const byId = dogsIndex.find((d) => String(d.id) === idMatch[1]);
+      return byId ? { dog: byId } : { error: `No animal with ID ${idMatch[1]} found.` };
+    }
+    const same = dogsIndex.filter((d) => d.name.toLowerCase() === text.toLowerCase());
+    if (same.length === 1) return { dog: same[0] };
+    if (same.length > 1) return { error: `${same.length} animals are named "${same[0].name}". Pick one from the list (it shows each one's ID and kennel).` };
+    return { error: `No animal named "${text}" found.` };
+  }
+
+  // A dog picked for a Cats report (or a cat for a Dogs one) is left out
+  // of the report by the server; its chip says so instead of vanishing.
+  function chipOutOfReport(d) {
+    const sp = speciesSelect.value;
+    return sp !== 'all' && (d.species || 'dog') !== sp;
+  }
   function renderDogChips() {
     document.getElementById('dogChips').innerHTML = selectedDogs.map((d) => `
-      <span class="dog-chip">${escapeHtml(d.name)}<button type="button" data-remove="${d.id}" aria-label="Remove ${escapeHtml(d.name)}">×</button></span>
+      <span class="dog-chip${chipOutOfReport(d) ? ' dog-chip-off' : ''}">${escapeHtml(d.name)} <span class="dog-chip-id">ID ${d.id}</span>${chipOutOfReport(d) ? ` <span class="dog-chip-note">(not in a ${speciesSelect.value === 'cat' ? 'Cats' : 'Dogs'} report)</span>` : ''}<button type="button" data-remove="${d.id}" aria-label="Remove ${escapeHtml(d.name)} (ID ${d.id})">×</button></span>
     `).join('');
   }
 
   function addDogFromInput() {
     const input = document.getElementById('dogPickerInput');
     const errEl = document.getElementById('dogPickerError');
-    const name = input.value.trim();
-    if (!name) return;
-    const match = dogsIndex.find((d) => d.name.toLowerCase() === name.toLowerCase());
-    if (!match) { errEl.textContent = `No animal named "${name}" found.`; return; }
+    const text = input.value.trim();
+    if (!text) return;
+    const { dog: match, error } = findPickedDog(text);
+    if (!match) { errEl.textContent = error; return; }
     errEl.textContent = '';
     if (!selectedDogs.some((d) => d.id === match.id)) selectedDogs.push(match);
     input.value = '';
@@ -598,7 +742,9 @@
     if (!report) return;
     setSelectedSections(report.sections);
     granularitySelect.value = report.granularity;
-    selectedDogs = report.dogIds.map((dogId) => dogsIndex.find((d) => d.id === dogId) || { id: dogId, name: `Dog #${dogId}` });
+    // A format saved before species were stored is a dog report.
+    speciesSelect.value = ['dog', 'cat', 'all'].includes(report.species) ? report.species : 'dog';
+    selectedDogs = report.dogIds.map((dogId) => dogsIndex.find((d) => d.id === dogId) || { id: dogId, name: `Animal #${dogId}` });
     renderDogChips();
     document.getElementById('deleteSavedReportBtn').classList.remove('hidden');
     refreshReport();
@@ -611,7 +757,7 @@
     try {
       await api('/api/staff/saved-reports', {
         method: 'POST',
-        body: JSON.stringify({ name, sections: selectedSections(), granularity: granularitySelect.value, dogIds: selectedDogs.map((d) => d.id) })
+        body: JSON.stringify({ name, sections: selectedSections(), granularity: granularitySelect.value, species: speciesSelect.value, dogIds: selectedDogs.map((d) => d.id) })
       });
       nameInput.value = '';
       await loadSavedReportsList();
@@ -622,6 +768,9 @@
   document.getElementById('deleteSavedReportBtn').addEventListener('click', async () => {
     const id = document.getElementById('savedReportSelect').value;
     if (!id) return;
+    // Formats are shared by every staff account, so deleting one is for everyone.
+    const report = savedReports.find((r) => String(r.id) === id);
+    if (!window.confirm(`Delete the saved format "${report ? report.name : 'this format'}"? It's shared, so it goes away for every staff member.`)) return;
     try {
       await api(`/api/staff/saved-reports/${id}`, { method: 'DELETE' });
       await loadSavedReportsList();
@@ -681,7 +830,7 @@
         ${dayTile(highlights.busiestDay, 'Busiest day')}
         ${dayTile(highlights.quietestDay, 'Quietest day')}
         <div class="stat-tile"><span class="stat-value">${highlights.avgWalksPerVolunteer ?? '—'}</span><span class="stat-label">Avg engagements per volunteer</span></div>
-        <div class="stat-tile" title="Walks only (not cuddles, play group or daycations), finished, a minute or longer"><span class="stat-value">${highlights.avgWalkMinutes ?? '—'}</span><span class="stat-label">Avg walk length (min)</span></div>
+        ${'avgWalkMinutes' in highlights ? `<div class="stat-tile" title="Walks only (not cuddles, playgroup or daycations), finished, a minute or longer"><span class="stat-value">${highlights.avgWalkMinutes ?? '—'}</span><span class="stat-label">Avg walk length (min)</span></div>` : ''}
       </div>`;
     }
     return html;
@@ -765,7 +914,7 @@
       ? data.alerts.map((a) => `
         <li>
           <div><strong>${escapeHtml(a.title)}</strong>${a.body && a.body !== a.title ? `<div class="small alert-body">${escapeHtml(a.body)}</div>` : ''}
-          <div class="small muted">${escapeHtml(fmtWhen(a.occurredAt))}</div></div>
+          <div class="small muted">${escapeHtml(fmtWhen(a.occurredAt))}${a.expiresAt ? ` · ${new Date(a.expiresAt) > new Date() ? 'showing until' : 'expired'} ${escapeHtml(fmtWhen(a.expiresAt))}` : ''}</div></div>
           <button type="button" class="link-btn" data-delete-alert="${a.id}" title="Remove it from the Updates tab (a push already sent stays sent)">Remove</button>
         </li>`).join('')
       : '<li class="muted small">None yet.</li>';
@@ -774,7 +923,8 @@
       ? data.specialDays.map((d) => `
         <li>
           <div><strong>${escapeHtml(d.label)}</strong> · ${d.closed ? '<span class="closed-tag">Closed</span>' : escapeHtml(hoursText(d.hoursLabel))}
-          ${d.note ? `<div class="small">${escapeHtml(d.note)}</div>` : ''}</div>
+          ${d.note ? `<div class="small">${escapeHtml(d.note)}</div>` : ''}
+          ${d.message ? `<div class="small muted alert-body">${escapeHtml(d.message)}</div>` : ''}</div>
           <span class="row-actions">
             <button type="button" class="link-btn" data-edit-day="${d.dateKey}">Edit</button>
             <button type="button" class="link-btn" data-delete-day="${d.dateKey}">Remove</button>
@@ -793,10 +943,23 @@
     document.querySelectorAll('#weeklyRows .wk-closed').forEach((box) => box.addEventListener('change', () => {
       box.closest('tr').querySelectorAll('input[type="time"]').forEach((i) => { i.disabled = box.checked; });
     }));
+    syncWeeklyScrollHint();
   }
+  // On a phone the weekly table is wider than its card and the Closed column
+  // starts off-screen: say so, until it's been scrolled into view.
+  function syncWeeklyScrollHint() {
+    const box = document.querySelector('.weekly-scroll');
+    const hint = document.getElementById('weeklyScrollHint');
+    if (!box || !hint) return;
+    const hiddenPart = box.scrollWidth - box.clientWidth - box.scrollLeft;
+    hint.classList.toggle('hidden', hiddenPart <= 4);
+  }
+  document.querySelector('.weekly-scroll').addEventListener('scroll', syncWeeklyScrollHint, { passive: true });
+  window.addEventListener('resize', syncWeeklyScrollHint);
   const hoursState = { specialDays: [] };
 
   async function loadSchedule() {
+    loadDayAxis(); // today's hours may have just changed
     try {
       renderSchedule(await api('/api/staff/schedule'));
     } catch (err) {
@@ -828,6 +991,7 @@
     document.getElementById('specialOpen').value = '07:00';
     document.getElementById('specialClose').value = '19:00';
     document.getElementById('specialNote').value = '';
+    document.getElementById('specialMessage').value = '';
     document.getElementById('specialNotify').checked = false;
     syncSpecialMode();
     setSpecialEditMode(null);
@@ -840,17 +1004,28 @@
     if (editingDay && document.getElementById('specialDate').value !== editingDay) setSpecialEditMode(null);
   });
 
+  // One wording for both places an alert goes out (the alert form and a
+  // special day's "also send an alert"). pushedTo counts phones that really
+  // got it, not everyone who once turned notifications on.
+  function alertSentText(alert) {
+    const n = Number(alert && alert.pushedTo) || 0;
+    return n > 0
+      ? `Alert sent. It's in Updates and went to ${n} volunteer${n === 1 ? "'s phone" : "s' phones"}.`
+      : "Alert sent. It's in Updates, but no phones got a notification.";
+  }
+
   document.getElementById('alertForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const title = document.getElementById('alertTitle').value.trim();
     const body = document.getElementById('alertBody').value.trim();
+    const until = document.getElementById('alertUntil').value || null;
     if (!title) return;
     if (!window.confirm(`Send "${title}" to every volunteer's phone now?`)) return;
     setStatus('alertStatus', 'Sending…');
     try {
-      const r = await api('/api/staff/alerts', { method: 'POST', body: JSON.stringify({ title, body }) });
+      const r = await api('/api/staff/alerts', { method: 'POST', body: JSON.stringify({ title, body, until }) });
       document.getElementById('alertForm').reset();
-      setStatus('alertStatus', `Sent. Pushed to ${r.pushedTo} volunteer${r.pushedTo === 1 ? '' : 's'} with notifications on.`);
+      setStatus('alertStatus', alertSentText(r));
       loadSchedule();
     } catch (err) { setStatus('alertStatus', err.message, true); }
   });
@@ -863,6 +1038,7 @@
       open: document.getElementById('specialOpen').value,
       close: document.getElementById('specialClose').value,
       note: document.getElementById('specialNote').value.trim(),
+      message: document.getElementById('specialMessage').value.trim(),
       notify: document.getElementById('specialNotify').checked
     };
     if (payload.notify && !window.confirm('Also send a shelter alert about this day to every volunteer now?')) return;
@@ -871,7 +1047,7 @@
       const r = await api(`/api/staff/schedule/days/${encodeURIComponent(date)}`, { method: 'PUT', body: JSON.stringify(payload) });
       const wasEditing = !!editingDay;
       resetSpecialForm();
-      setStatus('specialStatus', `${wasEditing ? 'Updated' : 'Saved'} ${r.day.label}.${r.alert ? ` Alert sent to ${r.alert.pushedTo}.` : ''}`);
+      setStatus('specialStatus', `${wasEditing ? 'Updated' : 'Saved'} ${r.day.label}.${r.alert ? ` ${alertSentText(r.alert)}` : ''}`);
       loadSchedule();
     } catch (err) { setStatus('specialStatus', err.message, true); }
   });
@@ -904,6 +1080,7 @@
       if (d.open) document.getElementById('specialOpen').value = d.open;
       if (d.close) document.getElementById('specialClose').value = d.close;
       document.getElementById('specialNote').value = d.note || '';
+      document.getElementById('specialMessage').value = d.message || '';
       syncSpecialMode();
       setSpecialEditMode(d.dateKey);
       setStatus('specialStatus', '');

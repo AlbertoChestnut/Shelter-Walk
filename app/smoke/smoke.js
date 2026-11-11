@@ -61,21 +61,21 @@ async function main() {
     step('Started a cuddle from the Available list');
 
     await page.click('#activityChoice [data-activity="playgroup"]');
-    await page.waitForFunction(() => /End play group/.test(document.getElementById('endWalkBtn').textContent));
-    step('Switched to play group mid-session');
+    await page.waitForFunction(() => /End playgroup/.test(document.getElementById('endWalkBtn').textContent));
+    step('Switched to playgroup mid-session');
 
     await page.click('#endWalkBtn');
     await page.waitForSelector('#saveWalkBtn');
     await page.click('#saveWalkBtn');
     await page.waitForSelector('#doneBtn');
-    assert.match(await page.textContent('.walk-dog-name'), /play group with Biscuit/);
+    assert.match(await page.textContent('.walk-dog-name'), /playgroup with Biscuit/);
     await page.click('#doneBtn');
     step('Ended and saved it');
 
     await page.click('.tab-btn[data-tab="stats"]');
     await page.waitForSelector('.edit-times-btn');
     assert.match(await page.textContent('.dog-card .dog-name'), /🥎/);
-    step('Stats lists it with the play group emoji');
+    step('Stats lists it with the playgroup emoji');
 
     // Back button: tabs never stack, Back from any tab goes to Available,
     // popups and the Guide close first, Back from Available leaves the app.

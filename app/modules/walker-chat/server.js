@@ -12,6 +12,8 @@
 // process is the whole deployment" assumption src/modules.js's jobsInFlight
 // Set already makes. A message missed while disconnected (a phone asleep, a
 // restart) is caught by the next GET /messages on reopen, not replayed.
+const crypto = require('crypto');
+
 const MAX_BODY = 1000;
 const HISTORY_LIMIT = 50;
 const HEARTBEAT_MS = 25000;
@@ -64,19 +66,27 @@ function register(app, ctx) {
 
   // Every open EventSource response, so a new message can be pushed to each
   // without them polling. Cleared on disconnect; never persisted.
-  const clients = new Set();
+  // Each stream remembers whose it is, so a live message can say `mine` to
+  // its own reader rather than carry the sender's account id.
+  const clients = new Map(); // response -> user id
   const streamsByUser = new Map(); // user id -> open stream count
+  // data: an object, or (userId) => object per reader (null skips them).
   function broadcast(event, data) {
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-    for (const res of [...clients]) {
-      try { res.write(payload); } catch (err) { res.destroy(); }
+    for (const [res, readerId] of [...clients]) {
+      const body = typeof data === 'function' ? data(readerId) : data;
+      if (!body) continue;
+      try { res.write(`event: ${event}\ndata: ${JSON.stringify(body)}\n\n`); } catch (err) { res.destroy(); }
     }
   }
+  // Who sent it, for the typing line only: a key that's the same for one
+  // person while the server runs but can't be matched to an account id.
+  const whoKey = crypto.randomBytes(16);
+  const whoOf = (userId) => crypto.createHmac('sha256', whoKey).update(String(userId)).digest('base64url').slice(0, 12);
   // Switching the module off closes every open stream right away (the
   // browser's reconnect then gets the guard's 404 and stops).
   const isEnabled = ctx.isEnabled || (() => true);
   const enabledCheck = setInterval(() => {
-    if (clients.size && !isEnabled()) for (const res of [...clients]) res.end();
+    if (clients.size && !isEnabled()) for (const res of [...clients.keys()]) res.end();
   }, ENABLED_CHECK_MS);
   if (enabledCheck.unref) enabledCheck.unref();
 
@@ -112,7 +122,7 @@ function register(app, ctx) {
     // Broadcast the same row to every connection, including the sender's own
     // -- the UI has one source of truth for "a message appeared" instead of
     // also optimistically rendering the POST response.
-    broadcast('message', { id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, userId: row.userId });
+    broadcast('message', (readerId) => ({ id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, mine: readerId === row.userId, who: whoOf(row.userId) }));
     res.json({ message: shape(req, row) });
   });
 
@@ -127,7 +137,7 @@ function register(app, ctx) {
       return res.status(429).json({ error: 'Typing notices are limited to one every 3 seconds.' });
     }
     lastTyping.set(req.me.id, now);
-    broadcast('typing', { userId: req.me.id, authorName: req.me.name });
+    broadcast('typing', (readerId) => (readerId === req.me.id ? null : { who: whoOf(req.me.id), authorName: req.me.name }));
     res.json({ ok: true });
   });
 
@@ -148,7 +158,7 @@ function register(app, ctx) {
     });
     res.flushHeaders();
     res.write(': connected\n\n');
-    clients.add(res);
+    clients.set(res, userId);
     if (req.socket && req.socket.setKeepAlive) req.socket.setKeepAlive(true, HEARTBEAT_MS);
     let closed = false;
     const done = () => {

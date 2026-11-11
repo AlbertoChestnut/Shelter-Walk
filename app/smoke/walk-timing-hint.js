@@ -40,7 +40,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
       return { p, ctx, errs };
     };
     let { p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 70);
-    ok(/POOs will have a guaranteed walk from 4-7 PM/.test(await p.textContent('.timing-hint')), 'mid-day 2nd walk of a POO dog gets the tip');
+    ok(/POOs will have a guaranteed walk from 4–7 pm/.test(await p.textContent('.timing-hint')), 'mid-day 2nd walk of a POO dog gets the tip');
     await p.screenshot({ path: h.shot('wth1.png') });
     await p.click('#timingHintGuideBtn');
     if (hasSeed) {
@@ -53,7 +53,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.screenshot({ path: h.shot('wth2.png'), fullPage: true });
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
     ({ p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 71));
-    ok(/POOs will have a guaranteed walk from 4-7 PM/.test(await p.textContent('.timing-hint')), 'mid-day 1st walk of a POO dog now gets the tip too');
+    ok(/POOs will have a guaranteed walk from 4–7 pm/.test(await p.textContent('.timing-hint')), 'mid-day 1st walk of a POO dog now gets the tip too');
     await ctx.close();
     ({ p, ctx, errs } = await open('2026-10-10T17:00:00.000Z', 72));
     ok((await p.locator('.timing-hint').count()) === 0, 'mid-day 1st walk of a non-POO dog gets no tip');
@@ -63,8 +63,8 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(errs.length === 0, 'no page errors ' + JSON.stringify(errs)); await ctx.close();
     // POO* (Star, no walks yet): its own warning only from 4 to 5:30pm, the POO tip mid-day.
     // PB counts as yellow too: Bean (PB only) gets the POO tip, Moose (PB + POO*) the POO* one.
-    const STAR = /POO\* dogs should be walked between 5:30-7 PM/;
-    const POO = /POOs will have a guaranteed walk from 4-7 PM/;
+    const STAR = /POO\* dogs should be walked between 5:30–7 pm/;
+    const POO = /POOs will have a guaranteed walk from 4–7 pm/;
     for (const [iso, dogId, want, what] of [
       ['2026-10-10T11:30:00.000Z', 73, null, 'POO* dog 7:30am walk'],
       ['2026-10-10T17:00:00.000Z', 73, POO, 'POO* dog 1pm walk'],

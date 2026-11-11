@@ -1,7 +1,9 @@
 .wc-toggle {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  /* Above the bottom tab bar (about 58px tall), so it never covers a tab
+     (audit 3: it sat on Updates at 390 wide). */
+  bottom: calc(72px + env(safe-area-inset-bottom));
   z-index: 500;
   width: 52px;
   height: 52px;
@@ -21,7 +23,7 @@
   right: -4px;
   background: var(--red-fill);
   color: #fff;
-  font-size: 0.65rem;
+  font-size: 0.65rem; /* text-size-ok: unread count bubble on an icon */
   min-width: 16px;
   height: 16px;
   padding: 0 3px;
@@ -35,10 +37,10 @@
 .wc-panel {
   position: fixed;
   right: 16px;
-  bottom: 78px;
+  bottom: calc(134px + env(safe-area-inset-bottom));
   z-index: 500;
   width: min(320px, calc(100vw - 32px));
-  height: min(420px, calc(100vh - 140px));
+  height: min(420px, calc(100vh - 200px));
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -68,7 +70,7 @@
   gap: 8px;
 }
 .wc-msg { max-width: 85%; }
-.wc-msg .wc-author { font-size: 0.72rem; color: var(--muted); margin-bottom: 1px; }
+.wc-msg .wc-author { font-size: 0.85rem; color: var(--muted); margin-bottom: 1px; }
 .wc-msg .wc-bubble {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -85,7 +87,7 @@
 .wc-typing {
   min-height: 16px;
   padding: 0 12px;
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   color: var(--muted);
   font-style: italic;
 }

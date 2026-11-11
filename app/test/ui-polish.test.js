@@ -1,6 +1,6 @@
 // UI polish follow-ups that need the server: the volunteer app's Stats ›
-// Play group list says "Adopted" / "Left shelter" by the same rule as the
-// play group desk, so /api/playgroup-notes carries the same `adopted` flag
+// Playgroup list says "Adopted" / "Left shelter" by the same rule as the
+// playgroup desk, so /api/playgroup-notes carries the same `adopted` flag
 // as /api/playgroup-notes/counts.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -34,7 +34,7 @@ test.before(async () => {
 });
 test.after(async () => { if (server) { await server.stop(); fs.rmSync(server.dir, { recursive: true, force: true }); } });
 
-test('play group notes say adopted vs left shelter like the desk does', async () => {
+test('playgroup notes say adopted vs left shelter like the desk does', async () => {
   for (const id of [1, 2, 3]) assert.equal((await call('POST', `/api/dogs/${id}/playgroup-notes`, { body: 'Good day.', noteDate: '2026-10-01' })).status, 200);
   const db = new Database(dbFile);
   db.prepare('UPDATE dogs SET still_listed = 0 WHERE shelter_buddy_id IN (2, 3)').run();

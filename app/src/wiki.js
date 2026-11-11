@@ -46,7 +46,30 @@ try {
   };
 }
 const { demoSections, addedSections } = seedContent;
-const replacedLines = seedContent.replacedLines || (() => []);
+// Lines the app itself once wrote into the Guide (not the shelter's text),
+// fixed once per database the same way as the seed's own replacedLines. The
+// wording matches wikiSeed.js (PUPPIES_LINE, LEVEL_EXTRA_LINES) and the
+// rules in server.js dogEligibility: under 6 months (MIN_WALK_AGE_MONTHS)
+// is never walkable; stray hold needs PB (a PB walk: Established and up) or
+// a privileged volunteer's stray-hold clearance for a returned dog; a dog
+// listed in foster isn't at the shelter.
+const LEVEL_RULE_LINES = [
+  'Puppies under 6 months old can never be walked, at any level, no exceptions.',
+  '',
+  'Dogs on **stray hold** can\'t be walked at any level, unless they also have a PB sticker (then it\'s a PB walk, so Established and up) or a privileged volunteer has cleared a returned dog from the hold.',
+  '',
+  'Dogs listed as **in foster** care aren\'t at the shelter, so they never show as eligible. If you have one\'s kennel card in hand, the app asks you to check the card matches before you start.'
+].join('\n');
+const APP_REPLACED_LINES = [
+  {
+    key: 'wiki_replaced_puppies_stray_hold_line',
+    lines: [[
+      'Puppies 6 months or younger can never be walked, at any level. Dogs on stray hold can only be walked if they are marked PB.',
+      LEVEL_RULE_LINES
+    ]]
+  }
+];
+const replacedLines = () => [...APP_REPLACED_LINES, ...(seedContent.replacedLines ? seedContent.replacedLines() : [])];
 
 function register(app, { db, resolveAuthedUser }) {
   const seeded = db.prepare("SELECT value FROM app_meta WHERE key = 'wiki_seeded'").get();
@@ -114,9 +137,19 @@ function register(app, { db, resolveAuthedUser }) {
     const user = resolveAuthedUser(req);
     return user ? user.name : 'staff';
   }
+  function iconText(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    const parts = typeof Intl.Segmenter === 'function'
+      ? [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(s)].map((x) => x.segment)
+      : Array.from(s);
+    return parts.slice(0, 2).join('').slice(0, 32);
+  }
   function cleanFields(body) {
     const title = String((body && body.title) || '').trim().slice(0, MAX_TITLE);
-    const icon = String((body && body.icon) || '').trim().slice(0, 8);
+    // Up to 2 whole characters (grapheme clusters), so a multi-part emoji
+    // (🧑‍🦯, 🏳️‍🌈, a skin tone) is never cut in half (audit 3, ui).
+    const icon = iconText(body && body.icon);
     const text = String((body && body.body) || '');
     if (!title) return { error: 'A title is required.' };
     if (text.length > MAX_BODY) return { error: `Text is too long (max ${MAX_BODY} characters).` };
@@ -181,7 +214,14 @@ function register(app, { db, resolveAuthedUser }) {
   app.post('/api/wiki/images', requireEditor,
     (req, res, next) => (/^image\//i.test(String(req.headers['content-type'] || '').trim())
       ? next() : res.status(415).json({ error: 'Upload an image file (JPEG, PNG, WebP or GIF).' })),
-    express.raw({ type: () => true, limit: MAX_IMAGE_BYTES }),
+    // Too big: say the limit in plain words, not "request entity too large"
+    // (audit 3, ui).
+    (req, res, next) => express.raw({ type: () => true, limit: MAX_IMAGE_BYTES })(req, res, (err) => {
+      if (err && err.type === 'entity.too.large') {
+        return res.status(413).json({ error: `That picture is too large (max ${MAX_IMAGE_BYTES / 1024 / 1024} MB).` });
+      }
+      next(err);
+    }),
     (req, res) => {
       const buf = req.body;
       if (!Buffer.isBuffer(buf) || buf.length === 0) return res.status(400).json({ error: 'No image received.' });
@@ -200,4 +240,4 @@ function register(app, { db, resolveAuthedUser }) {
   app.use('/wiki-images', express.static(WIKI_IMAGES_DIR, { maxAge: '365d', immutable: true }));
 }
 
-module.exports = { register, WIKI_IMAGES_DIR };
+module.exports = { register, WIKI_IMAGES_DIR, LEVEL_RULE_LINES };

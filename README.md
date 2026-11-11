@@ -29,7 +29,7 @@ New volunteers: see the illustrated [tutorial](docs/TUTORIAL.md).
 
 - **Available list** with filters, experience levels, and time-slot awareness
 - **Scan a kennel QR code**, start a timed walk, add notes at the end
-- **Walk limits:** walks, cuddles and play groups stop automatically after
+- **Walk limits:** walks, cuddles and playgroups stop automatically after
   45 minutes (matchmaking after 60), extendable 10 minutes at a time to 3
   hours in total, and are flagged as automatically stopped. A daycation can
   run up to 12 hours
@@ -45,15 +45,30 @@ New volunteers: see the illustrated [tutorial](docs/TUTORIAL.md).
   now, at the limit, or a picked time (never a future one)
 - **Walk length alerts:** up to 3 push notifications per walk at lengths
   each walker picks in Settings (e.g. 7 and 10 minutes)
-- **Stats&Notes:** personal stats, plus **Together**, anonymous shelter-wide
-  totals, split by dogs and cats; every note in one place, with @ tags to
-  link a note to another dog or cat
+- **Stats&Notes:** five views: **My stats**; **Together**, everyone's
+  engagements combined for the whole shelter, with no names or rankings;
+  **Shelter**, how many animals are in and in foster, day by day; **Notes**,
+  every note in one place, with @ tags to link a note to another dog or cat;
+  and **Playgroup** notes. A Dogs / Cats switch shows one kind of animal at
+  a time
 - **Updates feed:** new, returned, and adopted dogs, plus staff alerts.
   Adoption, pending-adoption and return news isn't pushed between 9pm and
   7am shelter time (it still shows in Updates), and "someone is adopting" is
   pushed at most once per dog per day
 - **Guide (wiki):** staff-editable sections with sticker meanings and images
 - **Dog notes:** an anonymous shared tip list per dog, plus private notes
+- **Playgroup desk** (`/playgroup`): a computer-sized page for typing up
+  Playgroup session notes, open to every walker. Pick a dog from the list,
+  write dated notes with @ tags (keyboard only if you like), sign them or
+  leave them anonymous, move a note to another day, and export every
+  session to Excel
+- **Staff dashboard** (`/staff`, staff only): a live board of who's out,
+  from which kennel wing and for how long (it fits a TV or lobby screen in
+  TV mode); anonymous activity reports by activity, period, location, day of
+  week and time of day, for dogs, cats or both, downloadable as CSV, Excel
+  or PDF, with saved report formats; the shelter's walking hours, special
+  days and alerts; and settings for optional modules. Reports never name or
+  single out a volunteer
 - **Light list photos:** cards load a 160px thumbnail (made once from the
   cached photo with sharp, ~5 KB instead of ~100 KB); the profile and full
   screen view use the full photo
@@ -74,7 +89,8 @@ Volunteers must never be singled out or compared. The code enforces this, and
 the tests in `app/test/privacy.test.js` are release blockers:
 
 - Shelter-wide stats never read any user column, show no rankings or per-person
-  numbers, and hide any day or session with fewer than 3 walks.
+  numbers, and don't list a day or session with fewer than 3 engagements on
+  its own (it still counts in the totals). Staff reports follow the same rule.
 - Shared tips never store or return an author. Private notes are readable only
   by their owner, with no staff override.
 - Every API call is scoped to the signed-in account; user ids in requests are
@@ -95,7 +111,9 @@ the tests in `app/test/privacy.test.js` are release blockers:
   the app keeps only a keyed one-way hash of it (`app/src/emailHash.js`, secret
   `EMAIL_HASH_PEPPER`, which must never change).
 - With `NODE_ENV=production` the app refuses to start without
-  `EMAIL_HASH_PEPPER` and `INTERNAL_API_TOKEN`.
+  `EMAIL_HASH_PEPPER` and `INTERNAL_API_TOKEN`, while either is still the
+  example value `change-me`, or while either is shorter than 32 characters
+  (`openssl rand -hex 32` makes one).
 - A fresh database seeds no accounts, and a sign-in never takes over an
   existing walker profile by name unless `LINK_ACCOUNTS_BY_NAME=1` is set (a
   one-time migration aid; leave it off). Grant staff permissions from your
@@ -110,7 +128,8 @@ GitHub rather than a public issue.
 
 ## Running it locally
 
-App (Node 22+; CI and the Docker image use 22):
+App (Node 22 or 23, as `engines` in `app/package.json` says: `>=22 <24`;
+CI and the Docker image use 22):
 
     cd app
     npm install
@@ -141,8 +160,8 @@ folders under `app/`.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `EMAIL_HASH_PEPPER` | dev-only value | Secret for the one-way hash kept in place of an email. **Required when `NODE_ENV=production`** (the app refuses to start without it). Never change or lose it: every account would stop resolving. Keep a copy off the server. |
-| `INTERNAL_API_TOKEN` | none | Bearer token your auth service uses to call the app (account deletion, extra features) and the app uses to call it back. **Required when `NODE_ENV=production`.** |
+| `EMAIL_HASH_PEPPER` | dev-only value | Secret for the one-way hash kept in place of an email. **Required when `NODE_ENV=production`**: the app refuses to start without it, with `change-me`, or with fewer than 32 characters (`openssl rand -hex 32`). Never change or lose it: every account would stop resolving. Keep a copy off the server. |
+| `INTERNAL_API_TOKEN` | none | Bearer token your auth service uses to call the app (account deletion, extra features) and the app uses to call it back. **Required when `NODE_ENV=production`**: not `change-me`, and at least 32 characters. Generate it once with `openssl rand -hex 32` and use the same value on both sides. |
 | `NODE_ENV` | unset | `production` turns on the checks above. |
 | `LINK_ACCOUNTS_BY_NAME` | unset | `1` lets a first sign-in claim an existing unlinked walker profile whose name matches the email's local part. A one-time migration aid only; leave it off. |
 | `PORT` | `3000` | Port the app listens on. |

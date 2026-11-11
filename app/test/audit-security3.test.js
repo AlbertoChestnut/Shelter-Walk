@@ -58,7 +58,7 @@ test('#1 a dog\'s walk notes are their own list: opaque id, text, date, activity
     assert.match(n.date, /^\d{4}-\d{2}-\d{2}$/);
     assert.ok(![a1.json.id, b1.json.id].map(String).includes(n.noteId), 'not the walk id');
   }
-  assert.equal(notes.find((n) => n.text === 'aa Bob note').activity, 'playgroup', 'play group label survives');
+  assert.equal(notes.find((n) => n.text === 'aa Bob note').activity, 'playgroup', 'playgroup label survives');
   // Walk rows: no notes, no ids; someone else's have the date only.
   for (const w of asCarol.json.walks) {
     assert.ok(!('notes' in w) && !('id' in w) && !('user_id' in w));
@@ -122,14 +122,19 @@ test('#1 currentWalk: the start time only on your own walk', async () => {
 
 // ---- #2 Together's "fewer than 3" can't be undone through per-walk rows ----
 test('#2 for-day sends only which walk window each dog was out in', async () => {
+  // Minutes before yesterday's shelter noon, so the windows don't depend on
+  // the clock (TEST_CLOCK=real or any TEST_CLOCK=<ISO>).
+  const { shelterClock, shelterTimeToDate } = require('../src/walkHours');
+  const c = shelterClock(Date.now() - 24 * 3600000);
+  const noon = shelterTimeToDate(c.y, c.m, c.d, 12 * 60).getTime();
+  const before = (min) => new Date(noon - min * 60000).toISOString();
   withDb((db) => {
     const ins = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds) VALUES (6, ?, ?, ?, 600)');
-    ins.run(ids.alice, ago(60), ago(50)); // 11 am: window 1
-    ins.run(ids.bob, ago(55), ago(45)); // same window
-    ins.run(ids.bob, ago(240), ago(230)); // 8 am: window 0
+    ins.run(ids.alice, before(60), before(50)); // 11 am: window 1
+    ins.run(ids.bob, before(55), before(45)); // same window
+    ins.run(ids.bob, before(240), before(230)); // 8 am: window 0
   });
-  const from = new Date(Date.now() - 12 * 3600000).toISOString();
-  const r = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(from)}&toUtc=${encodeURIComponent(new Date().toISOString())}`);
+  const r = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(before(12 * 60))}&toUtc=${encodeURIComponent(before(0))}`);
   assert.equal(r.status, 200);
   const six = r.json.walks.filter((w) => w.dog_id === 6);
   assert.deepEqual(six, [{ dog_id: 6, slotIndex: 0 }, { dog_id: 6, slotIndex: 1 }], 'once per dog and window, no times or counts');
@@ -238,8 +243,8 @@ test('#6 names are NFKC with invisible characters dropped, and look-alikes clash
   assert.equal((await call('PUT', '/api/me', { user: BOB, body: { name: '​‍' } })).status, 400, 'nothing visible left');
 });
 
-// ---- #7 play group notes: date only unless it's your own signed note ----
-test('#7 play group notes carry their date only, except a signed note to its writer', async () => {
+// ---- #7 playgroup notes: date only unless it's your own signed note ----
+test('#7 playgroup notes carry their date only, except a signed note to its writer', async () => {
   const anon = await call('POST', '/api/dogs/8/playgroup-notes', { user: ALICE, body: { body: 'anon one' } });
   const signed = await call('POST', '/api/dogs/8/playgroup-notes', { user: ALICE, body: { body: 'signed one', signed: true } });
   assert.equal(anon.status, 200); assert.equal(signed.status, 200);
@@ -345,7 +350,7 @@ test('#13 the internal token still works (constant-time compare), and production
     assert.equal(bad.status, 403);
   } finally { await s2.stop(); }
   await assert.rejects(
-    () => startServer({ prefix: 'sw-sec3-prod-', env: { NODE_ENV: 'production', INTERNAL_API_TOKEN: 'change-me', EMAIL_HASH_PEPPER: 'pepper-for-test' } }),
+    () => startServer({ prefix: 'sw-sec3-prod-', env: { NODE_ENV: 'production', INTERNAL_API_TOKEN: 'change-me', EMAIL_HASH_PEPPER: 'pepper-for-test-0123456789abcdef0123' } }),
     /change-me/
   );
 });

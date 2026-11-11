@@ -23,6 +23,12 @@ async function call(method, url, { user = ALICE, staff = false, body, raw } = {}
 }
 const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
 const H = 3600000;
+// The finished walks hang off a fixed shelter time, yesterday at noon, so
+// which walk window they fall in doesn't depend on the clock (the suite
+// passes with TEST_CLOCK=real or any TEST_CLOCK=<ISO>).
+const { shelterClock, shelterTimeToDate } = require('../src/walkHours');
+const NOON = (() => { const c = shelterClock(Date.now() - 24 * H); return shelterTimeToDate(c.y, c.m, c.d, 12 * 60).getTime(); })();
+const beforeNoon = (ms) => new Date(NOON - ms).toISOString();
 const todayKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 
 test.before(async () => {
@@ -37,9 +43,9 @@ test.before(async () => {
   dog.run(3, 'Fido', 1, 'In Foster', now, now);
   dog.run(4, 'Gone', 0, 'Shelter', now, now);
   const walk = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds, activity) VALUES (?, ?, ?, ?, ?, ?)');
-  walk.run(1, ids.alice, iso(2 * H), iso(2 * H - 600000), 600, 'walk');
-  walk.run(1, ids.alice, iso(30 * H), iso(30 * H - 900000), 900, 'walk');
-  walk.run(1, ids.bob, iso(3 * H), iso(3 * H - 1200000), 1200, 'walk');
+  walk.run(1, ids.alice, beforeNoon(2 * H), beforeNoon(2 * H - 600000), 600, 'walk');
+  walk.run(1, ids.alice, beforeNoon(30 * H), beforeNoon(30 * H - 900000), 900, 'walk');
+  walk.run(1, ids.bob, beforeNoon(3 * H), beforeNoon(3 * H - 1200000), 1200, 'walk');
   walk.run(2, ids.bob, iso(10 * 60000), null, null, 'walk'); // in progress
   db.close();
 });
@@ -113,7 +119,7 @@ test('walks/for-day: validated range, finished walks only, plus manual checkoffs
   assert.equal((await call('GET', `/api/walks/for-day?fromUtc=${iso(0)}&toUtc=${iso(H)}`)).status, 400, 'reversed');
   assert.equal((await call('GET', `/api/walks/for-day?fromUtc=${iso(49 * H)}&toUtc=${iso(0)}`)).status, 400, 'over 48 hours');
 
-  const r = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(iso(4 * H))}&toUtc=${encodeURIComponent(iso(-H))}`);
+  const r = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(beforeNoon(4 * H))}&toUtc=${encodeURIComponent(beforeNoon(-H))}`);
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.walks.map((w) => w.dog_id).sort(), [1, 1], 'two finished walks of Rex; the open walk is left out');
   // security3: only { dog_id, slotIndex } (the grid's window), no times.
@@ -121,7 +127,7 @@ test('walks/for-day: validated range, finished walks only, plus manual checkoffs
   assert.deepEqual(r.json.manualCheckoffs, [], 'no dateKey, no checkoffs');
 
   // 30 hours before noon is 6 am, before the first walk window: nothing to draw.
-  const old = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(iso(31 * H))}&toUtc=${encodeURIComponent(iso(29 * H))}`);
+  const old = await call('GET', `/api/walks/for-day?fromUtc=${encodeURIComponent(beforeNoon(31 * H))}&toUtc=${encodeURIComponent(beforeNoon(29 * H))}`);
   assert.equal(old.json.walks.length, 0);
 });
 

@@ -19,7 +19,7 @@
 </head>
 <body>
 
-<div id="offlineBanner" class="hidden" style="background:var(--amber,#b3781c); color:#fff; text-align:center; font-size:0.85rem; padding:4px 8px;">Offline. Showing cached data</div>
+<div id="offlineBanner" class="hidden offline-banner" role="status">You're offline. What's on screen may be out of date.</div>
 <header class="topbar">
   <h1 id="topbarTitle">Dogs to walk</h1>
   <div style="display:flex; align-items:center; gap:4px;">
@@ -60,9 +60,9 @@
       <div id="experienceLevelPicker" class="stack tight"></div>
       <hr />
     </div>
-    <label class="small muted" style="display:block;">Usual activity</label>
-    <p class="muted small" style="margin:4px 0 6px;">The scan screen starts this one. You can still switch there.</p>
-    <div id="defaultActivityPicker" class="marker-row activity-chips"></div>
+    <label class="small muted" style="display:block;">Default activity</label>
+    <p class="muted small" style="margin:4px 0 6px;">What the Start button offers first when you scan an animal. You can still change it each time: on the scan screen with ⇄ Change, or under "Doing something else?" while you're with the animal. Tap the one you picked again there to make it your default.</p>
+    <div id="defaultActivityPicker"></div>
     <hr />
     <label class="small muted" style="display:block;">Appearance</label>
     <div id="themePicker" class="stack tight"></div>
@@ -116,11 +116,11 @@
     <p class="muted small" style="margin-top:4px;">Choose what shows up in the Updates tab.</p>
     <label class="small check-row">
       <input type="checkbox" id="settingsShowNewDog" />
-      <span>New <span data-term="animals">dogs</span> added to the shelter</span>
+      <span>✨ New <span data-term="animals">dogs</span> added to the shelter</span>
     </label>
     <label class="small check-row">
       <input type="checkbox" id="settingsShowAdopted" />
-      <span>Adoptions</span>
+      <span>🎉 Adoptions</span>
     </label>
     <label class="small check-row">
       <input type="checkbox" id="settingsShowReturned" />
@@ -155,8 +155,8 @@
   </div>
 </div>
 
-<!-- Play group notes: roomier than the other popups (entries run a few
-     sentences), opened from a dog's profile or during play group. -->
+<!-- Playgroup notes: roomier than the other popups (entries run a few
+     sentences), opened from a dog's profile or during playgroup. -->
 <div id="playgroupPopup" class="popup-overlay hidden">
   <div class="popup-card playgroup-card">
     <div id="playgroupPopupContent"></div>
@@ -166,9 +166,9 @@
   </div>
 </div>
 
-<!-- Full-screen editor for a play group note (see openPgEditor). -->
+<!-- Full-screen editor for a playgroup note (see openPgEditor). -->
 <div id="pgEditorOverlay" class="popup-overlay pg-fs-overlay hidden">
-  <div id="pgEditorInner" class="pg-fs" role="dialog" aria-label="Play group note"></div>
+  <div id="pgEditorInner" class="pg-fs" role="dialog" aria-label="Playgroup note"></div>
 </div>
 
 <div id="imageLightbox" class="image-lightbox hidden">
@@ -199,7 +199,7 @@
           <span>Privacy &amp; data</span><span class="account-menu-chevron">›</span>
         </button>
         <a id="playgroupDeskRow" class="account-menu-row desk-only" href="/playgroup" target="_blank" rel="noopener">
-          <span>🥎 Play group desk <span class="small muted">(for a computer)</span></span><span class="account-menu-chevron">›</span>
+          <span>🥎 Playgroup desk <span class="small muted">(for a computer)</span></span><span class="account-menu-chevron">›</span>
         </a>
         <button type="button" class="account-menu-row" data-page="feedback">
           <span>Feedback &amp; bug reports</span><span class="account-menu-chevron">›</span>
@@ -297,9 +297,11 @@
   </div>
 </div>
 
-<script src="/js/html5-qrcode.min.js"></script>
+<!-- html5-qrcode.min.js loads when a scan opens (loadScannerLib in app.js). -->
 <script src="/js/pg-tags.js"></script>
 <script src="/js/app.js"></script>
+<!-- Shared request helper for the modules' scripts (walker chat). -->
+<script src="/js/http-errors.js"></script>
 <!-- MODULE_SCRIPTS -->
 </body>
 </html>

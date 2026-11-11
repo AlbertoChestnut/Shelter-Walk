@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Play group desk · Shelter Walk</title>
+<title>Playgroup desk · Shelter Walk</title>
 <meta name="theme-color" content="#2f6f4f" />
 <meta name="color-scheme" content="light dark" />
 <link rel="icon" href="/icons/icon-192.png" />
@@ -14,7 +14,7 @@
 <body>
 
 <header class="topbar">
-  <h1>Shelter Walk <span class="topbar-sub">Play group desk</span></h1>
+  <h1>Shelter Walk <span class="topbar-sub">Playgroup desk</span></h1>
   <div id="deskNav" class="desk-nav"></div>
 </header>
 <div class="subbar">
@@ -40,7 +40,7 @@
     </aside>
     <section id="dogPane" class="dog-pane">
       <div class="empty-state">
-        <p>Pick a dog from the list to read and add play group notes.</p>
+        <p>Pick a dog from the list to read and add playgroup notes.</p>
         <p class="muted small"><span class="kbd-tip">Tip: press <kbd>/</kbd> to search, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save a note. </span>Type <kbd>@</kbd> in a note to tag another dog.</p>
       </div>
     </section>
@@ -71,6 +71,19 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
+<dialog id="unsavedDialog" class="unsaved-dialog" aria-labelledby="unsavedTitle">
+  <form method="dialog">
+    <h2 id="unsavedTitle">Unsaved note</h2>
+    <p>You haven't saved what you wrote in this note.</p>
+    <div class="unsaved-actions">
+      <button type="submit" value="stay" class="btn">Keep editing</button>
+      <button type="submit" value="discard" class="btn">Discard</button>
+      <button type="submit" value="save" class="btn primary" autofocus>Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/js/http-errors.js"></script>
 <script src="/js/pg-tags.js"></script>
 <script src="/js/playgroup.js"></script>
 <script src="/js/desk-nav.js"></script>

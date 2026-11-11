@@ -141,7 +141,7 @@ html[data-theme="dark"] .topbar { background: #2c7350; }
 .walk-entry .activity-icon { margin-right: 2px; }
 .walk-entry .elapsed { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--green-dark); }
 html[data-theme="dark"] .walk-entry .elapsed { color: var(--green); }
-.walk-entry .meta { color: var(--muted); font-size: 0.82rem; }
+.walk-entry .meta { color: var(--muted); font-size: 0.85rem; }
 .walk-entry .progress-track {
   height: 5px;
   border-radius: 3px;
@@ -151,7 +151,7 @@ html[data-theme="dark"] .walk-entry .elapsed { color: var(--green); }
 }
 .walk-entry .progress-fill { height: 100%; border-radius: 3px; background: var(--status-good); transition: width 1s linear, background-color 0.3s; }
 .walk-entry .progress-fill.warning { background: var(--status-warning); }
-.walk-entry .progress-note { font-size: 0.78rem; font-weight: 600; }
+.walk-entry .progress-note { font-size: 0.85rem; font-weight: 600; }
 .walk-entry .progress-note.warning { color: #8a6200; }
 html[data-theme="dark"] .walk-entry .progress-note.warning { color: var(--status-warning); }
 
@@ -196,7 +196,7 @@ html[data-theme="dark"] .walk-entry .progress-note.warning { color: var(--status
    TV, from across the room) -- sized up and weighted more than the x-axis
    hour labels, which are more of a reference strip underneath the bars. */
 .spark-y-label { fill: var(--muted); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.spark-x-label { fill: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.spark-x-label { fill: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .spark-bar { fill: var(--green); rx: 1.5; }
 .spark-bar:hover { fill: var(--green-dark); }
 html[data-theme="dark"] .spark-bar:hover { fill: var(--trend-listed, #3987e5); }
@@ -225,7 +225,7 @@ html[data-theme="dark"] .spark-bar:hover { fill: var(--trend-listed, #3987e5); }
   text-align: center;
 }
 .outs-today-boxes .mini-stat .mini-value { display: block; font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
-.outs-today-boxes .mini-stat .mini-label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+.outs-today-boxes .mini-stat .mini-label { display: block; font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
 
 /* Daycations are off-site -- visually separated with a dashed border rather
    than the solid-bordered location/activity cards, since "location" doesn't
@@ -251,7 +251,7 @@ html[data-theme="dark"] .spark-bar:hover { fill: var(--trend-listed, #3987e5); }
 .daycation-card .walk-entry .dog-avatar { width: 28px; height: 28px; }
 .daycation-card .walk-entry .dog-name { font-size: 0.88rem; }
 .daycation-card .walk-entry .elapsed { font-size: 0.85rem; }
-.daycation-card .walk-entry .meta { font-size: 0.74rem; }
+.daycation-card .walk-entry .meta { font-size: 0.85rem; }
 
 .view-toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .view-toggle-btn {
@@ -499,6 +499,42 @@ html[data-theme="dark"] .toast.error { color: #1c211f; }
 .weekly-table input[type="time"] { min-width: 0; }
 /* Line breaks staff typed into an alert (the text itself stays escaped). */
 .alert-body { white-space: pre-line; }
-.weekly-table th { text-align: left; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 4px; }
+.weekly-table th { text-align: left; font-size: 0.85rem; color: var(--muted); font-weight: 600; padding: 4px; }
 .weekly-table td { padding: 4px; }
 .weekly-table td:last-child, .weekly-table th:last-child { text-align: center; }
+.weekly-scroll-hint { margin: 8px 0 0; }
+
+/* The live board's "couldn't update" banner: shown at every width, since
+   the "Updated" time in the tab bar is hidden on smaller screens. */
+.live-error {
+  background: var(--red);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  line-height: 1.4;
+  margin-bottom: 14px;
+}
+html[data-theme="dark"] .live-error { color: #1c211f; }
+
+.tv-mode-btn.active { background: var(--green); color: #fff; border-color: var(--green); }
+.dog-chip-id { color: var(--muted); font-size: 0.95rem; font-weight: 600; }
+.dog-chip-off { opacity: 0.75; border-style: dashed; }
+.dog-chip-note { color: var(--muted); font-size: 0.85rem; }
+
+/* Phones: a compact header. The tabs stay on one row (scrolling sideways if
+   they must), Demo mode shrinks to its icon, and TV mode (meant for a big
+   screen) is hidden, so the header is two short rows instead of five. */
+@media (max-width: 600px) {
+  .topbar { padding: 8px 12px; gap: 6px 10px; }
+  .topbar h1 { font-size: 1rem; }
+  .topbar-sub { display: none; }
+  .subbar { padding: 6px 12px; gap: 8px; flex-wrap: nowrap; }
+  .section-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; flex: 1 1 auto; }
+  .section-tabs::-webkit-scrollbar { display: none; }
+  .tab-btn { padding: 6px 10px; font-size: 0.85rem; white-space: nowrap; flex: 0 0 auto; }
+  .subbar-end { flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
+  .tv-mode-btn { display: none; }
+  #demoToggleBtn .btn-label { display: none; }
+  #demoToggleBtn { padding: 6px 10px; }
+  #app { padding: 12px; }
+}

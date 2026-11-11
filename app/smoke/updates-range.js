@@ -42,9 +42,10 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('[data-updates-range="week"]');
     ok((await count(extra ? 3 : 2)).includes('since'), 'This week, since Sunday');
     await p.click('[data-updates-kind="returned"]');
-    ok((await count(1)).startsWith('1 update · 1 returned'), 'Returned this week: shown even though hidden in Settings');
+    // One kind on: no "· 1 returned" repeating the total (audit 2).
+    ok((await count(1)).startsWith('1 update · since'), 'Returned this week: shown even though hidden in Settings');
     await p.click('[data-updates-range="all"]');
-    ok((await count(2)) === '2 updates · 2 returned', 'every returned dog');
+    ok((await count(2)) === '2 updates', 'every returned dog');
     await p.click('[data-updates-kind="adopted"]');
     ok((await count(4)) === '4 updates · 2 adopted · 2 returned', 'two types at once');
     await p.screenshot({ path: h.shot('updrange1.png') });

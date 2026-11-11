@@ -9,7 +9,10 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const DIR = __dirname;
+// SMOKE_DIR points it at another folder of smokes (used by the runner's own
+// regression test); they still run from the app folder.
+const DIR = process.env.SMOKE_DIR || __dirname;
+const APP_DIR = path.join(__dirname, '..');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS) || 240000;
 const JOBS = Math.max(1, Number(process.env.SMOKE_JOBS) || 2);
 const SKIP = new Set(['tutorial-shots.js']);
@@ -26,9 +29,12 @@ function runOne(file) {
     let out = '';
     // Own process group, so a timeout also kills its server and Chromium.
     const child = spawn(process.execPath, [path.join(DIR, file)], {
-      cwd: path.join(DIR, '..'),
+      cwd: APP_DIR,
       // Pinned clock from the first line, before the smoke computes any dates.
-      env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require=./test/_clock.js`.trim() }, // relative: the path has a space stdio: ['ignore', 'pipe', 'pipe'], detached: true
+      // The --require path is relative because the absolute path has a space.
+      env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require=./test/_clock.js`.trim() },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true
     });
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { out += c; });

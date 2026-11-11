@@ -18,9 +18,30 @@ const MAX_TIPS_PER_DOG = 300;
 const MAX_WALK_NOTE = MAX_TIP;
 const crypto = require('crypto');
 const { noteDay } = require('./noteTags');
+const { SHELTER_TZ } = require('./constants');
 
-const shelterDateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+const shelterDateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: SHELTER_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
 const shelterDate = (iso) => shelterDateFmt.format(new Date(iso));
+
+// Opaque ids for notes: an HMAC of the row id under a secret kept in the
+// database (the same across restarts, but it can't be turned back into the
+// row id or compared with another). opaqueIds(db)(kind) -> (rowId) -> id.
+// findByOpaqueId picks the row whose id matches, in constant time.
+const OPAQUE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+function opaqueIds(db) {
+  let secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
+  if (!secret) {
+    db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('walk_note_secret', ?)").run(crypto.randomBytes(32).toString('hex'));
+    secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
+  }
+  return (kind) => (rowId) => crypto.createHmac('sha256', secret.value).update(`${kind}:${rowId}`).digest('base64url').slice(0, 22);
+}
+function findByOpaqueId(rows, idOf, raw) {
+  const want = String(raw || '');
+  if (!OPAQUE_ID_RE.test(want)) return null;
+  const wantBuf = Buffer.from(want);
+  return rows.find((r) => crypto.timingSafeEqual(Buffer.from(idOf(r.id)), wantBuf)) || null;
+}
 
 function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   const dogExists = db.prepare('SELECT 1 FROM dogs WHERE shelter_buddy_id = ?');
@@ -30,12 +51,10 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   // (and so by whom) a note was written. The id is an HMAC of the walk id
   // with a secret kept in the database, so it stays the same across restarts
   // but can't be turned back into the walk id or compared with another.
-  let secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
-  if (!secret) {
-    db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('walk_note_secret', ?)").run(crypto.randomBytes(32).toString('hex'));
-    secret = db.prepare("SELECT value FROM app_meta WHERE key = 'walk_note_secret'").get();
-  }
-  const noteIdOf = (walkId) => crypto.createHmac('sha256', secret.value).update(`walk-note:${walkId}`).digest('base64url').slice(0, 22);
+  const noteIdOf = opaqueIds(db)('walk-note');
+  // Shared tips get the same kind of id: theirs go up too, so your own tips
+  // would bracket everyone else's and undo their date-only times.
+  const tipIdOf = opaqueIds(db)('tip');
 
   // One dog's end-of-walk notes as their own list: opaque id, text, shelter
   // date and what kind of session it was. Never joined to a walk row, a time
@@ -50,10 +69,13 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
 
   // What one walker is allowed to see about one dog's notes.
   function notesFor(dogId, userId) {
+    // Newest day first, then by text: within a day, the order they were
+    // written in would say whose came first.
     const sharedTips = db.prepare(
       `SELECT id, body, created_at AS createdAt, updated_at AS updatedAt
-       FROM dog_notes WHERE dog_id = ? AND visibility = 'public' ORDER BY created_at DESC, id DESC`
-    ).all(dogId).map((t) => ({ ...t, createdAt: noteDay(t.createdAt), updatedAt: noteDay(t.updatedAt) }));
+       FROM dog_notes WHERE dog_id = ? AND visibility = 'public'`
+    ).all(dogId).map((t) => ({ ...t, id: tipIdOf(t.id), createdAt: noteDay(t.createdAt), updatedAt: noteDay(t.updatedAt) }))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.body.localeCompare(b.body)));
     const priv = db.prepare(
       "SELECT body, updated_at AS updatedAt FROM dog_notes WHERE dog_id = ? AND user_id = ? AND visibility = 'private'"
     ).get(dogId, userId) || null;
@@ -84,7 +106,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   app.get('/api/notes', (req, res) => {
     const mine = req.query.scope === 'mine';
     // A note left at the end of a session is tagged by what the session
-    // actually was -- play group gets its own kind instead of being folded
+    // actually was -- playgroup gets its own kind instead of being folded
     // into "walk" (every other activity still reads as a walk here).
     const rows = mine ? db.prepare(`
       SELECT n.dog_id AS dogId, 'private' AS kind, n.id, n.body, n.updated_at AS at
@@ -120,7 +142,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
       }
       // Shared notes (tips, walk notes) carry their date only; your own
       // private note keeps its time.
-      byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? r.id : undefined, body: r.body, at: r.kind === 'private' ? r.at : noteDay(r.at) });
+      byDog.get(r.dogId).notes.push({ kind: r.kind, id: r.kind === 'tip' ? tipIdOf(r.id) : undefined, body: r.body, at: r.kind === 'private' ? r.at : noteDay(r.at) });
     }
     // Within a dog, and between dogs, order by date and then text: the rows
     // above came sorted by exact time, which would line a walk note up
@@ -147,25 +169,27 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
     const info = db.prepare(
       "INSERT INTO dog_notes (dog_id, user_id, visibility, body, created_at, updated_at) VALUES (?, ?, 'public', ?, ?, ?)"
     ).run(dogId, req.me.id, body, now, now);
-    res.json({ id: info.lastInsertRowid });
+    res.json({ id: tipIdOf(info.lastInsertRowid) });
   });
+
+  // A shared tip by its opaque id (private notes are never reachable this
+  // way: only visibility = 'public' rows are looked at).
+  const dogTips = db.prepare("SELECT id FROM dog_notes WHERE dog_id = ? AND visibility = 'public'");
+  const findTip = (req) => findByOpaqueId(dogTips.all(parseInt(req.params.id, 10)), tipIdOf, req.params.noteId);
 
   // Whiteboard rules: any walker can edit any shared tip.
   app.put('/api/dogs/:id/notes/:noteId', (req, res) => {
-    const note = db.prepare("SELECT id FROM dog_notes WHERE id = ? AND dog_id = ? AND visibility = 'public'")
-      .get(parseInt(req.params.noteId, 10), parseInt(req.params.id, 10));
+    const note = findTip(req);
     if (!note) return res.status(404).json({ error: 'Tip not found' });
     const body = noteTags.clean(cleanText(req.body && req.body.body, MAX_TIP), parseInt(req.params.id, 10));
     if (!body) return res.status(400).json({ error: 'A tip can\'t be empty. Delete it instead.' });
     db.prepare('UPDATE dog_notes SET body = ?, updated_at = ? WHERE id = ?').run(body, new Date().toISOString(), note.id);
-    res.json({ id: note.id });
+    res.json({ id: req.params.noteId });
   });
 
-  // ...and any walker can erase any shared tip (private notes are never
-  // reachable through this route: it only matches visibility = 'public').
+  // ...and any walker can erase any shared tip.
   app.delete('/api/dogs/:id/notes/:noteId', (req, res) => {
-    const note = db.prepare("SELECT id FROM dog_notes WHERE id = ? AND dog_id = ? AND visibility = 'public'")
-      .get(parseInt(req.params.noteId, 10), parseInt(req.params.id, 10));
+    const note = findTip(req);
     if (!note) return res.status(404).json({ error: 'Tip not found' });
     db.prepare('DELETE FROM dog_notes WHERE id = ?').run(note.id);
     res.json({ ok: true });
@@ -177,11 +201,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   // the walk record stays as it was. Named by the opaque note id from
   // walkNotesFor (a walk id is not accepted).
   function sharedWalkNote(req) {
-    const want = String(req.params.noteId || '');
-    if (!/^[A-Za-z0-9_-]{22}$/.test(want)) return null;
-    const wantBuf = Buffer.from(want);
-    return notedWalks.all(parseInt(req.params.id, 10))
-      .find((w) => crypto.timingSafeEqual(Buffer.from(noteIdOf(w.id)), wantBuf)) || null;
+    return findByOpaqueId(notedWalks.all(parseInt(req.params.id, 10)), noteIdOf, req.params.noteId);
   }
   app.put('/api/dogs/:id/walk-notes/:noteId', (req, res) => {
     const walk = sharedWalkNote(req);
@@ -209,7 +229,7 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
     const existing = db.prepare("SELECT id, body FROM dog_notes WHERE dog_id = ? AND user_id = ? AND visibility = 'private'").get(dogId, req.me.id);
     let body = incoming;
     if (req.body && req.body.append && existing && incoming) {
-      const stamp = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' });
+      const stamp = new Date().toLocaleDateString('en-US', { timeZone: SHELTER_TZ, month: 'short', day: 'numeric' });
       body = `${existing.body}\n\n${stamp}: ${incoming}`.slice(0, MAX_PRIVATE);
     }
     const now = new Date().toISOString();
@@ -225,4 +245,4 @@ function register(app, { db, isStaffOrPrivileged, cachedPhotoUrl, noteTags }) {
   return { notesFor, walkNotesFor, MAX_WALK_NOTE };
 }
 
-module.exports = { register };
+module.exports = { register, opaqueIds, findByOpaqueId };

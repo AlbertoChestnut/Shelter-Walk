@@ -2,10 +2,15 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // The staff page's shared request helper (js/http-errors.js): friendly
+  // wording, userFacing 5xx messages, and the signed-out bar. The fallback
+  // only runs on a page that doesn't load it, and never shows a status code.
   async function api(path, opts) {
-    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (window.ShelterHttp) return window.ShelterHttp.request(path, opts);
+    let res;
+    try { res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts }); } catch (e) { throw new Error("Couldn't reach the server."); }
     const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error((body && body.error) || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(res.status < 500 && body && body.error ? body.error : 'Something went wrong on our end. Try again in a moment.');
     return body;
   }
 
@@ -41,6 +46,7 @@
       btn.closest('.yt-pending-item').remove();
     } catch (err) {
       console.error('[youtube-channel] review action failed:', err);
+      if (window.staffToast) window.staffToast(`Couldn't save that. ${err.message}`, 'error');
       btn.closest('.yt-pending-actions').querySelectorAll('button').forEach((b) => { b.disabled = false; });
     }
   });

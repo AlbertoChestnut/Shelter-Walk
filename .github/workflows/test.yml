@@ -1,5 +1,6 @@
 # Runs the syntax check, the API tests (in UTC and in the shelter's time
-# zone) and every browser smoke on every push and pull request, so a change
+# zone, then once with the clock 6 months ahead) and every browser smoke (in both zones too; screenshots are kept
+# when something fails) on every push and pull request, so a change
 # from any machine or session can't break the app unnoticed. Deploys stay
 # manual.
 name: Tests
@@ -8,9 +9,21 @@ on:
   push:
   pull_request:
 
+# Read the code, nothing else.
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR cancels the run it replaces.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The whole run takes a few minutes; a hung smoke or server shouldn't
+    # hold a runner for GitHub's 6-hour default.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: app
@@ -32,9 +45,35 @@ jobs:
         run: npm test
         env:
           TZ: America/New_York
+      # The same tests with the clock about 6 months ahead: a test with a
+      # typed-out "future" date (a special day, an alert expiry) fails here
+      # long before the real calendar reaches it.
+      - name: API tests (clock 6 months ahead)
+        if: ${{ !cancelled() }}
+        run: npm run test:future
+        env:
+          TZ: America/New_York
       - name: Install browser for the smokes
         run: npx playwright install --with-deps chromium
-      - name: Browser smokes
+      - name: Browser smokes (America/New_York)
         run: npm run smoke:all
         env:
           SMOKE_TZ: America/New_York
+          SMOKE_SHOTS_DIR: ${{ runner.temp }}/smoke-shots/new-york
+      # Server and browser in UTC: catches anything that uses the machine's
+      # or the phone's time zone instead of the shelter's.
+      - name: Browser smokes (UTC)
+        if: ${{ !cancelled() }}
+        run: npm run smoke:all
+        env:
+          TZ: UTC
+          SMOKE_TZ: UTC
+          SMOKE_SHOTS_DIR: ${{ runner.temp }}/smoke-shots/utc
+      - name: Upload smoke screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshots
+          path: ${{ runner.temp }}/smoke-shots
+          if-no-files-found: ignore
+          retention-days: 14

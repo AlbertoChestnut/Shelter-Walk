@@ -9,33 +9,70 @@
 //     positive totals.
 //   - Days and sessions with fewer than MIN_CELL walks are not listed at all
 //     (they still count toward the overall totals), so a quiet session that
-//     one identifiable person worked cannot be pinned on them.
+//     one identifiable person worked cannot be pinned on them. Breakdown
+//     slices (engagement type, species, POO, kittens) are shown whatever
+//     their size: they're counts only, never tied to a day or a session, and
+//     hiding them left percentages that didn't add up (owner, 2026-11-10).
 // The tests in test/api.test.js enforce all of this.
 const statsBreakdown = require('./statsBreakdown');
+const { WALK_SLOTS: SLOTS, MIN_AVG_SECONDS, roundToStep } = require('./constants');
+// The shelter's date and hour of a walk (cached per UTC hour: see shelterTime.js).
+const { shelterParts: localParts, shelterTimeOfDay } = require('./shelterTime');
+const { realDateKey } = require('./validate');
 
-const TZ = 'America/New_York'; // the shelter's clock, same as the scraper schedule
 const MIN_CELL = 3;
 
-// Same four sessions as the Available list's slot grid (last one runs to 8pm
-// but is labeled 4-7p).
-const SLOTS = [
-  { label: '7-10a', from: 7, to: 10 },
-  { label: '10-1p', from: 10, to: 13 },
-  { label: '1-4p', from: 13, to: 16 },
-  { label: '4-7p', from: 16, to: 20 }
-];
+// SLOTS: the same four sessions as the Available list's slot grid.
+// Averages leave out anything under MIN_AVG_SECONDS (an accidental scan ended
+// right away); those still count in every total.
 
-const fmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23'
-});
-function localParts(iso) {
-  const p = Object.fromEntries(fmt.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
-  return { dateKey: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
+// The walk-based part of /api/impact is the same for everyone, so it's kept
+// for TOGETHER_TTL_MS per (span, species, shelter day) and thrown away the
+// moment anything it reads changes: walks, a dog's species or tags, or a
+// sticker event (POO at the time). Temp triggers on the server's own DB
+// connection catch its writes; PRAGMA data_version catches any other
+// connection's (a test or script writing to the file). Totals stay exact.
+const TOGETHER_TTL_MS = 45000;
+const TOGETHER_MAX_ENTRIES = 24;
+function togetherCache(db) {
+  let generation = 0;
+  const entries = new Map();
+  try {
+    db.function('together_cache_bump', () => { generation += 1; return null; });
+    const bump = 'BEGIN SELECT together_cache_bump(); END';
+    db.exec(`
+      CREATE TEMP TRIGGER IF NOT EXISTS together_walks_ins AFTER INSERT ON main.walks ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_walks_upd AFTER UPDATE ON main.walks ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_walks_del AFTER DELETE ON main.walks ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_dogs_ins AFTER INSERT ON main.dogs ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_dogs_upd AFTER UPDATE OF species, tags ON main.dogs ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_dogs_del AFTER DELETE ON main.dogs ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_events_ins AFTER INSERT ON main.shelter_events ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_events_upd AFTER UPDATE ON main.shelter_events ${bump};
+      CREATE TEMP TRIGGER IF NOT EXISTS together_events_del AFTER DELETE ON main.shelter_events ${bump};
+    `);
+  } catch (e) {
+    // No triggers (an unexpected schema): never cache rather than go stale.
+    return { get: (key, build) => build(), clear() {} };
+  }
+  const dataVersion = db.prepare('PRAGMA data_version').pluck();
+  return {
+    get(key, build) {
+      const now = Date.now();
+      const stamp = `${generation}:${dataVersion.get()}`;
+      const hit = entries.get(key);
+      if (hit && hit.stamp === stamp && now - hit.at < TOGETHER_TTL_MS) return hit.value;
+      const value = build();
+      // build() only reads, but compare against the stamp from before it so
+      // a write that lands meanwhile can't be cached as current.
+      entries.delete(key);
+      if (entries.size >= TOGETHER_MAX_ENTRIES) entries.delete(entries.keys().next().value);
+      entries.set(key, { stamp, at: now, value });
+      return value;
+    },
+    clear() { entries.clear(); }
+  };
 }
-
-// Averages leave out anything under a minute (an accidental scan ended right
-// away); those still count in every total.
-const { MIN_AVG_SECONDS } = statsBreakdown;
 // "2026-11-10" moved by n calendar days.
 function shiftDateKey(key, n) {
   const d = new Date(`${key}T12:00:00Z`);
@@ -64,22 +101,40 @@ function add(t, row) {
 // any walks in the period, falling back to the overall average otherwise.
 function avgOf(t) { return t.walkCount > 0 ? t.walkSeconds / t.walkCount : (t.avgCount ? t.avgSeconds / t.avgCount : 0); }
 // What that average is of, for its label: 'walk', the one activity every
-// averaged engagement was (a matchmaking-only day), or null for a mix. Named
-// only when at least MIN_CELL engagements make it up, like byActivityOf, so
-// it can't single out a rare one ("Average engagement" then).
+// averaged engagement was (a matchmaking-only day), or null for a mix.
 function avgActivityOf(t) {
   if (t.walkCount > 0) return 'walk';
   const kinds = [...t.activities.entries()].filter(([, a]) => a.avgCount > 0);
-  return kinds.length === 1 && kinds[0][1].avgCount >= MIN_CELL ? kinds[0][0] : null;
+  return kinds.length === 1 ? kinds[0][0] : null;
 }
-function out(t) { return { walks: t.walks, dogs: t.dogs.size, seconds: t.seconds, avgSeconds: avgOf(t), avgActivity: avgActivityOf(t) }; }
-// Per-activity counts, same MIN_CELL suppression as days/sessions get: an
-// activity type a lone volunteer did a handful of times can't be pinned on
-// them, so it's left out of the breakdown (it still counts in the totals).
+// Which engagements avgOf is over: walks of a minute or more when there are
+// any, otherwise every engagement of a minute or more.
+function averagesWalksOnly(t) { return t.walkCount > 0; }
+function isAveraged(t, row) {
+  if ((row.duration_seconds || 0) < MIN_AVG_SECONDS) return false;
+  return !averagesWalksOnly(t) || (row.activity || 'walk') === 'walk';
+}
+// avgCount: how many engagements the average is over; avgSkipped: how many of
+// the same kind it left out as under a minute. The app shows these as they
+// are: others' lengths reach it rounded to 5 minutes, so it can't tell a
+// 1-2 minute walk (averaged) from a mis-scan (audit3).
+function out(t) {
+  const walksOnly = averagesWalksOnly(t);
+  const walkRows = t.activities.has('walk') ? t.activities.get('walk').count : 0;
+  return {
+    walks: t.walks,
+    dogs: t.dogs.size,
+    seconds: t.seconds,
+    avgSeconds: avgOf(t),
+    avgActivity: avgActivityOf(t),
+    avgCount: walksOnly ? t.walkCount : t.avgCount,
+    avgSkipped: walksOnly ? walkRows - t.walkCount : t.walks - t.avgCount
+  };
+}
+// Per-activity counts, every activity type however few.
 function byActivityOf(t) {
   return [...t.activities.entries()]
     .map(([activity, a]) => ({ activity, count: a.count, totalSeconds: a.totalSeconds, avgSeconds: a.avgCount ? a.avgSeconds / a.avgCount : 0, avgCount: a.avgCount }))
-    .filter((a) => a.count >= MIN_CELL)
     .sort((a, b) => b.count - a.count);
 }
 
@@ -88,7 +143,8 @@ function byActivityOf(t) {
 function buildImpact(rows, allTime, now = new Date()) {
   const days = new Map();
   for (const row of rows) {
-    const { dateKey, hour } = localParts(row.started_at);
+    const { dateKey } = localParts(row.started_at);
+    const hour = shelterTimeOfDay(row.started_at);
     if (!days.has(dateKey)) days.set(dateKey, { total: tally(), sessions: SLOTS.map(() => tally()) });
     const d = days.get(dateKey);
     add(d.total, row);
@@ -115,60 +171,68 @@ function buildImpact(rows, allTime, now = new Date()) {
   return { minCell: MIN_CELL, today, days: list, allTime };
 }
 
-// The statsBreakdown.js splits (species, POO at the time, kittens), with
-// the same MIN_CELL suppression as everything else here: a slice that only
-// a handful of engagements fall into is left out (it still counts in the
-// totals), so a rare one can't be pinned on whoever did it.
-function suppressedBreakdown(rows, pooAt) {
-  const b = statsBreakdown.breakdown(rows, pooAt);
-  const keep = (list) => list.filter((x) => x.count >= MIN_CELL);
-  return { bySpecies: keep(b.bySpecies), byPoo: keep(b.byPoo), byAge: keep(b.byAge) };
+// The statsBreakdown.js splits (species, POO at the time, kittens).
+function splitBreakdown(rows, pooAt) {
+  const { bySpecies, byPoo, byAge } = statsBreakdown.breakdown(rows, pooAt);
+  return { bySpecies, byPoo, byAge };
 }
 
 function register(app, { db, walkableFor }) {
+  const cache = togetherCache(db);
   app.get('/api/impact', (req, res) => {
     // ?days=all: every day since tracking began (the app groups them by month).
     const span = req.query.days === 'all' ? Infinity : Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 120);
     // ?species=dog|cat narrows everything to one species (anything else: both).
     const filter = statsBreakdown.speciesFilter(req.query.species);
-    const kinds = statsBreakdown.filterKinds(filter);
-    // Pad the window by a day so a UTC/local boundary never clips a day.
-    const since = span === Infinity ? '' : new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
-    const everything = db.prepare(`
-      SELECT w.dog_id, w.started_at, w.duration_seconds, w.activity, d.species, d.tags
-      FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE w.ended_at IS NOT NULL
-    `).all();
-    const all = everything.filter((r) => kinds.includes(r.species));
-    // The window is whole shelter days: today and the span - 1 days before
-    // it, so the oldest day listed is never cut short by the padding above.
-    const firstKey = span === Infinity ? '' : shiftDateKey(localParts(new Date().toISOString()).dateKey, -(span - 1));
-    const rows = all.filter((r) => r.started_at >= since && localParts(r.started_at).dateKey >= firstKey);
-    const total = tally();
-    for (const r of all) add(total, r);
-    const pooAt = statsBreakdown.pooResolver(db);
-    const allTime = {
-      ...out(total),
-      since: all.reduce((min, r) => (!min || r.started_at < min ? r.started_at : min), null),
-      byActivity: byActivityOf(total),
-      ...suppressedBreakdown(all, pooAt),
-      // Both species, whatever the filter, so the app can show the split.
-      bySpecies: suppressedBreakdown(everything, pooAt).bySpecies
-    };
-    const impact = buildImpact(rows, allTime);
-    if (impact.today) {
-      const todayRows = rows.filter((r) => localParts(r.started_at).dateKey === impact.today.dateKey);
-      const { byPoo, byAge } = suppressedBreakdown(todayRows, pooAt);
-      // A copy: the same day's entry in `days` keeps the plain day shape.
-      impact.today = { ...impact.today, byPoo, byAge };
-    }
-    // What's listed right now. No "how many were walked today" here: that's
-    // the kind of shortfall framing Together never shows.
-    impact.shelterNow = statsBreakdown.shelterNow(db, filter, { isWalkable: walkableFor(req), walkedIds: null });
-    impact.species = filter;
-    // Trim to the requested number of days after bucketing in local time.
-    if (span !== Infinity) impact.days = impact.days.slice(0, span);
-    res.json(impact);
+    const todayKey = localParts(new Date()).dateKey;
+    const impact = cache.get(`${span}|${filter}|${todayKey}`, () => buildTogether(db, span, filter));
+    // What's listed right now (per viewer: what they may walk), so never
+    // cached. No "how many were walked today" here: that's the kind of
+    // shortfall framing Together never shows.
+    res.json({
+      ...impact,
+      shelterNow: statsBreakdown.shelterNow(db, filter, { isWalkable: walkableFor(req), walkedIds: null }),
+      species: filter
+    });
   });
+  return cache;
+}
+
+// Everything in /api/impact that doesn't depend on who's asking.
+function buildTogether(db, span, filter) {
+  const kinds = statsBreakdown.filterKinds(filter);
+  // Pad the window by a day so a UTC/local boundary never clips a day.
+  const since = span === Infinity ? '' : new Date(Date.now() - (span + 1) * 86400 * 1000).toISOString();
+  const everything = db.prepare(`
+    SELECT w.dog_id, w.started_at, w.duration_seconds, w.activity, d.species, d.tags
+    FROM walks w JOIN dogs d ON d.shelter_buddy_id = w.dog_id WHERE w.ended_at IS NOT NULL
+  `).all();
+  const all = everything.filter((r) => kinds.includes(r.species));
+  // The window is whole shelter days: today and the span - 1 days before
+  // it, so the oldest day listed is never cut short by the padding above.
+  const firstKey = span === Infinity ? '' : shiftDateKey(localParts(new Date().toISOString()).dateKey, -(span - 1));
+  const rows = all.filter((r) => r.started_at >= since && localParts(r.started_at).dateKey >= firstKey);
+  const total = tally();
+  for (const r of all) add(total, r);
+  const pooAt = statsBreakdown.pooResolver(db);
+  const allTime = {
+    ...out(total),
+    since: all.reduce((min, r) => (!min || r.started_at < min ? r.started_at : min), null),
+    byActivity: byActivityOf(total),
+    ...splitBreakdown(all, pooAt),
+    // Both species, whatever the filter, so the app can show the split.
+    bySpecies: splitBreakdown(everything, pooAt).bySpecies
+  };
+  const impact = buildImpact(rows, allTime);
+  if (impact.today) {
+    const todayRows = rows.filter((r) => localParts(r.started_at).dateKey === impact.today.dateKey);
+    const { byPoo, byAge } = splitBreakdown(todayRows, pooAt);
+    // A copy: the same day's entry in `days` keeps the plain day shape.
+    impact.today = { ...impact.today, byPoo, byAge };
+  }
+  // Trim to the requested number of days after bucketing in local time.
+  if (span !== Infinity) impact.days = impact.days.slice(0, span);
+  return impact;
 }
 
 // One day's walks in order: which dog, when, how long -- for everyone's walks
@@ -180,7 +244,7 @@ function register(app, { db, walkableFor }) {
 function registerDay(app, { db, cachedPhotoUrl }) {
   app.get('/api/impact/day', (req, res) => {
     const date = String(req.query.date || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must look like 2026-09-20' });
+    if (!realDateKey(date)) return res.status(400).json({ error: 'date must look like 2026-09-20' });
     // A local (New York) calendar day always lies within these UTC bounds.
     const base = new Date(`${date}T12:00:00Z`).getTime();
     const from = new Date(base - 36 * 3600 * 1000).toISOString();
@@ -197,13 +261,17 @@ function registerDay(app, { db, cachedPhotoUrl }) {
     // Same rule as the day list: a quiet day is not opened up, so it can't be
     // pinned on whoever happened to be there.
     if (rows.length < MIN_CELL) return res.status(404).json({ error: 'No details are shown for this day.' });
+    // The day's exact totals, the same numbers as its row in the Together
+    // list (a total over MIN_CELL+ engagements, like every Together figure).
+    const day = tally();
+    rows.forEach((r) => add(day, r));
     // Round 4: someone else's engagement has no clock times, just its
     // session (slot, index into SLOTS, -1 outside them) and a length to the
     // nearest 5 minutes, the same as a dog's walk history -- exact times here
     // would undo that, and the dog list's coarse "last walked". Your own
     // keep their times. Ordered by session, never by anyone else's real time.
     const walks = rows.map((r) => {
-      const hour = localParts(r.started_at).hour;
+      const hour = shelterTimeOfDay(r.started_at);
       const base = {
         dogId: r.dog_id,
         dogName: r.dog_name,
@@ -214,19 +282,18 @@ function registerDay(app, { db, cachedPhotoUrl }) {
         pbFlag: !!r.pb_flag,
         slot: SLOTS.findIndex((s) => hour >= s.from && hour < s.to),
         activity: r.activity,
-        mine: !!r.mine
+        mine: !!r.mine,
+        // In the day's average (totals.avgSeconds)? Decided on the exact
+        // length, which the app no longer has for others' rounded rows.
+        averaged: isAveraged(day, r)
       };
       // Before the first session sorts first, after the last sorts last.
       base.sortKey = base.slot >= 0 ? base.slot : (hour < SLOTS[0].from ? -1 : SLOTS.length);
       return r.mine
         ? { ...base, startedAt: r.started_at, endedAt: r.ended_at, durationSeconds: r.duration_seconds }
-        : { ...base, durationSeconds: Math.round((r.duration_seconds || 0) / 300) * 300 };
+        : { ...base, durationSeconds: roundToStep(r.duration_seconds) };
     }).sort((a, b) => a.sortKey - b.sortKey || (a.mine !== b.mine ? (a.mine ? -1 : 1) : 0)
       || (a.mine ? (a.startedAt < b.startedAt ? -1 : 1) : String(a.dogName).localeCompare(String(b.dogName)) || a.activity.localeCompare(b.activity) || a.durationSeconds - b.durationSeconds));
-    // The day's exact totals, the same numbers as its row in the Together
-    // list (a total over MIN_CELL+ engagements, like every Together figure).
-    const day = tally();
-    rows.forEach((r) => add(day, r));
     res.json({
       date,
       totals: out(day),
@@ -235,4 +302,4 @@ function registerDay(app, { db, cachedPhotoUrl }) {
   });
 }
 
-module.exports = { register, registerDay, buildImpact, MIN_CELL };
+module.exports = { register, registerDay, MIN_CELL };

@@ -61,12 +61,14 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(/couldn't add time/.test(failed), 'extend after the walk ended explains: ' + failed);
     await page.click('#doneBtn');
 
-    // 5. End walk with the app closed: opened from /?endWalk=..&at=..
+    // 5. End walk with the app closed: the worker keeps the tap with a nonce
+    //    (stashEndTap) and opens /?endWalk=..&nonce=.. (audit 3).
     walk = await start();
     await page.close();
     await new Promise((r) => setTimeout(r, 4000)); const tap2 = new Date(Date.now() - 2000).toISOString();
+    const nonce = await sw.evaluate(async ({ walkId, at }) => stashEndTap(walkId, at), { walkId: walk.walkId, at: tap2 });
     const p2 = await ctx.newPage(); p2.on('pageerror', (e) => errs.push(e.message));
-    await p2.goto(`${base}/?endWalk=${walk.walkId}&at=${encodeURIComponent(tap2)}`, { waitUntil: 'networkidle' });
+    await p2.goto(`${base}/?endWalk=${walk.walkId}&nonce=${nonce}`, { waitUntil: 'networkidle' });
     await p2.waitForSelector('#saveWalkBtn');
     ok(p2.url() === base + '/', 'URL tidied to /');
     await p2.click('#saveWalkBtn'); await p2.waitForSelector('#doneBtn');

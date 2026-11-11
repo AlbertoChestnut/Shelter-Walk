@@ -237,7 +237,9 @@ test('#9 Together: slices say how many their average is over, and a no-walk day 
 });
 
 // ---- #5 Guide text ----
-test('#5 Guide: Experience levels says what stray hold and foster do, added once to databases seeded before', async () => {
+// wikiSeed.js holds the shelter's own text and isn't in the public repo (CI's clean clone).
+const hasSeed = fs.existsSync(path.join(__dirname, '..', 'src', 'wikiSeed.js'));
+test('#5 Guide: Experience levels says what stray hold and foster do, added once to databases seeded before', { skip: !hasSeed && 'wikiSeed.js not present' }, async () => {
   const seed = require('../src/wikiSeed');
   const levels = seed.demoSections().find((s) => s.title === 'Experience levels');
   assert.match(levels.body, /stray hold/);

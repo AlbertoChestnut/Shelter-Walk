@@ -1,4 +1,4 @@
-// The view switcher at the top of the desktop pages (play group desk, staff
+// The view switcher at the top of the desktop pages (playgroup desk, staff
 // dashboard): a link to each page this person can use, and which one opens
 // first when they go to the site on a computer. The list of pages comes from
 // the server (desktopViews.js via /api/me), so a new desktop page shows up

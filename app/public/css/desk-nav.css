@@ -32,7 +32,7 @@ a.desk-nav-link:hover { background: rgba(127, 127, 127, 0.12); }
   .desk-nav { min-width: 0; max-width: 100%; }
   .desk-nav-views { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
   .desk-nav-views::-webkit-scrollbar { display: none; }
-  .desk-nav-link { padding: 5px 8px; font-size: 0.78rem; }
+  .desk-nav-link { padding: 5px 8px; font-size: 0.85rem; }
 }
 
 /* "Open this page first on a computer" means nothing on a phone. */

@@ -3,9 +3,11 @@
 
 Emails when something breaks (after 2 consecutive failing runs, so a blip
 doesn't page anyone), reminds every 6 hours while it stays broken, and sends
-an all-clear when it recovers. Reads its own settings from an env file (see
-deploy/env/dogwalk.env.example) -- add ALERT_TO and, if you want it to send
-mail itself, EMAIL_HOST/EMAIL_PORT/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD there.
+an all-clear when it recovers. Reads its own settings from the app's env file
+(/etc/dogwalk/env, or DOGWALK_ENV_FILE); deploy/env/dogwalk.env.example lists
+them under "Health monitor": ALERT_TO (required), PUBLIC_URL, and for sending
+mail itself EMAIL_HOST, EMAIL_PORT, EMAIL_USE_TLS, EMAIL_HOST_USER,
+EMAIL_HOST_PASSWORD and FROM_EMAIL.
 Checks are specific to this app; add your own auth service's checks beside
 check_dogwalk() if you want it watched too.
 """
@@ -142,7 +144,8 @@ def send_mail(env, alert_to, subject, body):
 
 def main():
     env = load_env(ENV_FILE)
-    alert_to = env.get("ALERT_TO", "")
+    # The env file wins; the unit file's Environment=ALERT_TO=... is the fallback.
+    alert_to = env.get("ALERT_TO", "") or os.environ.get("ALERT_TO", "")
     if not alert_to:
         sys.exit(f"Set ALERT_TO in {ENV_FILE} so alerts have somewhere to go.")
     if "--test" in sys.argv:

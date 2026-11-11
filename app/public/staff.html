@@ -26,13 +26,15 @@
   </nav>
   <span class="subbar-end">
     <span id="lastUpdated" class="muted small"><span class="live-dot" aria-hidden="true"></span></span>
-    <button type="button" id="demoToggleBtn" class="demo-toggle-btn">🎬 Demo mode</button>
+    <button type="button" id="tvModeBtn" class="demo-toggle-btn tv-mode-btn" aria-pressed="false" title="Shrink the live board to fit one screen, for a TV or lobby display. Big screens do this anyway.">📺 TV mode</button>
+    <button type="button" id="demoToggleBtn" class="demo-toggle-btn" aria-label="Demo mode"><span aria-hidden="true">🎬</span><span class="btn-label"> Demo mode</span></button>
   </span>
 </div>
 
 <main id="app">
   <section id="liveSection" class="panel">
     <div id="demoBanner" class="demo-banner hidden">DEMO MODE — not real data</div>
+    <div id="liveError" class="live-error hidden" role="alert"></div>
     <div class="view-toggle species-toggle" role="group" aria-label="Which animals">
       <span class="muted small">Show:</span>
       <button type="button" class="view-toggle-btn species-btn active" data-species="dog">🐕 Dogs</button>
@@ -42,7 +44,7 @@
     <div class="stat-row">
       <div class="stat-tile"><span class="stat-value" id="statActiveWalkers">—</span><span class="stat-label">Volunteers out now</span></div>
       <div class="stat-tile"><span class="stat-value" id="statActiveCount">—</span><span class="stat-label"><span class="noun-many">Dogs</span> out now</span></div>
-      <div class="stat-tile" title="Walks, cuddles, matchmaking, play group and daycations that started today and have finished. One still out counts once it ends, the same as Together in the app.">
+      <div class="stat-tile" title="Walks, cuddles, matchmaking, playgroup and daycations that started today and have finished. One still out counts once it ends, the same as Together in the app.">
         <span class="stat-value" id="statWalksToday">—</span>
         <span class="stat-label">Engagements today <span id="walksTrendArrow" class="trend-arrow"></span></span>
       </div>
@@ -111,7 +113,7 @@
       <label><input type="checkbox" value="byLocation" /> By location</label>
       <label><input type="checkbox" value="byDayOfWeek" /> By day of week</label>
       <label><input type="checkbox" value="byTimeOfDay" /> By time of day</label>
-      <label><input type="checkbox" value="shelterContext" /> Shelter context</label>
+      <label><input type="checkbox" value="shelterContext" /> Shelter context (dogs only)</label>
       <label><input type="checkbox" value="uniqueDogsServed" /> Each animal served</label>
       <label><input type="checkbox" value="highlights" /> Highlights</label>
     </div>
@@ -119,7 +121,7 @@
     <div class="dog-picker">
       <label for="dogPickerInput">Report on one animal (optional)</label>
       <div class="dog-picker-row">
-        <input type="text" id="dogPickerInput" list="dogPickerList" placeholder="Type a name…" autocomplete="off" />
+        <input type="text" id="dogPickerInput" list="dogPickerList" placeholder="Type a name or ID…" autocomplete="off" />
         <datalist id="dogPickerList"></datalist>
         <button type="button" id="addDogBtn">Add</button>
       </div>
@@ -143,6 +145,7 @@
         <form id="alertForm" class="hours-form">
           <label>Headline <input type="text" id="alertTitle" maxlength="80" placeholder="e.g. Shelter closed today" required /></label>
           <label>Message <textarea id="alertBody" maxlength="500" rows="3" placeholder="e.g. A water main broke. No walks today, sorry! We'll post when we reopen."></textarea></label>
+          <label>Show until <input type="date" id="alertUntil" /> <span class="small muted">Leaves the Updates tab at closing time that day. Blank: a week.</span></label>
           <div class="form-actions"><button type="submit" class="primary-btn">Send alert</button><span id="alertStatus" class="small muted"></span></div>
         </form>
         <h3>Recent alerts</h3>
@@ -164,6 +167,8 @@
             <label>Walks end <input type="time" id="specialClose" value="19:00" /></label>
           </div>
           <label>Note for volunteers <input type="text" id="specialNote" maxlength="200" placeholder="e.g. Thanksgiving" /></label>
+          <label>Message <span class="small muted">(optional)</span> <textarea id="specialMessage" maxlength="500" rows="3" placeholder="e.g. Dogs still need potty breaks in the morning. Text the volunteer coordinator if you can help."></textarea>
+            <span class="small muted">Shown in the app's notice that day and in the alert, if you send one.</span></label>
           <label class="check"><input type="checkbox" id="specialNotify" /> Also send a shelter alert to everyone now</label>
           <div class="form-actions">
             <button type="submit" class="primary-btn" id="specialSaveBtn">Save day</button>
@@ -179,6 +184,7 @@
         <h2>🕒 Usual weekly hours</h2>
         <p class="muted small">When walks can start, and when any walk still out stops by itself.</p>
         <form id="weeklyForm">
+          <p id="weeklyScrollHint" class="weekly-scroll-hint small muted hidden">Scroll the table sideways for the Closed column →</p>
           <div class="weekly-scroll">
           <table class="weekly-table">
             <thead><tr><th>Day</th><th>Walks start</th><th>Walks end</th><th>Closed</th></tr></thead>
@@ -201,6 +207,7 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
+<script src="/js/http-errors.js"></script>
 <script src="/js/staff.js"></script>
 <script src="/js/staff-settings.js"></script>
 <script src="/js/desk-nav.js"></script>

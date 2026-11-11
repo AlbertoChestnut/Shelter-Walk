@@ -1,5 +1,5 @@
 // Release checks (.ai/RELEASE_CHECKS.md, "UI"): a fast sweep over the main
-// screens -- volunteer app at 320 and 390 px, staff dashboard and play group
+// screens -- volunteer app at 320 and 390 px, staff dashboard and playgroup
 // desk at 1366 (and the desk at 390) -- asserting on every screen:
 //   - no horizontal scroll (document scrollWidth <= clientWidth)
 //   - no NaN / undefined / null / "Invalid Date" / "[object Object]" / "(add "
@@ -28,7 +28,7 @@ const TAP_SELECTOR = '.tabbar .tab-btn, .topbar button, .btn:not(.small-btn), .s
 // Allowed under 44 px, each with its reason. minWidth: only from that
 // viewport width up.
 const TAP_ALLOW = [
-  // The staff dashboard and play group desk section tabs on a computer
+  // The staff dashboard and playgroup desk section tabs on a computer
   // (mouse pointer, >= 1000 px wide): 30-32 px tall, above the 24 px WCAG
   // 2.5.8 minimum. On a phone they still have to be 44.
   { selector: '.section-tabs .tab-btn', minWidth: 1000 }
@@ -216,10 +216,10 @@ async function sweep(page, label, issues) {
     await s.context().close();
 
     for (const [w, ht] of [[1366, 900], [390, 844]]) {
-      console.log(`Play group desk at ${w}px`);
+      console.log(`Playgroup desk at ${w}px`);
       const g = await open(w, ht, { user: STAFF, staffHeader: true });
       await g.goto(`${base}/playgroup`, { waitUntil: 'networkidle' });
-      await sweep(g, `${w} Play group desk`, issues);
+      await sweep(g, `${w} Playgroup desk`, issues);
       await g.context().close();
     }
 

@@ -59,4 +59,4 @@ async function pollChannel({ db, getConfig }) {
   return { newVideos, newMatches, entriesSeen: entries.length };
 }
 
-module.exports = { pollChannel, fetchFeedXml };
+module.exports = { pollChannel };

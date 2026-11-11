@@ -68,4 +68,4 @@ async function resolveChannelId(input) {
   return channelId;
 }
 
-module.exports = { resolveChannelId, looksLikeChannelId };
+module.exports = { resolveChannelId };

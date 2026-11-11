@@ -57,7 +57,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(switchKeys === 'dog,cat', 'switch is Dogs / Cats, no Both');
     ok(await p.$eval('.seg-btn[data-stats-species="dog"]', (e) => e.classList.contains('on')), 'starts on the species the lists show');
     const text = async () => p.textContent('#app');
-    ok(/By engagement type/.test(await text()), 'engagement types on today');
+    ok(/By activity/.test(await text()), 'engagement types on today');
     ok(!/At the shelter right now|Walkable for your level/.test(await text()), 'shelter-now tiles live on Shelter now, not My stats');
     ok(!/Kittens vs adult cats/.test(await text()) && !/Dogs vs cats/.test(await text()), 'Dogs hides cat splits');
     const tileText = async () => p.$$eval('.stat-tile', (els) => els.map((e) => [...e.children].map((c) => c.textContent.trim()).join(' ')));
@@ -67,7 +67,11 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await p.click('#statsRangeToggle');
     await p.waitForSelector('#statsByDogHeading');
     const poo = await p.$$eval('.bd-row', (rows) => rows.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
-    ok(poo.some((r) => /^POO/.test(r) && /1 engagement/.test(r)) && poo.some((r) => /^Non-POO/.test(r) && /2 engagements/.test(r)), 'lifetime POO counts the sticker as it was at the time');
+    ok(poo.some((r) => /^POO/.test(r) && /1 walk\b/.test(r)) && poo.some((r) => /^Non-POO/.test(r) && /1 walk\b/.test(r)), "lifetime POO counts the sticker as it was at the time, walks only (Rocket's cuddle left out)");
+    ok(await p.$eval('.bd-row[data-bd-activity="walk"]', (row) => {
+      const next = row.nextElementSibling;
+      return !!next && next.classList.contains('bd-sub') && /POO vs non-POO/.test(next.textContent) && /All 2 walks above/.test(next.textContent);
+    }), 'the POO split sits right under the Walk row');
     await p.screenshot({ path: h.shot('stats-dogs-lifetime.png'), fullPage: true });
 
     await p.click('.seg-btn[data-stats-species="cat"]');

@@ -5,10 +5,15 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // The app's shared request helper (js/http-errors.js): friendly wording,
+  // userFacing 5xx messages, and the signed-out bar. The fallback only runs
+  // on a page that doesn't load it, and never shows a raw status code.
   async function api(path, opts) {
-    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (window.ShelterHttp) return window.ShelterHttp.request(path, opts);
+    let res;
+    try { res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts }); } catch (e) { throw new Error("Couldn't reach the server."); }
     const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error((body && body.error) || `Request failed (${res.status})`);
+    if (!res.ok) throw new Error(res.status < 500 && body && body.error ? body.error : 'Something went wrong on our end. Try again in a moment.');
     return body;
   }
 
@@ -129,17 +134,16 @@
       retryMs = RETRY_MIN_MS;
     };
     es.addEventListener('message', (e) => {
+      // `mine` comes worked out for this reader; `who` only keys the typing
+      // line (never an account id). Your own typing isn't sent back to you.
       const m = JSON.parse(e.data);
-      // The stream carries userId, not mine -- stamped against whichever
-      // account loaded this page, same as the initial history fetch.
-      m.mine = m.userId === window.__wcMeId;
-      clearTypingFor(m.userId);
+      clearTypingFor(m.who);
       appendMessage(m);
     });
     es.addEventListener('deleted', (e) => removeMessage(JSON.parse(e.data).id));
     es.addEventListener('typing', (e) => {
       const t = JSON.parse(e.data);
-      if (t.userId !== window.__wcMeId) markTyping(t.userId, t.authorName);
+      markTyping(t.who, t.authorName);
     });
     es.onerror = () => {
       es.close();
@@ -167,6 +171,7 @@
       input.value = '';
     } catch (err) {
       console.error('[walker-chat] send failed:', err);
+      typingEl.textContent = `Couldn't send that. ${err.message}`;
     } finally {
       input.disabled = false;
       input.focus();

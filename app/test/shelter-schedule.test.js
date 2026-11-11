@@ -112,6 +112,65 @@ test('saving a special day with notify also posts an alert', async () => {
   await call('DELETE', `/api/staff/schedule/days/${today}`, { staff: true });
 });
 
+// An alert expires at the day's closing time; with no walk-hour limit set
+// (the test server's default) that's the last minute of the day instead.
+function assertClosing(expiresAt, day, msg) {
+  if (new Date(day.closesAt).getUTCFullYear() <= 9999) return assert.equal(expiresAt, day.closesAt, msg);
+  const fmt = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(d));
+  assert.equal(fmt(expiresAt), `${day.dateKey}, 23:59`, msg);
+}
+
+test('a special day can carry a longer message, shown in the day notice and the alert', async () => {
+  const message = 'Dogs still need potty breaks.\nText the volunteer coordinator if you can help.';
+  const r = await call('PUT', `/api/staff/schedule/days/${today}`, { staff: true, body: { mode: 'closed', note: 'Veterans Day', message, notify: true } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.day.message, message);
+  const t = (await call('GET', '/api/shelter/today')).json.today;
+  assert.equal(t.message, message);
+  assert.equal(t.note, 'Veterans Day');
+  const alert = (await call('GET', '/api/updates?kinds=alert')).json.updates.find((u) => u.id === r.json.alert.id);
+  assert.equal(alert.detail, `No walks today. Veterans Day\n\n${message}`);
+  // A message alone is enough for a "just a note" day.
+  assert.equal((await call('PUT', `/api/staff/schedule/days/${today}`, { staff: true, body: { mode: 'note', message: 'Bring towels' } })).status, 200);
+  const sched = (await call('GET', '/api/staff/schedule', { staff: true })).json;
+  assert.equal(sched.specialDays.find((d) => d.dateKey === today).message, 'Bring towels');
+  await call('DELETE', `/api/staff/schedule/days/${today}`, { staff: true });
+  assert.equal((await call('GET', '/api/shelter/today')).json.today.message, '');
+});
+
+test('an alert about a day leaves Updates at that day\'s closing time, or when the day is removed', async () => {
+  const tomorrow = new Date(`${today}T12:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const key = tomorrow.toISOString().slice(0, 10);
+  const r = await call('PUT', `/api/staff/schedule/days/${key}`, { staff: true, body: { mode: 'closed', notify: true } });
+  assert.equal(r.status, 200);
+  const day = (await call('GET', '/api/shelter/today')).json.upcoming.find((d) => d.dateKey === key);
+  assertClosing(r.json.alert.expiresAt, day, 'a closed day still expires at the hours it would have had');
+  const shown = () => call('GET', '/api/updates?kinds=alert').then((x) => x.json.updates.filter((u) => u.id === r.json.alert.id).length);
+  assert.equal(await shown(), 1);
+
+  // Past its expiry: out of the feed and the unread badge.
+  const db = new Database(dbFile);
+  db.prepare('UPDATE shelter_events SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), r.json.alert.id);
+  assert.equal(await shown(), 0);
+  db.prepare('UPDATE shelter_events SET expires_at = ? WHERE id = ?').run(r.json.alert.expiresAt, r.json.alert.id);
+  db.close();
+  assert.equal(await shown(), 1);
+
+  // The closure is called off: its alert goes with it.
+  await call('DELETE', `/api/staff/schedule/days/${key}`, { staff: true });
+  assert.equal(await shown(), 0);
+});
+
+test('a plain alert shows for a week, or until the day staff pick', async () => {
+  const week = await call('POST', '/api/staff/alerts', { staff: true, body: { title: 'Parking lot repaved' } });
+  const days = (new Date(week.json.expiresAt) - new Date(week.json.occurredAt)) / 86400000;
+  assert.equal(Math.round(days), 7);
+  const until = await call('POST', '/api/staff/alerts', { staff: true, body: { title: 'Bring towels', until: today } });
+  assertClosing(until.json.expiresAt, (await call('GET', '/api/shelter/today')).json.today);
+  assert.equal((await call('POST', '/api/staff/alerts', { staff: true, body: { title: 'x', until: '2020-01-01' } })).status, 400);
+  for (const a of [week, until]) await call('DELETE', `/api/staff/alerts/${a.json.id}`, { staff: true });
+});
+
 test('shelter alerts and admin signup notices are on by default and can be turned off', async () => {
   const me = (await call('GET', '/api/me')).json;
   const prefs = (await call('GET', `/api/users/${me.id}/notification-prefs`)).json.prefs;
@@ -120,4 +179,30 @@ test('shelter alerts and admin signup notices are on by default and can be turne
   assert.equal(prefs.walk_started, false, 'the other pushes stay opt-in');
   assert.equal((await call('PUT', `/api/users/${me.id}/notification-prefs`, { body: { key: 'shelter_alerts', enabled: false } })).status, 200);
   assert.equal((await call('GET', `/api/users/${me.id}/notification-prefs`)).json.prefs.shelter_alerts, false);
+});
+
+test('alerts sent before expiry existed get one at startup, read from their headline', async () => {
+  const s = await startServer({ prefix: 'sw-schedule-old-', env: { WALK_HOURS: '07:00-19:00' } });
+  await s.stop();
+  const tomorrow = new Date(`${today}T12:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const key = tomorrow.toISOString().slice(0, 10);
+  const label = tomorrow.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'long', month: 'short', day: 'numeric' });
+  const sentAt = new Date().toISOString();
+  const db = new Database(s.dbFile);
+  const add = db.prepare("INSERT INTO shelter_events (kind, title, detail, occurred_at) VALUES ('alert', ?, 'x', ?)");
+  const closed = add.run(`Shelter closed on ${label}`, sentAt).lastInsertRowid;
+  const todays = add.run('Different hours today', sentAt).lastInsertRowid;
+  const plain = add.run('Parking lot repaved', sentAt).lastInsertRowid;
+  db.close();
+
+  const again = await startServer({ dbFile: s.dbFile, prefix: 'sw-schedule-old-', env: { WALK_HOURS: '07:00-19:00' } });
+  await again.stop();
+  const check = new Database(s.dbFile);
+  const row = (id) => check.prepare('SELECT expires_at, about_date FROM shelter_events WHERE id = ?').get(id);
+  const et = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+  assert.equal(et(row(closed).expires_at), `${key}, 19:00`, 'closed tomorrow: gone at 7pm tomorrow');
+  assert.equal(row(closed).about_date, key);
+  assert.equal(et(row(todays).expires_at), `${today}, 19:00`);
+  assert.equal(Math.round((new Date(row(plain).expires_at) - new Date(sentAt)) / 86400000), 7);
+  check.close();
 });

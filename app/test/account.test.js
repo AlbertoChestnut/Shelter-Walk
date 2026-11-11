@@ -83,6 +83,17 @@ test('staff accounts cannot be deleted this way', async () => {
   assert.equal(stubCalls.length, 0);
 });
 
+test('not while a walk is open: refused before the login system is asked (audit2)', async () => {
+  const r = await call('DELETE', '/api/me', { user: LEAVER, body: { confirm: 'DELETE' } });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /still out with Rex/);
+  assert.equal(stubCalls.length, 0);
+  // The walker cancels it; the rest of this file runs without one open.
+  const db = new Database(dbFile);
+  db.prepare('DELETE FROM walks WHERE user_id = ? AND ended_at IS NULL').run(ids.leaver);
+  db.close();
+});
+
 test('if the login system fails, NOTHING is changed', async () => {
   stubMode = 'down';
   const r = await call('DELETE', '/api/me', { user: LEAVER, body: { confirm: 'DELETE' } });
@@ -91,7 +102,7 @@ test('if the login system fails, NOTHING is changed', async () => {
   stubMode = 'staff';
   assert.equal((await call('DELETE', '/api/me', { user: LEAVER, body: { confirm: 'DELETE' } })).status, 403);
   const db = new Database(dbFile, { readonly: true });
-  assert.equal(db.prepare('SELECT COUNT(*) c FROM walks WHERE user_id = ?').get(ids.leaver).c, 4, 'walks still owned');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM walks WHERE user_id = ?').get(ids.leaver).c, 3, 'walks still owned');
   assert.ok(db.prepare('SELECT 1 FROM users WHERE id = ?').get(ids.leaver), 'user still exists');
   db.close();
   stubMode = 'ok';
@@ -141,9 +152,30 @@ test('other walkers are completely unaffected', async () => {
 });
 
 test('the deleted walker\'s walks show up as nobody\'s in the shared day view', async () => {
-  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() - 3 * 3600 * 1000));
+  // The day of the leaver's newest walk, topped up by a third walker so it
+  // has enough engagements to open (MIN_CELL) at any hour (audit3: this used
+  // to assert only "if 200", and checked nothing at all after 404).
+  const db = new Database(dbFile);
+  const leaverWalk = db.prepare('SELECT started_at FROM walks WHERE user_id IS NULL AND ended_at IS NOT NULL ORDER BY started_at DESC').get();
+  assert.ok(leaverWalk, 'the leaver\'s walks are kept, owned by nobody');
+  const other = (await call('GET', '/api/me', { user: 'filler.quokka@example.com' })).json.id;
+  const ins = db.prepare('INSERT INTO walks (dog_id, user_id, started_at, ended_at, duration_seconds) VALUES (1, ?, ?, ?, 1800)');
+  for (const minutes of [1, 2]) {
+    const t = new Date(leaverWalk.started_at).getTime() + minutes * 60000;
+    ins.run(other, new Date(t).toISOString(), new Date(t + 1800000).toISOString());
+  }
+  db.close();
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(leaverWalk.started_at));
   const r = await call('GET', `/api/impact/day?date=${day}`, { user: STAYER });
-  if (r.status === 200) assert.ok(r.json.walks.every((w) => w.mine === false || w.mine === true) && !r.text.toLowerCase().includes('leaver'));
+  assert.equal(r.status, 200, r.text);
+  const leavers = r.json.walks.filter((w) => w.durationSeconds === 900 && !w.mine);
+  assert.ok(leavers.length >= 1, 'the deleted walker\'s walk is still in the day');
+  for (const w of leavers) {
+    assert.equal(w.mine, false);
+    assert.equal(w.startedAt, undefined, 'no clock times on someone else\'s walk');
+  }
+  assert.ok(!r.text.toLowerCase().includes('leaver'), 'no trace of the name/email');
+  assert.ok(!/"user|"walker|"email/i.test(r.text), 'no walker field at all');
 });
 
 test('saving your name also hands it to the login app for the staff account list', async () => {

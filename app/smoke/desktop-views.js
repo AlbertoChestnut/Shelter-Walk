@@ -1,6 +1,6 @@
 // Start page on a computer: staff land on the staff dashboard by default, can
 // switch with the bar at the top of each desktop page, and tick "Open this
-// page first" to land on the play group desk instead. The app's Settings has
+// page first" to land on the playgroup desk instead. The app's Settings has
 // the same choice. Walkers get the app and the desk, never the staff page.
 // Needs Playwright (devDependency): npx playwright install chromium
 //   node smoke/desktop-views.js
@@ -31,16 +31,16 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     ok(new URL(p.url()).pathname === '/staff', 'staff on a computer land on the staff dashboard by default');
     await p.waitForSelector('#deskNav .desk-nav-link');
     const staffLinks = await p.$$eval('#deskNav .desk-nav-link', (els) => els.map((e) => e.textContent.trim()));
-    ok(staffLinks.join('|') === 'Volunteer app|Play group desk|Staff dashboard', 'switcher on the staff page lists all three');
+    ok(staffLinks.join('|') === 'Volunteer app|Playgroup desk|Staff dashboard', 'switcher on the staff page lists all three');
     ok(await p.isChecked('#deskNavStart'), '"Open this page first" is ticked there (the default)');
     if (SHOTS) await p.screenshot({ path: `${SHOTS}/views-staff.png`, clip: { x: 0, y: 0, width: 1366, height: 120 } });
-    await p.click('#deskNav a:has-text("Play group desk")');
+    await p.click('#deskNav a:has-text("Playgroup desk")');
     await p.waitForSelector('#deskNavStart');
-    ok(new URL(p.url()).pathname === '/playgroup' && !(await p.isChecked('#deskNavStart')), 'switcher goes to the play group desk, not ticked yet');
+    ok(new URL(p.url()).pathname === '/playgroup' && !(await p.isChecked('#deskNavStart')), 'switcher goes to the playgroup desk, not ticked yet');
     await p.check('#deskNavStart');
     await p.waitForTimeout(500);
     await p.goto(base + '/', { waitUntil: 'networkidle' });
-    ok(new URL(p.url()).pathname === '/playgroup', 'after ticking it, the site opens on the play group desk');
+    ok(new URL(p.url()).pathname === '/playgroup', 'after ticking it, the site opens on the playgroup desk');
     if (SHOTS) await p.screenshot({ path: `${SHOTS}/views-desk.png`, clip: { x: 0, y: 0, width: 1366, height: 120 } });
     await p.click('#deskNav a:has-text("Volunteer app")');
     await p.waitForSelector('#settingsBtn');
@@ -49,7 +49,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     // Settings in the app shows and changes the same thing.
     await p.click('#settingsBtn');
     await p.waitForSelector('#desktopViewSection:not(.hidden)');
-    ok(await p.inputValue('#desktopViewSelect') === 'playgroup', 'Settings shows "On a computer, open: Play group desk"');
+    ok(await p.inputValue('#desktopViewSelect') === 'playgroup', 'Settings shows "On a computer, open: Playgroup desk"');
     await p.selectOption('#desktopViewSelect', 'app');
     await p.waitForTimeout(800);
     await p.goto(base + '/', { waitUntil: 'networkidle' });
@@ -62,7 +62,7 @@ const ok = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('  ✓
     await w.goto(base + '/playgroup', { waitUntil: 'networkidle' });
     await w.waitForSelector('#deskNav .desk-nav-link');
     const walkerLinks = await w.$$eval('#deskNav .desk-nav-link', (els) => els.map((e) => e.textContent.trim()));
-    ok(walkerLinks.join('|') === 'Volunteer app|Play group desk', 'a walker\'s switcher has no staff dashboard');
+    ok(walkerLinks.join('|') === 'Volunteer app|Playgroup desk', 'a walker\'s switcher has no staff dashboard');
     await w.check('#deskNavStart');
     await w.waitForTimeout(500);
     await w.goto(base + '/', { waitUntil: 'networkidle' });

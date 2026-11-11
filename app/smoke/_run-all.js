@@ -79,6 +79,17 @@ async function main() {
   }
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`);
+  // On GitHub Actions, each failure also becomes an annotation: the job log
+  // needs a signed-in account, the annotations API doesn't.
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const esc = (s) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+    const tz = process.env.SMOKE_TZ || 'America/New_York';
+    for (const r of failed) {
+      const tail = r.out.split('\n').filter((l) => l.trim()).slice(-40).join('\n');
+      const why = r.timedOut ? `timed out after ${TIMEOUT_MS / 1000} s` : errorLine(r.out) || `exit ${r.code}`;
+      console.log(`::error title=${esc(`Smoke ${r.file} failed (${tz})`).replace(/[:,]/g, ' ')}::${esc(`${why}\n\n${tail}`.slice(0, 4000))}`);
+    }
+  }
   process.exit(failed.length ? 1 : 0);
 }
 

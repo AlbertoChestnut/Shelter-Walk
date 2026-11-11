@@ -93,6 +93,32 @@ test('smoke:all kills a timed-out smoke together with the server it started', as
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('smoke:all turns each failure into a GitHub annotation on Actions only', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sw-eng2-annot-'));
+  fs.writeFileSync(path.join(dir, 'fails.js'), 'console.log("step one ok");\nthrow new Error("boom at 50%");\n');
+  fs.writeFileSync(path.join(dir, 'passes.js'), '');
+  const run = (extra) => new Promise((resolve) => {
+    const env = { ...process.env, SMOKE_DIR: dir, SMOKE_JOBS: '1', SMOKE_TZ: 'UTC' };
+    delete env.GITHUB_ACTIONS; // set when this test itself runs on Actions
+    Object.assign(env, extra);
+    const p = spawn(process.execPath, [path.join(APP_DIR, 'smoke', '_run-all.js')], { cwd: APP_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    p.stdout.on('data', (c) => { out += c; });
+    p.stderr.on('data', (c) => { out += c; });
+    p.on('close', (code) => resolve({ code, out }));
+  });
+  const onGh = await run({ GITHUB_ACTIONS: 'true' });
+  assert.equal(onGh.code, 1);
+  const lines = onGh.out.split('\n').filter((l) => l.startsWith('::error'));
+  assert.equal(lines.length, 1, `one annotation, for the failed smoke only:\n${onGh.out}`);
+  assert.match(lines[0], /^::error title=Smoke fails\.js failed \(UTC\)::Error: boom at 50%25%0A%0A/);
+  assert.match(lines[0], /step one ok/, 'the annotation carries the end of the smoke\'s output');
+  const local = await run({});
+  assert.equal(local.code, 1);
+  assert.doesNotMatch(local.out, /::error/, 'no annotation syntax in a local run');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // ---- shared numbers: one source, served, and the app's copies match ----
 test('GET /api/config serves src/constants.js, and app.js\'s fallback copies match it exactly', async () => {
   const r = await call('GET', '/api/config');
